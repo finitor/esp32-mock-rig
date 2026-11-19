@@ -8,13 +8,13 @@ Keep it current as part of the work: update the section a fact belongs to, add a
 
 ## Status
 
-The CI-V core and IC-705 personality exist as portable C and pass real Hamlib on the host. No ESP-IDF project exists yet. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
+The CI-V core, the IC-705 personality and the audio DSP exist as portable C with host tests; the CAT side passes real Hamlib on the host. No ESP-IDF project exists yet. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
 
 ## Stack
 
 - ESP-IDF with `esp_tinyusb` (Arduino only as a fallback if descriptor work is easier there).
 - Target: ESP32-S3-DevKitC-1 clone, ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB octal PSRAM).
-- Planned modules: `usb_composite`, `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_engine`, `link`, `ui`.
+- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later) and `audio_dsp` exist. Planned: `usb_composite`, `audio_engine`, `link`, `ui`.
 
 ## Hard constraints
 
@@ -39,7 +39,7 @@ make -C host test
 make -C host rigctl
 ```
 
-Run both after any change to `components/cat_civ` or a personality. The host build uses `-Werror` with address and undefined-behaviour sanitizers; keep it clean.
+Run the first after any change under `components/`, and the second after any change to `components/cat_civ` or a personality. Regenerate the resampler table with `host/tools/gen_resampler_fir.py --table` rather than editing it by hand. The host build uses `-Werror` with address and undefined-behaviour sanitizers; keep it clean.
 
 Once an ESP-IDF project exists:
 

@@ -2,7 +2,7 @@
 
 ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
 
-**Status:** early. The CAT protocol core and the IC-705 personality are written and pass real Hamlib on a desktop; nothing runs on an ESP32 yet.
+**Status:** early. The CAT protocol core, the IC-705 personality and the audio DSP are written and tested on a desktop, and the CAT side passes real Hamlib; nothing runs on an ESP32 yet.
 
 ## What it will do
 

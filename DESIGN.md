@@ -8,10 +8,12 @@ Operator: Tim, W0SIG (General).
 
 Last updated: Nov 19, 2026.
 
-- The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected. Nothing runs on an ESP32 yet.
+- The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected.
+- The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
+- Nothing runs on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: Milestone 0, step 3 (audio DSP as portable C) or step 4 (install ESP-IDF and scaffold the firmware project).
-- Three ESP32-S3 boards are ordered; nothing has been tested on hardware.
+- Next step: Milestone 0, step 4 (install ESP-IDF and scaffold the firmware project). Everything that can be done without ESP-IDF is done.
+- Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
 ## Goal and scope
@@ -79,11 +81,12 @@ Firmware modules:
 - `usb_composite`: descriptors and TinyUSB callbacks for UAC2 + CDC-ACM, including line-state changes
 - `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
 - `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
-- `audio_engine`: loopback, PSRAM parrot buffer, 48↔12 kHz resampling, noise/attenuation, TX mute
+- `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
+- `audio_engine`: routes audio between USB, the parrot buffer in PSRAM and the link, using `audio_dsp`; applies TX mute and turnaround delay
 - `link`: one interface with loopback, ESP-NOW and UART backends; jitter buffer and drift correction
 - `ui`: RGB LED states; a Wi-Fi status page later if wanted
 
-`cat_civ`, the personalities and the DSP in `audio_engine` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
+`cat_civ`, the personalities and `audio_dsp` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
 
 Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB, the audio engine and the link layer each get a task; `cat_civ` is passive and runs in whichever task delivers serial bytes.
 
@@ -93,7 +96,8 @@ Repository layout:
 | --- | --- |
 | `components/cat_civ/` | CI-V core |
 | `components/rig_ic705/` | IC-705 personality |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check) |
+| `components/audio_dsp/` | Audio DSP |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ` and `test_dsp` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/gen_resampler_fir.py` (filter generator) |
 
 ## USB device
 
@@ -224,6 +228,10 @@ Audio stays digital end to end: USB audio in from the host is transmit, USB audi
 
 Use cases: FT8 self-decode (TX in one 15 s slot, replay aligned to the next slot boundary; WSJT-X should decode it with near-zero DT), checking TX drive and clipping, and confirming a modem detects its own frames. ARQ modems (VARA, Data2G connected mode) can't complete a session against a parrot; use the two-board link for that.
 
+**Resampling.** One 96-tap low-pass serves both directions: flat within 0.01 dB to 4 kHz, 3 dB down at 5 kHz, and at least 69 dB down from 6.5 kHz, so the 12 kHz path carries roughly 0–4.5 kHz. A 48 → 12 → 48 kHz round trip delays audio by 92 samples at 48 kHz, about 1.9 ms. Coefficients come from `host/tools/gen_resampler_fir.py`.
+
+**SNR convention.** Noise is white across the whole sampled band, and SNR is quoted in a reference bandwidth, as HF software does: 2500 Hz for WSJT-X, 3000 Hz for VARA and most channel simulators. `dsp_noise_rms_for_snr` takes the reference bandwidth as a parameter; which one the mock's SNR setting uses by default is an open question.
+
 **Channel simulation (applied on the receive side)**
 
 - Additive noise at a configurable SNR, so ARQ modems step down through their speed levels.
@@ -280,7 +288,7 @@ Framework: ESP-IDF with `esp_tinyusb` (Arduino is the fallback if descriptor wor
 
 1. Done: `cat_civ` and `rig_ic705` as portable C: bytes in, reply bytes out, PTT change callback, with the personality interface in place from the start.
 2. Done: host test harness. `make -C host test` runs the unit tests; `make -C host rigctl` runs real `rigctl -m 3085` against the parser over a pseudo-terminal.
-3. Audio DSP as portable C with host unit tests: 48↔12 kHz decimator/interpolator, noise at SNR, ring buffer.
+3. Done: `audio_dsp` as portable C with host unit tests: 48↔12 kHz decimator and interpolator, noise at SNR, level meter, VOX detector, FIFO with drift steering. `make -C host test` runs them.
 4. Install ESP-IDF and scaffold the project: target `esp32s3`, 16 MB flash, octal PSRAM, console on the UART jack, the module layout above.
 
 **Milestone 1: USB composite + CAT + loopback**
@@ -336,6 +344,7 @@ Framework: ESP-IDF with `esp_tinyusb` (Arduino is the fallback if descriptor wor
 - [x] Does selecting IC-7300 (model 3073) also work against the IC-705 personality? Yes for frequency, mode and PTT with Hamlib 4.7.1; the G90 model (3088) worked for the same commands too. Checked once by hand, not part of the automated check.
 - [ ] Do WSJT-X, fldigi/flrig and VARA accept the personality? They send commands `rigctl` was not asked to send here. (after step 9, or earlier through the pty)
 - [ ] Which CI-V address and command numbers to use for mock-only controls (step 12)
+- [ ] Default reference bandwidth for the SNR setting: 2500 Hz (WSJT-X) or 3000 Hz (VARA, channel simulators)? Whatever Data2G reports its SNR in would be the natural choice. (step 11)
 - [ ] G90, later pass: exact replies (BCD byte order, mode bytes for U-D and L-D, ID bytes for `19 00` and `1D 19`, behaviour on unknown commands, echo), and whether to support `25`/`26` (steps 23–24)
 - [ ] G90, later pass: what the real DE-19 presents over USB (VID/PID, one or two COM ports, audio format, device name), and whether it keys the G90 from RTS or DTR or only by CAT. One setup guide says to hold both lines low with PTT set to CAT. (step 24)
 - [ ] How control-line PTT mode is selected and stored (mock-only CAT command saved to flash, the BOOT button, or both)

@@ -7,25 +7,31 @@
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
-CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include
+CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/audio_dsp/include
 
 BUILD = build
 CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c
 HDRS  = ../components/cat_civ/include/cat_civ.h ../components/rig_ic705/include/rig_ic705.h
+DSP   = ../components/audio_dsp/audio_dsp.c
+DSP_H = ../components/audio_dsp/include/audio_dsp.h
 
-all: $(BUILD)/civ_pty $(BUILD)/test_civ
+all: $(BUILD)/civ_pty $(BUILD)/test_civ $(BUILD)/test_dsp
 
 $(BUILD)/civ_pty: civ_pty.c $(CORE) $(HDRS) | $(BUILD)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ civ_pty.c $(CORE) $(LDLIBS_PTY)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ civ_pty.c $(CORE)
 
 $(BUILD)/test_civ: test_civ.c $(CORE) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_civ.c $(CORE)
 
+$(BUILD)/test_dsp: test_dsp.c $(DSP) $(DSP_H) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_dsp.c $(DSP) -lm
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
-test: $(BUILD)/test_civ
+test: $(BUILD)/test_civ $(BUILD)/test_dsp
 	./$(BUILD)/test_civ
+	./$(BUILD)/test_dsp
 
 rigctl: $(BUILD)/civ_pty
 	./rigctl_check.sh
