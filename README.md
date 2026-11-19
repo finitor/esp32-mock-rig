@@ -12,6 +12,7 @@ ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks
 - Parrot mode: record transmit audio and play it back as receive audio.
 - Simulate a channel: noise at a set SNR, attenuation, turnaround delay.
 - Link two boards (ESP-NOW or wired UART) so two modems can hold an ARQ session over a fake radio path.
+- Offer a web console over Wi-Fi to change settings and watch telemetry while it runs.
 
 ## Hardware
 

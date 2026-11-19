@@ -8,13 +8,13 @@ Keep it current as part of the work: update the section a fact belongs to, add a
 
 ## Status
 
-The CI-V core, the IC-705 personality, the audio DSP, the receive routes and channel (`audio_engine`: monitor, radio and parrot routes; the parrot's recording and replay; noise at a set SNR, attenuation, mute while keyed and turnaround) and the mock's own controls (`mock_ctl`: CI-V frames to address `F0` that change the route, channel and parrot settings at run time) exist as portable C with host tests; the CAT side passes real Hamlib on the host. The firmware builds for the ESP32-S3 with the USB composite device, CAT over serial and audio loopback written, and its descriptors pass a structural check. Nothing has been flashed, so no USB behaviour is verified. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
+The CI-V core, the IC-705 personality, the audio DSP, the receive routes and channel (`audio_engine`: monitor, radio and parrot routes; the parrot's recording and replay; noise at a set SNR, attenuation, mute while keyed and turnaround) and the mock's own controls (`mock_ctl`: CI-V frames to address `F0` that change the route, channel and parrot settings at run time) exist as portable C with host tests; the CAT side passes real Hamlib on the host. The firmware builds for the ESP32-S3 with the USB composite device, CAT over serial and audio loopback written, and its descriptors pass a structural check. Nothing has been flashed, so no USB behaviour is verified. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then the web console, then two-board link, then the G90 personality), each testable on its own.
 
 ## Stack
 
 - ESP-IDF (Arduino only as a fallback if descriptor work is easier there).
 - Target: ESP32-S3-DevKitC-1 clone, ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB octal PSRAM).
-- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp`, `audio_engine` (routes, parrot and receive channel; the link route to come), `mock_ctl` (mock-only controls) and `usb_composite` exist. Planned: `link`, `ui`.
+- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp`, `audio_engine` (routes, parrot and receive channel; the link route to come), `mock_ctl` (mock-only controls) and `usb_composite` exist. Planned: `web_console`, `link`, `ui`.
 - USB stack: Espressif's `usb_device_uac` component in composite mode for audio, TinyUSB's CDC class directly for serial. Do not add `esp_tinyusb`; it brings its own `tusb_config.h` and has no audio class.
 
 ## Hard constraints
@@ -27,7 +27,8 @@ The CI-V core, the IC-705 personality, the audio DSP, the receive routes and cha
 - **Mock-only controls** go to CI-V address `F0` and live in `mock_ctl`, never in a personality or the core. New ones take a command number from the table in DESIGN.md (some are reserved there), refuse out-of-range values with `FA`, and get a matching setting in `host/tools/mockctl.py`.
 - **PTT sources:** CAT (CI-V `1C 00`), a serial control line, and optional VOX. Control-line PTT is a selectable mode, off by default, because hosts hold RTS and DTR high on open. Receive audio is muted (or low noise floor) while keyed.
 - **CDC descriptors:** keep the interrupt IN notification endpoint and use device class 0xEF/2/1 with a CDC IAD; usb-serial-for-android (used by Data2G) requires both.
-- **Link audio** between boards is 12 kHz 16-bit mono, half duplex keyed by PTT, with tens of ms of buffering and sample drop/repeat for clock drift.
+- **Link audio** between boards is 12 kHz 16-bit mono, half duplex keyed by PTT, with tens of ms of buffering and sample drop/repeat for clock drift. It travels over ESP-NOW (wired UART as the fallback).
+- **One radio:** Wi-Fi carries control only (the web console) and shares the radio with ESP-NOW, so both boards stay on one channel with Wi-Fi power save off, and Wi-Fi traffic stays light. Do not use Bluetooth. The web console calls the same engine settings functions as `mock_ctl`; it needs no USB endpoint and must not add one.
 
 ## Build and test
 
