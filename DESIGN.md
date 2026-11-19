@@ -8,7 +8,7 @@ Operator: Tim, W0SIG (General).
 
 Last updated: Nov 19, 2026.
 
-- The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected.
+- The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected. The commands the Android FT8 apps FT8CN and FT8AF send an IC-705 were read from their source and all get correct replies on the host; neither app has been run.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
 - The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 241 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
@@ -152,7 +152,7 @@ The mock radio speaks Icom's CI-V protocol. Which radio it claims to be is a per
 ### Core and personalities
 
 - **`cat_civ` (core):** buffers bytes until `FD`, validates the frame, dispatches on command and sub-command, keeps the radio state, and builds replies. It implements the commands every CI-V radio shares.
-- **Personality (`rig_ic705`, later `rig_g90`):** a table of what makes one radio different: default address, transceiver ID reply, mode-byte table, which commands and sub-commands exist, frequency coverage and transmit bands, power limit, level and meter defaults, power-up state, and handlers for radio-specific commands.
+- **Personality (`rig_ic705`, later `rig_g90`):** a table of what makes one radio different: default address, transceiver ID reply, mode-byte table, which commands and sub-commands exist, frequency coverage and transmit bands, power limit, level and meter defaults, the `1A 05` menu settings it has, power-up state, and handlers for radio-specific commands.
 
 The core never names a radio. Anything radio-specific goes through the personality interface, so adding the G90 means adding one module rather than editing the core. The first pass selects the personality at build time; run-time selection (a stored setting) arrives with the G90. The CI-V address cannot be used to pick the personality, because Hamlib 4.7.1 addresses both radios at `A4`.
 
@@ -188,7 +188,7 @@ Minimum command set. Exact data layouts come from Icom's CI-V Reference Guide an
 | `16 <sub>` | Functions (NB, NR, ...) | Stored value |
 | `19 00` | Transceiver ID | `19 00 A4` |
 | `1A 03` / `1A 06` | Filter width / data mode | Stored value |
-| `1A 05 <item>` | Menu settings | The items Hamlib asks for; error otherwise |
+| `1A 05 <item>` | Menu settings | Stored value for the items in the personality's table; error otherwise. Listed so far: `01 19` (DATA MOD: `00` MIC, `01` USB, `02` MIC,USB, `03` WLAN), starting on USB |
 | `1C 00` / `1C 00 <0 or 1>` | PTT read / set | value / OK |
 | `25 <vfo>` / `26 <vfo>` | Selected or unselected VFO frequency / mode with data flag and filter | value / OK |
 | anything else | Unsupported | error (`FA`) |
@@ -312,13 +312,13 @@ What its source sends an IC-705 over a USB cable (read on Nov 19, 2026 from the 
 | --- | --- | --- | --- |
 | On connect and on band change | `26 00 01 01 01` | Selected VFO to USB, data on, filter 1 | `FB` |
 | 800 ms later | `05 <5 BCD bytes>` | Set frequency | `FB` |
-| Every PTT on | `1A 05 01 19 01` | Set the data modulation input to USB (`02` over Bluetooth, `03` over WLAN) | `FA` (not implemented) |
+| Every PTT on | `1A 05 01 19 01` | Set the data modulation input to USB (`02` over Bluetooth, `03` over WLAN) | `FB` |
 | PTT on, CAT mode only | `1C 00 01` | Transmit | `FB` |
 | Every 500 ms while keyed | `15 12` | Read SWR meter | `15 12 00 00` |
 | Every 500 ms while keyed | `15 13` | Read ALC meter | `15 13 00 00` |
 | PTT off, CAT mode only | `1C 00 00` | Receive | `FB` |
 
-- It never checks `FB` or `FA`; "connected" means the serial port opened. The `FA` on `1A 05 01 19` therefore does no harm, though a real IC-705 accepts that command.
+- It never checks `FB` or `FA`; "connected" means the serial port opened. The mock first answered `1A 05 01 19` with `FA`, which did no harm for that reason; it now stores the value and answers `FB`, as the IC-705's CI-V reference describes (read from a ManualsLib mirror, not Icom's own PDF). The value changes nothing in the mock, whose only audio input is USB.
 - It never asks for the frequency. A `03` read exists in the code but nothing calls it; it only follows unsolicited `00` frames, which the mock does not send.
 - It accepts replies addressed to `E0` or `00` from the configured radio address, so the mock's replies parse.
 - PTT modes are VOX (the default), CAT, RTS and DTR. In RTS or DTR mode it toggles the line and sends no `1C 00`, so the mock keys only with control-line PTT mode enabled. The serial open code does not set DTR or RTS itself.
@@ -396,6 +396,7 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | One audio function and one CDC port only. | S3 endpoint budget. |
 | Nov 19, 2026 | Control-line PTT is a selectable mode, off by default. | Hosts hold RTS and DTR high on open; found in Data2G's source. |
 | Nov 19, 2026 | Keep the CDC notification endpoint; device class 0xEF/2/1 with a CDC IAD. | Required by usb-serial-for-android's CDC-ACM driver. |
+| Nov 19, 2026 | `1A 05` menu settings are a table in the personality (item number, highest value, power-up value) handled by the core; unlisted items answer `FA`. Items are added when a client is seen to send them. | Item numbers differ between Icom models, so they belong to the personality; a table keeps the personality constant data. First item: `01 19` for FT8CN and FT8AF. |
 
 ## Open questions
 
@@ -403,7 +404,7 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [x] Does selecting IC-7300 (model 3073) also work against the IC-705 personality? Yes for frequency, mode and PTT with Hamlib 4.7.1; the G90 model (3088) worked for the same commands too. Checked once by hand, not part of the automated check.
 - [ ] Do WSJT-X, fldigi/flrig and VARA accept the personality? They send commands `rigctl` was not asked to send here. (after step 9, or earlier through the pty)
 - [x] Which CI-V commands FT8CN sends an IC-705. `26 00`, `05`, `1A 05 01 19`, `1C 00`, `15 12` and `15 13`; see [Other Android clients: FT8CN](#other-android-clients-ft8cn). Read from source and replayed on the host, not run on a phone.
-- [ ] Should the IC-705 personality accept `1A 05 01 19` (data modulation input) and answer `FB`? FT8CN sends it on every PTT on and ignores the `FA` it gets now; a client that checks replies would not. Left as is on Nov 19, 2026.
+- [x] Should the IC-705 personality accept `1A 05 01 19` (data modulation input) and answer `FB`? Yes, added Nov 19, 2026. Its power-up value is USB because that is the mock's only input; the real radio's factory default was not checked.
 - [ ] Does FT8AF (or FT8CN) work end to end against the mock on a phone, and does it show a decode of its own replayed transmission in parrot mode? (after step 9 and step 10)
 - [ ] Which CI-V address and command numbers to use for mock-only controls (step 12)
 - [ ] Default reference bandwidth for the SNR setting: 2500 Hz (WSJT-X) or 3000 Hz (VARA, channel simulators)? Whatever Data2G reports its SNR in would be the natural choice. (step 11)

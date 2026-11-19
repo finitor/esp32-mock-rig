@@ -126,6 +126,13 @@ static int find_item(const civ_item_t *items, size_t n, uint8_t sub)
     return -1;
 }
 
+static int find_setting(const civ_rig_t *rig, uint16_t item)
+{
+    for (size_t i = 0; i < rig->n_settings && i < CIV_MAX_SETTINGS; i++)
+        if (rig->settings[i].item == item) return (int)i;
+    return -1;
+}
+
 static bool has(const civ_t *c, uint32_t cap)
 {
     return (c->rig->caps & cap) != 0;
@@ -184,6 +191,7 @@ void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, v
     for (size_t i = 0; i < rig->n_levels && i < CIV_MAX_LEVELS; i++) c->level[i] = rig->levels[i].initial;
     for (size_t i = 0; i < rig->n_meters && i < CIV_MAX_METERS; i++) c->meter[i] = rig->meters[i].initial;
     for (size_t i = 0; i < rig->n_funcs && i < CIV_MAX_FUNCS; i++) c->func[i] = rig->funcs[i].initial;
+    for (size_t i = 0; i < rig->n_settings && i < CIV_MAX_SETTINGS; i++) c->setting[i] = rig->settings[i].initial;
 }
 
 /* ---- command handlers ------------------------------------------------- */
@@ -372,6 +380,21 @@ static void cmd_1a(civ_t *c, const civ_frame_t *f)
             return;
         }
         break;
+    case 0x05: { /* menu setting: 1A 05 <item, two bytes> [<value>] */
+        if (f->len != 3 && f->len != 4) break;
+        int i = find_setting(c->rig, (uint16_t)((f->data[1] << 8) | f->data[2]));
+        if (i < 0) break;
+        if (f->len == 3) {
+            const uint8_t p[5] = {0x1A, 0x05, f->data[1], f->data[2], c->setting[i]};
+            reply_data(c, f, p, 5);
+            return;
+        }
+        unsigned d;
+        if (!bcd_byte(f->data[3], &d) || f->data[3] > c->rig->settings[i].max) break;
+        c->setting[i] = f->data[3];
+        civ_reply_ok(c, f);
+        return;
+    }
     case 0x06: /* data mode: 1A 06 <00|01> [<filter>] */
         if (!has(c, CIV_CAP_DATA_MODE)) break;
         if (f->len == 1) {

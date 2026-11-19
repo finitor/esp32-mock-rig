@@ -230,6 +230,28 @@ static void test_levels_meters_funcs(void)
     EXPECT(&c, "fe fe a4 e0 16 22 fd", "fe fe e0 a4 16 22 01 fd");
 }
 
+static void test_menu_settings(void)
+{
+    civ_t c;
+    fresh(&c);
+    /* 1A 05 01 19, DATA MOD: FT8CN and FT8AF set it to USB at every PTT on. */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 fd", "fe fe e0 a4 1a 05 01 19 01 fd");
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 01 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 03 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 fd", "fe fe e0 a4 1a 05 01 19 03 fd");
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 04 fd", "fe fe e0 a4 fa fd"); /* above WLAN */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 0a fd", "fe fe e0 a4 fa fd"); /* not BCD */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 01 00 fd", "fe fe e0 a4 fa fd"); /* too long */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 fd", "fe fe e0 a4 1a 05 01 19 03 fd"); /* unchanged */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 18 fd", "fe fe e0 a4 fa fd");    /* item not listed */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 fd", "fe fe e0 a4 fa fd");       /* half an item number */
+    EXPECT(&c, "fe fe a4 e0 1a 05 fd", "fe fe e0 a4 fa fd");
+    CHECK(!civ_ptt(&c));
+
+    fresh(&c); /* back to the power-up value */
+    EXPECT(&c, "fe fe a4 e0 1a 05 01 19 fd", "fe fe e0 a4 1a 05 01 19 01 fd");
+}
+
 static void test_identity_and_addressing(void)
 {
     civ_t c;
@@ -298,6 +320,7 @@ int main(void)
     test_freq_and_mode();
     test_vfo_and_split();
     test_levels_meters_funcs();
+    test_menu_settings();
     test_identity_and_addressing();
     test_framing();
     test_external_ptt();

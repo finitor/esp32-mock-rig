@@ -25,6 +25,7 @@ extern "C" {
 #define CIV_MAX_LEVELS 32
 #define CIV_MAX_FUNCS  32
 #define CIV_MAX_METERS 16
+#define CIV_MAX_SETTINGS 8
 
 typedef struct civ civ_t;
 
@@ -46,6 +47,15 @@ typedef struct {
     uint8_t sub;
     uint16_t initial;
 } civ_item_t;
+
+/* A 1A 05 menu setting with a one-byte value. item is the two item-number
+ * bytes as sent: 1A 05 01 19 is item 0x0119. max and initial are the value
+ * byte as sent (BCD); values run 00..max. */
+typedef struct {
+    uint16_t item;
+    uint8_t max;
+    uint8_t initial;
+} civ_setting_t;
 
 /* Optional commands. A radio without the capability answers NG. */
 enum {
@@ -91,6 +101,8 @@ typedef struct civ_rig {
     size_t n_meters;
     const civ_item_t *funcs; /* 16 xx */
     size_t n_funcs;
+    const civ_setting_t *settings; /* 1A 05 xx xx; anything not listed answers NG */
+    size_t n_settings;
 
     uint32_t caps;
 
@@ -144,6 +156,7 @@ struct civ {
     uint16_t level[CIV_MAX_LEVELS];
     uint16_t meter[CIV_MAX_METERS];
     uint16_t func[CIV_MAX_FUNCS];
+    uint8_t setting[CIV_MAX_SETTINGS];
 
     /* counters, for tests and diagnostics */
     uint32_t frames_ok;

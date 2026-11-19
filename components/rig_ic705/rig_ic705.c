@@ -90,6 +90,15 @@ static const civ_item_t ic705_funcs[] = {
     {0x65, 0}, /* IP plus */
 };
 
+/* 1A 05 xx xx menu settings. Only the items a client has been seen to send. */
+static const civ_setting_t ic705_settings[] = {
+    /* DATA MOD, the modulation input in data mode: 00 MIC, 01 USB, 02 MIC,USB,
+     * 03 WLAN. FT8CN and FT8AF set it at every PTT on. The mock's only audio
+     * input is USB, so it starts on USB and the value changes nothing; the
+     * real radio's factory default was not checked. */
+    {0x0119, 0x03, 0x01},
+};
+
 const civ_rig_t rig_ic705 = {
     .name = "Icom IC-705",
     .hamlib_model = 3085,
@@ -113,6 +122,8 @@ const civ_rig_t rig_ic705 = {
     .n_meters = ARRAY_LEN(ic705_meters),
     .funcs = ic705_funcs,
     .n_funcs = ARRAY_LEN(ic705_funcs),
+    .settings = ic705_settings,
+    .n_settings = ARRAY_LEN(ic705_settings),
 
     .caps = CIV_CAP_X25_X26 | CIV_CAP_DATA_MODE | CIV_CAP_VFO_EQUAL | CIV_CAP_DUPLEX | CIV_CAP_POWER |
             CIV_CAP_TUNER | CIV_CAP_RIT | CIV_CAP_FILTER_BW | CIV_CAP_ATT | CIV_CAP_TS,
