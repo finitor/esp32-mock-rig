@@ -304,7 +304,7 @@ To check on a phone:
 
 ## Build plan
 
-Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descriptor work gets easier there). Each milestone is testable on its own.
+Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio and TinyUSB's CDC class used directly for serial; `esp_tinyusb` is not used (see [USB device](#usb-device)). Arduino is the fallback if descriptor work gets easier there. Each milestone is testable on its own.
 
 **Milestone 0: groundwork, no ESP32 board needed**
 
@@ -355,7 +355,7 @@ Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descrip
 | Nov 19, 2026 | Split CAT into a shared `cat_civ` core and per-radio personality modules. | Both radios speak CI-V; keeps the G90 an addition rather than a rewrite. |
 | Nov 19, 2026 | Answer CI-V frames at any radio address. | Hamlib's default G90 address differs by version (`A4` in 4.7.1, `88` in master, `70` reported), and 4.7.1 uses `A4` for the IC-705 too. |
 | Nov 19, 2026 | All-digital audio; no codec, no RF. | No extra parts; USB-only build. |
-| Nov 19, 2026 | ESP-IDF with `esp_tinyusb`. | Custom composite descriptors; Arduino kept as fallback. |
+| Nov 19, 2026 | ESP-IDF with `esp_tinyusb`. (The `esp_tinyusb` part is superseded by the next entry; ESP-IDF stands.) | Custom composite descriptors; Arduino kept as fallback. |
 | Nov 19, 2026 | Build the sound card on Espressif's `usb_device_uac` component and the serial port on TinyUSB's CDC class, without `esp_tinyusb`. | The audio component is vendor-tested UAC2 handling for the S3; `esp_tinyusb` has no audio class. |
 | Nov 19, 2026 | Keep asynchronous playback with a feedback endpoint. | It is what the tested component does, and it fits: four IN endpoints of four. |
 | Nov 19, 2026 | Use the pid.codes test VID/PID for development. | Private bench device; no allocated ID, and a real maker's ID would be impersonation. |

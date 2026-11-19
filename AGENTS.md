@@ -12,7 +12,7 @@ The CI-V core, the IC-705 personality and the audio DSP exist as portable C with
 
 ## Stack
 
-- ESP-IDF with `esp_tinyusb` (Arduino only as a fallback if descriptor work is easier there).
+- ESP-IDF (Arduino only as a fallback if descriptor work is easier there).
 - Target: ESP32-S3-DevKitC-1 clone, ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB octal PSRAM).
 - Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp` and `usb_composite` exist. Planned: `audio_engine`, `link`, `ui`.
 - USB stack: Espressif's `usb_device_uac` component in composite mode for audio, TinyUSB's CDC class directly for serial. Do not add `esp_tinyusb`; it brings its own `tusb_config.h` and has no audio class.
