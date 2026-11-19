@@ -2,16 +2,18 @@
  * USB mock radio firmware entry point.
  *
  * The USB serial port feeds the CI-V parser. Audio the host plays goes
- * through a FIFO to the audio engine, which applies the receive channel
- * (mute while keyed, noise at a set SNR, attenuation) and hands the result
- * back as audio the host can record. With the default settings that is a
- * plain loopback. CI-V frames to the mock's own address change the channel
- * settings at run time. Before USB starts, a short self-check proves the
+ * through a FIFO to the audio engine, which decides what the receiver hears
+ * (the transmit audio, nothing, or the parrot's replay of the last
+ * transmission from PSRAM), applies the receive channel (mute while keyed,
+ * noise at a set SNR, attenuation) and hands the result back as audio the
+ * host can record. With the default settings that is a plain loopback. CI-V
+ * frames to the mock's own address change the settings at run time. Before USB starts, a short self-check proves the
  * portable modules run on the target.
  */
 #include <inttypes.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_random.h"
@@ -110,9 +112,10 @@ static void line_state(void *ctx, bool dtr, bool rts)
  * from it until it first reaches the target, and it re-buffers after an
  * underrun, so a stream starting up does not stutter.
  *
- * What the FIFO delivers is the receive source in the monitor route. The
- * radio route has no receive source until parrot mode or the board link
- * exists, so the host then gets the engine's noise floor alone.
+ * What the FIFO delivers is the transmit audio. The engine loops it back
+ * (monitor route), ignores it (radio route) or records it while keyed and
+ * replays it afterwards (parrot route). All of it runs on the capture side,
+ * so the parrot records only while the host is also recording.
  */
 #define LOOP_CAPACITY  4096
 #define LOOP_TARGET    960 /* 20 ms at 48 kHz, measured when capture fetches */
@@ -139,24 +142,48 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
         }
         have_audio = true;
     }
-    ae_config_t cfg;
-    ae_get_config(&s_engine, &cfg);
-    bool monitor = cfg.route == AE_ROUTE_MONITOR;
-    ae_rx_process(&s_engine, have_audio && monitor ? samples : NULL, samples, n);
+    ae_process(&s_engine, have_audio ? samples : NULL, samples, n);
 }
 
-/* The receive channel as configured at build time (menuconfig). These are
- * the power-up settings; the mock's own CAT controls change them from there
- * and can put them back. */
+/* The parrot records into PSRAM. Without it the parrot route is refused. */
+static bool parrot_buffer_start(void)
+{
+    uint32_t samples = (uint32_t)CONFIG_MOCK_PARROT_SECONDS * AE_PARROT_FS_HZ;
+    int16_t *store = heap_caps_malloc(samples * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!store) {
+        ESP_LOGW(TAG, "parrot: no PSRAM for a %d s buffer, the parrot route is not available",
+                 CONFIG_MOCK_PARROT_SECONDS);
+        return false;
+    }
+    ae_set_parrot_buffer(&s_engine, store, samples);
+    ESP_LOGI(TAG, "parrot: %d s buffer in PSRAM (%u KB)", CONFIG_MOCK_PARROT_SECONDS,
+             (unsigned)(samples * sizeof(int16_t) / 1024));
+    return true;
+}
+
+static const char *route_name(ae_route_t route)
+{
+    return route == AE_ROUTE_PARROT ? "parrot" : route == AE_ROUTE_RADIO ? "radio" : "monitor";
+}
+
+/* The engine as configured at build time (menuconfig). These are the
+ * power-up settings; the mock's own CAT controls change them from there and
+ * can put them back. */
 static void engine_start(void)
 {
     ae_config_t cfg;
     ae_init(&s_engine, esp_random());
+    bool have_parrot = parrot_buffer_start();
     ae_config_defaults(&cfg);
-#ifdef CONFIG_MOCK_ROUTE_RADIO
+#if defined(CONFIG_MOCK_ROUTE_PARROT)
+    cfg.route = have_parrot ? AE_ROUTE_PARROT : AE_ROUTE_RADIO;
+#elif defined(CONFIG_MOCK_ROUTE_RADIO)
     cfg.route = AE_ROUTE_RADIO;
-    cfg.turnaround_ms = CONFIG_MOCK_TURNAROUND_MS;
 #endif
+    (void)have_parrot;
+    cfg.turnaround_ms = CONFIG_MOCK_TURNAROUND_MS;
+    cfg.parrot_delay_ms = CONFIG_MOCK_PARROT_DELAY_MS;
+    cfg.parrot_period_ms = CONFIG_MOCK_PARROT_PERIOD_MS;
 #ifdef CONFIG_MOCK_NOISE_ON
     cfg.noise_on = true;
     cfg.snr_db = (float)CONFIG_MOCK_SNR_DB;
@@ -167,9 +194,12 @@ static void engine_start(void)
     ae_configure(&s_engine, &cfg);
     mock_ctl_init(&s_ctl, &s_engine, &cfg);
 
-    ESP_LOGI(TAG, "receive channel: %s route, %s, attenuation %d dB",
-             cfg.route == AE_ROUTE_RADIO ? "radio" : "monitor",
+    ESP_LOGI(TAG, "receive channel: %s route, %s, attenuation %d dB", route_name(cfg.route),
              cfg.noise_on ? "noise on" : "noise off", CONFIG_MOCK_ATTEN_DB);
+    if (cfg.route == AE_ROUTE_PARROT) {
+        ESP_LOGI(TAG, "  parrot replays %d ms after unkeying, period %d ms (0 = off)", CONFIG_MOCK_PARROT_DELAY_MS,
+                 CONFIG_MOCK_PARROT_PERIOD_MS);
+    }
     if (cfg.noise_on) {
         ESP_LOGI(TAG, "  SNR %d dB in %d Hz, noise floor %d dBFS", (int)cfg.snr_db, (int)cfg.ref_bw_hz,
                  (int)cfg.noise_floor_dbfs);

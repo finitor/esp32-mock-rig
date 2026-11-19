@@ -113,9 +113,11 @@ int main(int argc, char **argv)
     /* The mock's own controls, on an engine that never sees audio: settings
      * can be set and read back, and the status stays at "nothing measured". */
     static ae_t engine;
+    static int16_t parrot_store[30 * AE_PARROT_FS_HZ]; /* so the parrot route can be selected */
     static mock_ctl_t ctl;
     ae_config_t power_up;
     ae_init(&engine, 1u);
+    ae_set_parrot_buffer(&engine, parrot_store, sizeof parrot_store / sizeof parrot_store[0]);
     ae_config_defaults(&power_up);
     mock_ctl_init(&ctl, &engine, &power_up);
 

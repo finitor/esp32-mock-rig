@@ -11,11 +11,12 @@ Last updated: Nov 19, 2026.
 - The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected. The commands the Android FT8 apps FT8CN and FT8AF send an IC-705 were read from their source and all get correct replies on the host; neither app has been run.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
 - The receive channel of Milestone 2 (`audio_engine`) exists as portable C with host unit tests: a fixed noise floor with the signal held at a set SNR, attenuation, and receive mute while keyed plus a turnaround delay. It is wired into the firmware's audio path; the power-up settings are build-time and the default is still a plain loopback.
-- The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the channel settings at run time and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 248 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The parrot (step 10) exists in `audio_engine` as a third receive route, with host unit tests: it records each transmission at 12 kHz and replays it after unkeying, after a delay or aligned to a slot period, to the sample. The firmware gives it a buffer in PSRAM. Not run on a board.
+- The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings and the parrot's settings at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 251 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 is under way meanwhile: the channel (step 11) and the mock-only controls (step 12) are written; the parrot buffer and VOX remain.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 is under way meanwhile: the parrot (step 10), the channel (step 11) and the mock-only controls (step 12) are written; VOX and the LED states (step 13) remain.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -85,8 +86,8 @@ Firmware modules:
 - `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
 - `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
 - `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
-- `audio_engine`: what happens to receive audio, using `audio_dsp`: mute while keyed, turnaround delay, noise at a set SNR, attenuation. Routing between USB, the parrot buffer in PSRAM and the link will join it
-- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: channel settings and status now; parrot, link mode, PTT source and personality later
+- `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. The link will join as a further route
+- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings and status now; link mode, PTT source and personality later
 - `link`: one interface with loopback, ESP-NOW and UART backends; jitter buffer and drift correction
 - `ui`: RGB LED states; a Wi-Fi status page later if wanted
 
@@ -101,10 +102,10 @@ Repository layout:
 | `components/cat_civ/` | CI-V core |
 | `components/rig_ic705/` | IC-705 personality |
 | `components/audio_dsp/` | Audio DSP |
-| `components/audio_engine/` | Receive channel: mute and turnaround, SNR, attenuation |
+| `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
-| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring; `Kconfig.projbuild` holds the power-up channel settings |
+| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring; `Kconfig.projbuild` holds the power-up route, channel and parrot settings |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
 | `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine` and `test_ctl` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
@@ -239,7 +240,7 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | --- | --- | --- |
 | `00` | Identity, read only | Protocol version (`01`), then the personality's Hamlib model in 2 bytes (`30 85`) |
 | `01` | Put every setting back to its power-up value | None |
-| `10` | Receive route | `00` monitor, `01` radio |
+| `10` | Receive route | `00` monitor, `01` radio, `02` parrot (refused if the parrot has no buffer) |
 | `11` | Noise | `00` off, `01` on |
 | `12` | SNR | Tenths of a dB, 2 bytes plus sign: −60.0 to +80.0 |
 | `13` | Bandwidth the SNR is quoted in | Hz, 3 bytes: 100 to 24000 |
@@ -247,7 +248,11 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `15` | Attenuation | Tenths of a dB, 2 bytes: 0 to 120.0 |
 | `16` | Turnaround time | ms, 2 bytes: 0 to 5000 |
 | `20` | Status, read only | Flags (`01` receive muted, `02` gain limited); level of the receive source in tenths of a dB below full scale, 2 bytes (`99 99` if nothing has been measured); gain the channel applies, tenths of a dB, 2 bytes plus sign |
-| `30`, `31`, `40`, `50`, `60` | Reserved: parrot replay, play clip N, link mode, PTT source, personality | Refused until those parts exist |
+| `30` | Play the parrot's recording again, now | None. Refused unless the route is parrot, there is a recording and PTT is off |
+| `32` | Parrot delay, from unkeying to the replay | Tenths of a second, 2 bytes: 0 to 60.0 |
+| `33` | Parrot period: the replay starts a whole number of periods after key-on | Tenths of a second, 2 bytes: 0 (off) to 300.0 |
+| `34` | Parrot status, read only | State (`00` idle, `01` recording, `02` waiting, `03` playing); flags (`01` the buffer filled and the recording is cut short); length recorded and buffer capacity, each in tenths of a second, 2 bytes |
+| `31`, `40`, `50`, `60` | Reserved: play stored clip N, link mode, PTT source, personality | Refused until those parts exist |
 
 Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
 
@@ -257,6 +262,8 @@ Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered
 mockctl.py -p PORT                          show every setting and the status
 mockctl.py -p PORT noise=on snr=-12.5       change settings, then show them
 mockctl.py -p PORT reset                    back to the power-up settings
+mockctl.py -p PORT route=parrot period=15   parrot route, replay one FT8 slot later
+mockctl.py -p PORT replay                   play the parrot's recording again
 ```
 
 Limits, as built:
@@ -297,6 +304,16 @@ Audio stays digital end to end: USB audio in from the host is transmit, USB audi
 
 Use cases: FT8 self-decode (TX in one 15 s slot, replay aligned to the next slot boundary; WSJT-X should decode it with near-zero DT), checking TX drive and clipping, and confirming a modem detects its own frames. ARQ modems (VARA, Data2G connected mode) can't complete a session against a parrot; use the two-board link for that.
 
+As built in `audio_engine` (host-tested, not yet run on a board):
+
+- **A third route.** *Parrot* is the radio route with a receive source: receive is silent while keyed and for the turnaround time, and the replay is what the receiver then hears. Select it with the route control or at build time.
+- **Recording.** From key-on until 50 ms after unkeying, to catch audio still in the USB buffers when PTT drops. Audio is stored at 12 kHz in a PSRAM buffer allocated at start-up: 120 s by default (2.9 MB), 5 to 300 s in menuconfig. Silence is recorded as silence, so the recording is a timeline from key-on. Keying again replaces the recording, whether the last one was waiting, playing or finished.
+- **Not a ring.** When the buffer fills, recording stops and the start is kept; the parrot's status flags the recording as cut short. Keeping the start keeps the replay's timing, which counts from key-on.
+- **Replay.** Once, starting the set delay after unkeying (default 1 s, never less than the 50 ms tail). It passes through the channel like any receive source, so noise, SNR and attenuation apply; the level measurement starts afresh with each replay. The replay control plays the recording again at once.
+- **Slot alignment.** With a period set, the replay waits for a whole number of periods after key-on. Key-on is the one moment the board shares with the host's clock, so this puts the audio at the same place in a later slot without the board knowing the time: 15 s for FT8, 7.5 s for FT4. The resampler's delay (92 samples) is taken out by skipping the first 23 stored samples, and the host test confirms a sample comes back exactly one period after it went in. What remains is the loopback FIFO (about 20 ms) and the host's own audio latency.
+- **Capture must be running.** Recording and replay both run on the capture side, on the board's sample clock. The parrot records only while the host is also recording from the device; a host that stops capturing while it transmits would record nothing. See the open questions.
+- **PTT timing.** PTT is sampled once per audio block (10 ms at most), so key-on and unkeying are seen up to a block late. Alignment does not suffer: the recording and the replay count from the same block edge.
+
 **Resampling.** One 96-tap low-pass serves both directions: flat within 0.01 dB to 4 kHz, 3 dB down at 5 kHz, and at least 69 dB down from 6.5 kHz, so the 12 kHz path carries roughly 0–4.5 kHz. A 48 → 12 → 48 kHz round trip delays audio by 92 samples at 48 kHz, about 1.9 ms. Coefficients come from `host/tools/gen_resampler_fir.py`.
 
 **SNR convention.** Noise is white across the whole sampled band, and SNR is quoted in a reference bandwidth, as HF software does: 2500 Hz for WSJT-X, 3000 Hz for VARA and most channel simulators. The mock's SNR setting defaults to 2500 Hz, which is also what Data2G reports its SNR in (`SNR_REF_BW_HZ` in its source); the bandwidth is a setting.
@@ -313,8 +330,8 @@ As built in `audio_engine` (host-tested, not yet run on a board):
 - **Limits.** The signal is never raised above −12 dBFS RMS; an SNR too high for the floor (above about +38 dB with the default floor) lowers the floor instead. A quiet signal is amplified by at most 30 dB; beyond that the SNR comes out lower and the engine's status says so. Measured on the host, the SNR lands within 0.1 dB of the setting from −30 to +25 dB.
 - **Level measurement.** The signal level is the mean square of its loud parts, measured in 1 ms pieces (anything under −60 dBFS is ignored), as a plain average for the first second and a running average over about a second after that. 200 ms of silence ends a transmission and the next one is measured afresh. The gain therefore settles within the first few milliseconds of a transmission and moves little after.
 - **Attenuation** applies on top: with noise off it is a plain loss; with noise on it lowers the signal, and so the SNR, by that many dB.
-- **Routes.** *Monitor*: receive is always open and PTT is ignored; with noise off and no attenuation this is the Milestone 1 loopback, bit for bit. *Radio*: receive is silent while keyed and for the turnaround time after unkeying (default 30 ms), then carries the receive source through the channel. PTT is sampled once per audio block, so the turnaround can run up to 10 ms long. Until parrot mode or the link exists the radio route has no receive source, so the host hears the noise floor only.
-- **Settings:** route, noise on/off, SNR, reference bandwidth, noise floor, attenuation and turnaround time. Their power-up values are build-time (`idf.py menuconfig`, "Mock radio: receive channel at power-up"); the [mock-only controls](#mock-only-controls) change them at run time, and the engine takes a change at the next audio block.
+- **Routes.** *Monitor*: receive is always open and PTT is ignored; with noise off and no attenuation this is the Milestone 1 loopback, bit for bit. *Radio*: receive is silent while keyed and for the turnaround time after unkeying (default 30 ms), then carries the receive source through the channel. PTT is sampled once per audio block, so the turnaround can run up to 10 ms long. The radio route has no receive source, so the host hears the noise floor only. *Parrot* behaves like radio and adds the replay as its source.
+- **Settings:** route, noise on/off, SNR, reference bandwidth, noise floor, attenuation, turnaround time, and the parrot's delay and period. Their power-up values are build-time (`idf.py menuconfig`, "Mock radio: receive route and channel at power-up"); the [mock-only controls](#mock-only-controls) change them at run time, and the engine takes a change at the next audio block.
 - **Precision.** The channel's gain has 24 fractional bits and signal and noise are summed before rounding, so a signal of a few counts at −30 dB SNR keeps its level and is dithered by the noise.
 
 ## Two-board link
@@ -413,9 +430,9 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 
 **Milestone 2: parrot + channel simulation**
 
-10. PSRAM parrot buffer at 12 kHz: record on PTT on, replay on PTT off after a configurable delay.
+10. Written, not yet on hardware: PSRAM parrot buffer at 12 kHz in `audio_engine`, as a third route: record on PTT on, replay on PTT off after a configurable delay or aligned to a slot period, with host tests.
 11. Written, not yet on hardware: channel on the receive path in `audio_engine`: noise at SNR, attenuation, receive mute while keyed and TX→RX turnaround delay, with host tests. Power-up settings are build-time; step 12 changes them at run time.
-12. Written, not yet on hardware: mock-only controls in `mock_ctl` on CI-V address `F0`, which no radio in Hamlib 4.7.1 uses; a separate address keeps them clear of every radio's command set. Channel settings and status so far, with host tests and `host/tools/mockctl.py`. Parrot, link, PTT-source and personality commands have numbers reserved and join with those parts.
+12. Written, not yet on hardware: mock-only controls in `mock_ctl` on CI-V address `F0`, which no radio in Hamlib 4.7.1 uses; a separate address keeps them clear of every radio's command set. Route, channel settings, parrot settings, replay and status so far, with host tests and `host/tools/mockctl.py`. Stored-clip, link, PTT-source and personality commands have numbers reserved and join with those parts.
 13. VOX PTT and LED states (red recording, green playing).
 14. Optional flash persistence for the last transmission and canned clips.
 15. Acceptance: WSJT-X FT8 self-decode with replay aligned to the 15 s slot.
@@ -461,6 +478,11 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | Mock-only controls are CI-V frames to a private address, `F0`, handled by a separate module (`mock_ctl`) through a one-address hook in the core. | No extra USB endpoint is needed; an address of its own means no command number can collide with a radio's, for any personality; `F0` is used by no radio or controller in Hamlib 4.7.1. The core stays radio-neutral and does not know what the controls are. |
 | Nov 19, 2026 | Control values are BCD in tenths of a dB (Hz and ms as whole numbers), most significant byte first, with a sign byte where needed; out-of-range values are refused with `FA`. | Reads like the radio's own frames in a log; a refusal tells the sender its value did not take, where clamping would hide it. |
 | Nov 19, 2026 | Run-time settings are not stored; the build-time values are the power-up values and control `01` restores them. | Persistence is step 14; a bench device should start in a known state. |
+| Nov 19, 2026 | The parrot is a third receive route in `audio_engine`, behind one entry point that takes transmit audio and returns receive audio. | One selector says what the receiver hears, so there is no "parrot on in the monitor route" to define, and the firmware glue no longer picks the source. The link can join as a fourth route. |
+| Nov 19, 2026 | The parrot records on the capture side, in the same task that replays, not in the USB playback callback. | One task and one sample clock: no locking, replay timing counted in samples, and host tests that are exact. The cost is that the host must be capturing while it transmits. |
+| Nov 19, 2026 | The parrot's buffer keeps the start of a transmission when it fills (not a ring), at 12 kHz, 120 s by default. | The replay's timing counts from key-on, which a ring would lose. 120 s holds a WSPR transmission; 12 kHz quarters the memory and keeps 0–4.5 kHz. |
+| Nov 19, 2026 | Replay timing is a delay after unkeying plus an optional period counted from key-on, with the resampler's delay taken out. | FT8 self-decode needs the audio back at the same place in a later slot. The board has no clock to know slot boundaries, but key-on comes from the host's clock. |
+| Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
 
@@ -471,6 +493,8 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [x] Should the IC-705 personality accept `1A 05 01 19` (data modulation input) and answer `FB`? Yes, added Nov 19, 2026. Its power-up value is USB because that is the mock's only input; the real radio's factory default was not checked.
 - [ ] Does FT8AF (or FT8CN) work end to end against the mock on a phone, and does it show a decode of its own replayed transmission in parrot mode? (after step 9 and step 10)
 - [x] Which CI-V address and command numbers to use for mock-only controls. Address `F0`; numbers in [Mock-only controls](#mock-only-controls). Decided Nov 19, 2026.
+- [ ] Do hosts keep capturing while they transmit (WSJT-X, fldigi, VARA, FT8CN and FT8AF, Data2G on Android)? The parrot records on the capture side and gets nothing from one that does not. If one is found, recording moves to the USB playback side. (after step 9)
+- [ ] FT8 self-decode with the parrot's period at 15 s: when does WSJT-X key relative to the slot start, and how far from zero is the DT it reports for its own replay? (step 15)
 - [ ] How to change the mock's settings while a modem application holds the CAT port (always the case on a phone, and with WSJT-X on a PC). A line console on the UART jack driving the same settings is the likely answer; it needs no USB endpoint. (before step 15)
 - [ ] Do the mock-only controls work on a board, and does a setting change mid-stream sound clean? Host-tested only. (after step 9)
 - [x] Default reference bandwidth for the SNR setting: 2500 Hz. Data2G reports its SNR in 2500 Hz (`SNR_REF_BW_HZ` in `native/core/generated/config.hpp`), as does WSJT-X; 3000 Hz remains a setting for VARA.

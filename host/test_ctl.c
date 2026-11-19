@@ -165,7 +165,9 @@ static void test_switches(void)
     EXPECT("fe fe f0 e0 11 fd", "fe fe e0 f0 11 01 fd");
     CHECK(config().route == AE_ROUTE_MONITOR); /* one setting does not disturb another */
 
-    EXPECT("fe fe f0 e0 10 02 fd", NG);
+    EXPECT("fe fe f0 e0 10 02 fd", NG); /* parrot, but there is no buffer */
+    EXPECT("fe fe f0 e0 10 03 fd", NG);
+    EXPECT("fe fe f0 e0 11 02 fd", NG);
     EXPECT("fe fe f0 e0 11 00 00 fd", NG);
     CHECK(config().noise_on && config().route == AE_ROUTE_MONITOR);
 }
@@ -331,11 +333,92 @@ static void test_status(void)
     ae_set_ptt(&g_engine, false);
 }
 
+static int16_t g_store[4 * AE_PARROT_FS_HZ]; /* 4 s */
+
+/* n samples of a tone through the whole radio, 10 ms at a time. */
+static void radio(size_t n)
+{
+    static int16_t buf[480];
+    for (size_t done = 0; done < n; done += 480) {
+        tone(buf, 480, 8000.0f);
+        ae_process(&g_engine, buf, buf, 480);
+    }
+}
+
+static void test_parrot(void)
+{
+    fresh();
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 00 00 00 00 00 00 fd"); /* idle, nothing, no room */
+    ae_set_parrot_buffer(&g_engine, g_store, sizeof g_store / sizeof g_store[0]);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 00 00 00 00 00 40 fd"); /* room for 4.0 s */
+    EXPECT("fe fe f0 e0 34 00 fd", NG);                                 /* read only */
+
+    /* The route has a third value once there is a buffer. */
+    EXPECT("fe fe f0 e0 10 02 fd", OK);
+    CHECK(config().route == AE_ROUTE_PARROT);
+    EXPECT("fe fe f0 e0 10 fd", "fe fe e0 f0 10 02 fd");
+    EXPECT("fe fe f0 e0 10 03 fd", NG);
+
+    /* Delay and period, in tenths of a second. */
+    EXPECT("fe fe f0 e0 32 fd", "fe fe e0 f0 32 00 10 fd"); /* 1.0 s */
+    EXPECT("fe fe f0 e0 33 fd", "fe fe e0 f0 33 00 00 fd"); /* off */
+    EXPECT("fe fe f0 e0 32 00 25 fd", OK);
+    CHECK(config().parrot_delay_ms == 2500);
+    EXPECT("fe fe f0 e0 32 fd", "fe fe e0 f0 32 00 25 fd");
+    EXPECT("fe fe f0 e0 32 06 00 fd", OK); /* 60.0 s, the most */
+    EXPECT("fe fe f0 e0 32 06 01 fd", NG);
+    EXPECT("fe fe f0 e0 32 00 fd", NG);
+    CHECK(config().parrot_delay_ms == 60000);
+    EXPECT("fe fe f0 e0 33 01 50 fd", OK); /* 15.0 s: FT8 */
+    CHECK(config().parrot_period_ms == 15000);
+    EXPECT("fe fe f0 e0 33 00 75 fd", OK); /* 7.5 s: FT4 */
+    CHECK(config().parrot_period_ms == 7500);
+    EXPECT("fe fe f0 e0 33 30 00 fd", OK); /* 300.0 s, the most */
+    EXPECT("fe fe f0 e0 33 30 01 fd", NG);
+    EXPECT("fe fe f0 e0 33 0a 00 fd", NG); /* not BCD */
+    EXPECT("fe fe f0 e0 33 00 00 00 fd", NG);
+    CHECK(config().parrot_period_ms == 300000);
+    EXPECT("fe fe f0 e0 33 00 00 fd", OK);
+    EXPECT("fe fe f0 e0 32 00 25 fd", OK);
+
+    /* Replay needs a recording and a radio that is not transmitting. */
+    EXPECT("fe fe f0 e0 30 fd", NG);
+    ae_set_ptt(&g_engine, true);
+    radio(48000);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 01 00 00 10 00 40 fd"); /* recording, 1.0 s so far */
+    EXPECT("fe fe f0 e0 30 fd", NG);
+    ae_set_ptt(&g_engine, false);
+    radio(24000);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 02 00 00 11 00 40 fd"); /* waiting: 1.05 s with the tail */
+    EXPECT("fe fe f0 e0 30 01 fd", NG);
+    EXPECT("fe fe f0 e0 30 fd", OK); /* now, not after the 2.5 s */
+    radio(480);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 03 00 00 11 00 40 fd"); /* playing */
+    radio(96000);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 00 00 00 11 00 40 fd"); /* idle, recording kept */
+
+    /* A transmission longer than the buffer is flagged. */
+    ae_set_ptt(&g_engine, true);
+    radio(5 * 48000);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 01 01 00 40 00 40 fd");
+    ae_set_ptt(&g_engine, false);
+    radio(480);
+
+    /* Reset puts the parrot's settings back with the rest; in the monitor
+     * route there is nothing to replay. */
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(config().route == AE_ROUTE_MONITOR);
+    CHECK(config().parrot_delay_ms == 1000);
+    radio(480);
+    EXPECT("fe fe f0 e0 30 fd", NG);
+    EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 00 01 00 40 00 40 fd");
+}
+
 static void test_not_the_radio(void)
 {
     fresh();
     /* Reserved for parts that do not exist yet, and numbers never assigned. */
-    EXPECT("fe fe f0 e0 30 fd", NG);
+    EXPECT("fe fe f0 e0 31 fd", NG);
     EXPECT("fe fe f0 e0 31 01 fd", NG);
     EXPECT("fe fe f0 e0 40 fd", NG);
     EXPECT("fe fe f0 e0 50 fd", NG);
@@ -368,6 +451,7 @@ int main(void)
     test_other_numbers();
     test_reset();
     test_status();
+    test_parrot();
     test_not_the_radio();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

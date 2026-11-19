@@ -8,13 +8,13 @@ Keep it current as part of the work: update the section a fact belongs to, add a
 
 ## Status
 
-The CI-V core, the IC-705 personality, the audio DSP and the receive channel (`audio_engine`: noise at a set SNR, attenuation, mute while keyed and turnaround) and the mock's own controls (`mock_ctl`: CI-V frames to address `F0` that change the channel settings at run time) exist as portable C with host tests; the CAT side passes real Hamlib on the host. The firmware builds for the ESP32-S3 with the USB composite device, CAT over serial and audio loopback written, and its descriptors pass a structural check. Nothing has been flashed, so no USB behaviour is verified. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
+The CI-V core, the IC-705 personality, the audio DSP, the receive routes and channel (`audio_engine`: monitor, radio and parrot routes; the parrot's recording and replay; noise at a set SNR, attenuation, mute while keyed and turnaround) and the mock's own controls (`mock_ctl`: CI-V frames to address `F0` that change the route, channel and parrot settings at run time) exist as portable C with host tests; the CAT side passes real Hamlib on the host. The firmware builds for the ESP32-S3 with the USB composite device, CAT over serial and audio loopback written, and its descriptors pass a structural check. Nothing has been flashed, so no USB behaviour is verified. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
 
 ## Stack
 
 - ESP-IDF (Arduino only as a fallback if descriptor work is easier there).
 - Target: ESP32-S3-DevKitC-1 clone, ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB octal PSRAM).
-- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp`, `audio_engine` (receive channel so far; parrot and routing to come), `mock_ctl` (mock-only controls) and `usb_composite` exist. Planned: `link`, `ui`.
+- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp`, `audio_engine` (routes, parrot and receive channel; the link route to come), `mock_ctl` (mock-only controls) and `usb_composite` exist. Planned: `link`, `ui`.
 - USB stack: Espressif's `usb_device_uac` component in composite mode for audio, TinyUSB's CDC class directly for serial. Do not add `esp_tinyusb`; it brings its own `tusb_config.h` and has no audio class.
 
 ## Hard constraints

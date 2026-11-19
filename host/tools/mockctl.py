@@ -7,15 +7,23 @@ itself (see components/mock_ctl/include/mock_ctl.h). No radio is involved.
     mockctl.py -p PORT                        show every setting and the status
     mockctl.py -p PORT noise=on snr=-12.5     change settings, then show them
     mockctl.py -p PORT reset                  back to the power-up settings
+    mockctl.py -p PORT replay                 play the parrot's recording again
 
 Settings:
-    route=monitor|radio   monitor: loopback, PTT ignored; radio: mute while keyed
+    route=monitor|radio|parrot
+                          monitor: loopback, PTT ignored
+                          radio: mute while keyed, nothing to hear but noise
+                          parrot: like radio, and each transmission is
+                          recorded and played back after it
     noise=on|off          add noise and hold the signal at the SNR
     snr=DB                -60 to 80, in steps of 0.1
     bw=HZ                 bandwidth the SNR is quoted in, 100 to 24000
     floor=DBFS            noise floor, -90 to -12
     atten=DB              extra attenuation, 0 to 120
-    turnaround=MS         receive mute after unkeying, 0 to 5000 (radio route)
+    turnaround=MS         receive mute after unkeying, 0 to 5000 (not in monitor)
+    delay=S               parrot: seconds from unkeying to the replay, 0 to 60
+    period=S              parrot: start the replay a whole number of these
+                          after key-on (15 for FT8, 7.5 for FT4); 0 = off
 
 PORT can also come from the MOCK_PORT environment variable. Only one program
 should use the port at a time: a reply read by another program is lost here
@@ -33,7 +41,10 @@ CONTROLLER = 0xE0
 OK, NG = 0xFB, 0xFA
 
 CMD_ID, CMD_RESET, CMD_STATUS = 0x00, 0x01, 0x20
+CMD_REPLAY, CMD_PARROT_STATUS = 0x30, 0x34
 FLAG_RX_MUTED, FLAG_GAIN_LIMITED = 0x01, 0x02
+PARROT_STATES = ("idle", "recording", "waiting to replay", "playing")
+PARROT_FLAG_TRUNCATED = 0x01
 
 # name: (command, BCD bytes, signed, wire units per unit)
 NUMBERS = {
@@ -42,10 +53,18 @@ NUMBERS = {
     "floor": (0x14, 2, False, -10),   # sent as dB below full scale
     "atten": (0x15, 2, False, 10),
     "turnaround": (0x16, 2, False, 1),
+    "delay": (0x32, 2, False, 10),    # tenths of a second
+    "period": (0x33, 2, False, 10),
 }
-SWITCHES = {
-    "route": (0x10, ("monitor", "radio")),
+# name: (command, the words for 00, 01, ...)
+CHOICES = {
+    "route": (0x10, ("monitor", "radio", "parrot")),
     "noise": (0x11, ("off", "on")),
+}
+# What a refusal most likely means, where "out of range" is not it.
+REFUSALS = {
+    "replay": "needs route=parrot, a recording and PTT off",
+    "route=parrot": "this mock has no parrot buffer",
 }
 
 
@@ -182,8 +201,11 @@ def show(port):
     print("mock radio, control protocol %d, personality: Hamlib model %d" % (ident[0], from_bcd(ident[1:])))
 
     values = {}
-    for name, (cmd, words) in SWITCHES.items():
-        values[name] = words[ask(port, cmd)[0] & 1]
+    for name, (cmd, words) in CHOICES.items():
+        reply = ask(port, cmd)
+        if len(reply) != 1 or reply[0] >= len(words):
+            raise ValueError("unexpected reply for %s" % name)
+        values[name] = words[reply[0]]
     for name, (cmd, _, _, _) in NUMBERS.items():
         values[name] = decode_number(name, ask(port, cmd))
     print("  route       %s" % values["route"])
@@ -206,18 +228,34 @@ def show(port):
     source = "nothing measured yet" if level == 9999 else "%.1f dBFS" % (-level / 10)
     print("  status      source %s, gain %+.1f dB%s" % (source, gain, "".join("; " + n for n in notes)))
 
+    par = ask(port, CMD_PARROT_STATUS)
+    if len(par) != 6 or par[0] >= len(PARROT_STATES):
+        raise ValueError("unexpected parrot status reply")
+    period = "%.1f s" % values["period"] if values["period"] else "off"
+    capacity = from_bcd(par[4:6]) / 10
+    if capacity:
+        state = "%s, %.1f s recorded of %.1f s" % (PARROT_STATES[par[0]], from_bcd(par[2:4]) / 10, capacity)
+        if par[1] & PARROT_FLAG_TRUNCATED:
+            state += "; cut short: the buffer filled"
+    else:
+        state = "no buffer"
+    print("  parrot      delay %.1f s, period %s; %s" % (values["delay"], period, state))
+
 
 def apply(port, word):
     if word == "reset":
         ask(port, CMD_RESET)
         return
+    if word == "replay":
+        ask(port, CMD_REPLAY)
+        return
     name, sep, value = word.partition("=")
     if not sep:
-        raise ValueError("%r is not name=value, 'show' or 'reset'" % word)
-    if name in SWITCHES:
-        cmd, words = SWITCHES[name]
+        raise ValueError("%r is not name=value, 'show', 'reset' or 'replay'" % word)
+    if name in CHOICES:
+        cmd, words = CHOICES[name]
         if value not in words:
-            raise ValueError("%s is %s" % (name, " or ".join(words)))
+            raise ValueError("%s is %s or %s" % (name, ", ".join(words[:-1]), words[-1]))
         ask(port, cmd, bytes([words.index(value)]))
     elif name in NUMBERS:
         cmd, data = encode_number(name, value)
@@ -229,7 +267,7 @@ def apply(port, word):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-p", "--port", default=os.environ.get("MOCK_PORT"), help="the mock radio's CAT serial port")
-    parser.add_argument("words", nargs="*", metavar="name=value | show | reset")
+    parser.add_argument("words", nargs="*", metavar="name=value | show | reset | replay")
     args = parser.parse_args()
     if not args.port:
         parser.error("no port: give -p PORT or set MOCK_PORT")
@@ -245,7 +283,7 @@ def main():
             try:
                 apply(port, word)
             except Refused:
-                sys.exit("%s: refused by the mock (out of range?)" % word)
+                sys.exit("%s: refused by the mock (%s)" % (word, REFUSALS.get(word, "out of range?")))
             except ValueError as e:
                 sys.exit(str(e))
         show(port)

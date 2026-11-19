@@ -1,4 +1,4 @@
-menu "Mock radio: receive channel at power-up"
+menu "Mock radio: receive route and channel at power-up"
 
     comment "Power-up values. Change them at run time with host/tools/mockctl.py."
 
@@ -8,13 +8,16 @@ menu "Mock radio: receive channel at power-up"
         help
             Monitor: audio the host plays comes straight back, whatever PTT
             does. Radio: receive is muted while keyed and for the turnaround
-            time after; until parrot mode or the board link exists there is
-            no receive source, so the host hears the noise floor only.
+            time after, and there is nothing to hear but the noise floor.
+            Parrot: like radio, and each transmission is recorded and played
+            back after it.
 
         config MOCK_ROUTE_MONITOR
             bool "Monitor (loopback, PTT ignored)"
         config MOCK_ROUTE_RADIO
-            bool "Radio (mute while keyed)"
+            bool "Radio (mute while keyed, no signal)"
+        config MOCK_ROUTE_PARROT
+            bool "Parrot (record while keyed, replay after)"
     endchoice
 
     config MOCK_NOISE_ON
@@ -50,6 +53,33 @@ menu "Mock radio: receive channel at power-up"
         int "Receive mute after unkeying, ms"
         range 0 5000
         default 30
-        depends on MOCK_ROUTE_RADIO
+        help
+            Applies in the radio and parrot routes.
+
+    config MOCK_PARROT_SECONDS
+        int "Parrot buffer, seconds"
+        range 5 300
+        default 120
+        help
+            The longest transmission the parrot can hold, allocated in PSRAM
+            at start-up whatever the route: 24 KB per second (12 kHz, 16-bit
+            mono). 120 s covers every WSJT-X mode up to WSPR. Build-time only.
+
+    config MOCK_PARROT_DELAY_MS
+        int "Parrot: delay from unkeying to the replay, ms"
+        range 0 60000
+        default 1000
+        help
+            The replay never starts sooner than 50 ms after unkeying.
+
+    config MOCK_PARROT_PERIOD_MS
+        int "Parrot: slot period, ms (0 = off)"
+        range 0 300000
+        default 0
+        help
+            If set, the replay waits for a whole number of periods after
+            key-on, so it lands at the same place in a later time slot: 15000
+            for FT8, 7500 for FT4. A program that transmits in every other
+            slot then hears itself in the slot between.
 
 endmenu

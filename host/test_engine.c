@@ -409,6 +409,341 @@ static void test_radio_route(void)
     CHECK(memcmp(g_out, g_in, ODD * sizeof(int16_t)) == 0);
 }
 
+/* ---- the whole radio: ae_process() and the parrot --------------------------- */
+
+enum { PN = 10 * FS };
+static int16_t p_tx[PN], p_out[PN];
+static int16_t p_store[12 * AE_PARROT_FS_HZ]; /* 12 s */
+
+static uint32_t g_delay, g_period;
+static void edit_parrot(ae_config_t *c)
+{
+    c->route = AE_ROUTE_PARROT;
+    c->noise_on = false;
+    c->atten_db = 0;
+    c->turnaround_ms = 30;
+    c->parrot_delay_ms = g_delay;
+    c->parrot_period_ms = g_period;
+}
+
+static void edit_parrot_noise(ae_config_t *c)
+{
+    edit_parrot(c);
+    c->noise_on = true;
+    c->snr_db = 10;
+    c->ref_bw_hz = 2500;
+    c->noise_floor_dbfs = -40;
+}
+
+static void edit_radio(ae_config_t *c)
+{
+    c->route = AE_ROUTE_RADIO;
+}
+
+/* Samples from..to of p_tx through the radio into p_out, keyed from key_on
+ * until key_off. PTT is set before each block, as a CAT command would. */
+static void radio(ae_t *e, size_t from, size_t to, size_t block, size_t key_on, size_t key_off)
+{
+    for (size_t i = from; i < to; i += block) {
+        size_t m = to - i < block ? to - i : block;
+        ae_set_ptt(e, i >= key_on && i < key_off);
+        ae_process(e, p_tx + i, p_out + i, m);
+    }
+}
+
+/* A tone in p_tx from..to, silence everywhere else. */
+static void tx_tone(size_t from, size_t to, double freq, double amp)
+{
+    memset(p_tx, 0, sizeof p_tx);
+    sine(p_tx + from, to - from, freq, amp);
+}
+
+static int max_diff(const int16_t *a, const int16_t *b, size_t n)
+{
+    int worst = 0;
+    for (size_t i = 0; i < n; i++) {
+        int d = abs(a[i] - b[i]);
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+static ae_parrot_status_t parrot_status(ae_t *e)
+{
+    ae_parrot_status_t st;
+    ae_get_parrot_status(e, &st);
+    return st;
+}
+
+static void parrot_engine(ae_t *e, uint32_t delay_ms, uint32_t period_ms)
+{
+    ae_init(e, 21);
+    ae_set_parrot_buffer(e, p_store, sizeof p_store / sizeof p_store[0]);
+    g_delay = delay_ms;
+    g_period = period_ms;
+    configure(e, edit_parrot);
+}
+
+/* How far a replay may differ from what was sent: the resampler's ripple
+ * (0.01 dB) and rounding, a few counts on a tone of 8000. */
+#define REPLAY_TOL 24
+
+static void test_process_routes(void)
+{
+    ae_t e;
+    ae_init(&e, 20);
+    tx_tone(0, PN, 1500, 8000);
+
+    /* Monitor: transmit audio comes straight back, keyed or not, in place too. */
+    radio(&e, 0, FS, BLOCK, FS / 2, FS);
+    CHECK(memcmp(p_out, p_tx, FS * sizeof(int16_t)) == 0);
+    memcpy(p_out, p_tx, FS * sizeof(int16_t));
+    for (size_t i = 0; i < FS; i += BLOCK) ae_process(&e, p_out + i, p_out + i, BLOCK);
+    CHECK(memcmp(p_out, p_tx, FS * sizeof(int16_t)) == 0);
+
+    /* Radio: the receiver hears nothing of the transmit audio. */
+    configure(&e, edit_radio);
+    radio(&e, 0, 2 * FS, BLOCK, FS / 2, FS);
+    CHECK(all_zero(p_out, 2 * FS));
+
+    /* Parrot without a buffer: the same, and it says it has no room. */
+    g_delay = 100;
+    g_period = 0;
+    configure(&e, edit_parrot);
+    radio(&e, 0, 2 * FS, BLOCK, FS / 2, FS);
+    CHECK(all_zero(p_out, 2 * FS));
+    CHECK(parrot_status(&e).capacity_ms == 0);
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+    CHECK(!ae_parrot_replay(&e));
+}
+
+static void test_parrot_replay(void)
+{
+    enum { ON = FS / 2, OFF = ON + 2 * FS, PLAY = OFF + FS / 2 }; /* keyed 2 s, replay 500 ms after */
+    ae_t e;
+    parrot_engine(&e, 500, 0);
+    CHECK(parrot_status(&e).capacity_ms == 12000);
+    CHECK(parrot_status(&e).recorded_ms == 0);
+
+    tx_tone(ON, OFF, 1500, 8000);
+    radio(&e, 0, ON, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+    radio(&e, ON, ON + FS, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_RECORDING);
+    CHECK(parrot_status(&e).recorded_ms == 1000);
+    radio(&e, ON + FS, OFF + BLOCK, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_RECORDING); /* the tail after unkeying */
+    radio(&e, OFF + BLOCK, OFF + FS / 4, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_WAITING);
+    CHECK(parrot_status(&e).recorded_ms == 2000 + AE_PARROT_TAIL_MS);
+    CHECK(!parrot_status(&e).truncated);
+    radio(&e, OFF + FS / 4, PLAY + FS, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_PLAYING);
+    radio(&e, PLAY + FS, PN, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+    CHECK(parrot_status(&e).recorded_ms == 2000 + AE_PARROT_TAIL_MS); /* still there */
+
+    /* Nothing is heard until the replay, which is the transmission again,
+     * sample for sample, and then nothing. */
+    CHECK(all_zero(p_out, PLAY));
+    CHECK_RANGE(max_diff(p_out + PLAY + 240, p_tx + ON + 240, 2 * FS - 480), 0, REPLAY_TOL);
+    CHECK_RANGE(tone_amp(p_out + PLAY + FS / 2, FS, 1500), 7990, 8010);
+    CHECK(all_zero(p_out + PLAY + 2 * FS + 240, PN - (PLAY + 2 * FS + 240)));
+
+    /* One sample out of step would show plainly. */
+    CHECK(max_diff(p_out + PLAY + 241, p_tx + ON + 240, 2 * FS - 480) > 1000);
+}
+
+/* Block sizes that divide nothing, in place, and no audio at all (NULL)
+ * outside the transmission. */
+static void test_parrot_odd_blocks(void)
+{
+    enum { ODD = 441, ON = 100 * ODD, OFF = 300 * ODD, PLAY = OFF + FS / 5 };
+    ae_t e;
+    parrot_engine(&e, 200, 0);
+    tx_tone(ON + 1000, OFF - 1000, 1000, 8000);
+
+    static int16_t ref[PN];
+    memcpy(ref, p_tx, sizeof ref);
+    memcpy(p_out, p_tx, sizeof p_out);
+    for (size_t i = 0; i + ODD <= PN; i += ODD) {
+        bool keyed = i >= ON && i < OFF;
+        ae_set_ptt(&e, keyed);
+        if (i >= ON && i < OFF + 10 * ODD) ae_process(&e, p_out + i, p_out + i, ODD);
+        else ae_process(&e, NULL, p_out + i, ODD);
+    }
+    size_t end = PN - PN % ODD;
+    CHECK(all_zero(p_out, PLAY));
+    CHECK_RANGE(max_diff(p_out + PLAY + 1240, ref + ON + 1240, (OFF - ON) - 2480), 0, REPLAY_TOL);
+    CHECK(all_zero(p_out + PLAY + (OFF - ON), end - (PLAY + (OFF - ON))));
+}
+
+/* With a period, the replay starts a whole number of periods after key-on,
+ * wherever the unkeying fell. */
+static void test_parrot_period(void)
+{
+    enum { ON = FS, OFF = ON + 77 * BLOCK, PERIOD = 3 * FS }; /* keyed 770 ms */
+    enum { TONE = ON + FS / 5, TONE_LEN = (OFF - FS / 10) - TONE }; /* the tone starts and ends inside it */
+    ae_t e;
+
+    parrot_engine(&e, 500, 3000);
+    tx_tone(TONE, TONE + TONE_LEN, 1500, 8000);
+    radio(&e, 0, PN, BLOCK, ON, OFF);
+    CHECK(all_zero(p_out, PERIOD + TONE - 240));
+    CHECK_RANGE(max_diff(p_out + PERIOD + TONE + 240, p_tx + TONE + 240, TONE_LEN - 480), 0, REPLAY_TOL);
+
+    /* A delay that runs past the first period puts it in the second. */
+    parrot_engine(&e, 2500, 3000);
+    radio(&e, 0, PN, BLOCK, ON, OFF);
+    CHECK(all_zero(p_out, 2 * PERIOD + TONE - 240));
+    CHECK_RANGE(max_diff(p_out + 2 * PERIOD + TONE + 240, p_tx + TONE + 240, TONE_LEN - 480), 0, REPLAY_TOL);
+
+    /* So does a transmission longer than the period. */
+    enum { LONG_OFF = ON + 4 * FS };
+    parrot_engine(&e, 100, 3000);
+    tx_tone(ON, LONG_OFF, 1500, 8000);
+    radio(&e, 0, PN, BLOCK, ON, LONG_OFF);
+    CHECK(all_zero(p_out, ON + 2 * PERIOD));
+    CHECK_RANGE(max_diff(p_out + ON + 2 * PERIOD + 240, p_tx + ON + 240, PN - (ON + 2 * PERIOD) - 480), 0,
+                REPLAY_TOL);
+}
+
+/* Keying again replaces the recording, whether the old one was waiting or playing. */
+static void test_parrot_rekey(void)
+{
+    enum { ON1 = FS / 2, OFF1 = ON1 + FS, ON2 = OFF1 + FS, OFF2 = ON2 + FS, PLAY2 = OFF2 + FS / 2 };
+    ae_t e;
+
+    /* During the replay of the first (it starts 500 ms after OFF1). */
+    parrot_engine(&e, 500, 0);
+    tx_tone(ON1, OFF1, 1000, 8000);
+    sine(p_tx + ON2, OFF2 - ON2, 2000, 4000);
+    radio(&e, 0, ON2, BLOCK, ON1, OFF1);
+    CHECK(parrot_status(&e).state == AE_PARROT_PLAYING);
+    CHECK_RANGE(tone_amp(p_out + OFF1 + FS / 2 + 4800, FS / 4, 1000), 7900, 8100);
+    radio(&e, ON2, PN, BLOCK, ON2, OFF2);
+    CHECK(all_zero(p_out + ON2, PLAY2 - ON2));
+    CHECK_RANGE(max_diff(p_out + PLAY2 + 240, p_tx + ON2 + 240, FS - 480), 0, REPLAY_TOL);
+    CHECK_RANGE(tone_amp(p_out + PLAY2, FS, 1000), 0, 5); /* nothing of the first */
+    CHECK(parrot_status(&e).recorded_ms == 1000 + AE_PARROT_TAIL_MS);
+
+    /* While the first is still waiting (delay 3 s). */
+    parrot_engine(&e, 3000, 0);
+    radio(&e, 0, ON2, BLOCK, ON1, OFF1);
+    CHECK(parrot_status(&e).state == AE_PARROT_WAITING);
+    radio(&e, ON2, PN, BLOCK, ON2, OFF2);
+    CHECK(all_zero(p_out, OFF2 + 3 * FS));
+    CHECK_RANGE(max_diff(p_out + OFF2 + 3 * FS + 240, p_tx + ON2 + 240, FS - 480), 0, REPLAY_TOL);
+
+    /* Keying again inside the tail starts over too. */
+    enum { ON3 = OFF1 + BLOCK, OFF3 = ON3 + FS };
+    parrot_engine(&e, 500, 0);
+    tx_tone(ON1, OFF1, 1000, 8000);
+    sine(p_tx + ON3, OFF3 - ON3, 2000, 4000);
+    radio(&e, 0, ON3, BLOCK, ON1, OFF1);
+    radio(&e, ON3, PN, BLOCK, ON3, OFF3);
+    CHECK(all_zero(p_out, OFF3 + FS / 2));
+    CHECK_RANGE(max_diff(p_out + OFF3 + FS / 2 + 240, p_tx + ON3 + 240, FS - 480), 0, REPLAY_TOL);
+}
+
+static void test_parrot_full_buffer(void)
+{
+    enum { ON = FS / 2, OFF = ON + 3 * FS, PLAY = OFF + FS / 2 };
+    ae_t e;
+    parrot_engine(&e, 500, 0);
+    ae_set_parrot_buffer(&e, p_store, 2 * AE_PARROT_FS_HZ); /* room for 2 s */
+    tx_tone(ON, OFF, 1500, 8000);
+    radio(&e, 0, PN, BLOCK, ON, OFF);
+
+    CHECK(parrot_status(&e).truncated);
+    CHECK(parrot_status(&e).recorded_ms == 2000);
+    CHECK(parrot_status(&e).capacity_ms == 2000);
+    /* The first 2 s come back; the rest was never stored. */
+    CHECK_RANGE(max_diff(p_out + PLAY + 240, p_tx + ON + 240, 2 * FS - 480), 0, REPLAY_TOL);
+    CHECK(all_zero(p_out + PLAY + 2 * FS + 240, PN - (PLAY + 2 * FS + 240)));
+
+    /* The next transmission fits and clears the flag. */
+    tx_tone(ON, ON + FS, 1500, 8000);
+    radio(&e, 0, PN, BLOCK, ON, ON + FS);
+    CHECK(!parrot_status(&e).truncated);
+    CHECK(parrot_status(&e).recorded_ms == 1000 + AE_PARROT_TAIL_MS);
+}
+
+static void test_parrot_replay_again(void)
+{
+    enum { ON = FS / 2, OFF = ON + FS, AGAIN = 5 * FS };
+    ae_t e;
+    parrot_engine(&e, 500, 0);
+    CHECK(!ae_parrot_replay(&e)); /* nothing recorded */
+
+    tx_tone(ON, OFF, 1500, 8000);
+    radio(&e, 0, ON + FS / 2, BLOCK, ON, OFF);
+    CHECK(!ae_parrot_replay(&e)); /* transmitting */
+    radio(&e, ON + FS / 2, AGAIN, BLOCK, ON, OFF);
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+
+    /* On request it plays once more, from the next block. */
+    CHECK(ae_parrot_replay(&e));
+    radio(&e, AGAIN, AGAIN + 3 * FS, BLOCK, ON, OFF);
+    CHECK_RANGE(max_diff(p_out + AGAIN + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
+    CHECK(all_zero(p_out + AGAIN + FS + 240, 2 * FS - 240));
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+
+    /* Asked during a replay, it starts over. */
+    CHECK(ae_parrot_replay(&e));
+    radio(&e, 0, FS / 4, BLOCK, PN, PN);
+    CHECK(parrot_status(&e).state == AE_PARROT_PLAYING);
+    CHECK(ae_parrot_replay(&e));
+    radio(&e, FS / 4, 2 * FS, BLOCK, PN, PN);
+    CHECK_RANGE(max_diff(p_out + FS / 4 + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
+
+    /* Leaving the route stops a replay and keeps the recording. */
+    CHECK(ae_parrot_replay(&e));
+    radio(&e, 0, FS / 4, BLOCK, PN, PN);
+    configure(&e, edit_radio);
+    radio(&e, FS / 4, FS, BLOCK, PN, PN);
+    CHECK(all_zero(p_out + FS / 4, FS - FS / 4));
+    CHECK(parrot_status(&e).state == AE_PARROT_IDLE);
+    CHECK(!ae_parrot_replay(&e)); /* not the parrot route */
+    configure(&e, edit_parrot);
+    CHECK(ae_parrot_replay(&e));
+    radio(&e, FS, 3 * FS, BLOCK, PN, PN);
+    CHECK_RANGE(max_diff(p_out + FS + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
+}
+
+/* The replay is the receive source, so the channel applies to it: with
+ * noise on it sits at the configured SNR whatever level it was sent at. */
+static void test_parrot_through_channel(void)
+{
+    enum { ON = FS / 2, OFF = ON + 2 * FS, PLAY = OFF + FS / 2 };
+    static const double amps[] = {300, 8000, 30000};
+
+    for (size_t k = 0; k < sizeof amps / sizeof amps[0]; k++) {
+        ae_t e;
+        parrot_engine(&e, 500, 0);
+        configure(&e, edit_parrot_noise);
+        tx_tone(ON, OFF, 1500, amps[k]);
+        radio(&e, 0, PN, BLOCK, ON, OFF);
+
+        /* +10 dB in 2500 Hz over a -40 dBFS floor: the tone at -39.8 dBFS. */
+        CHECK(all_zero(p_out + ON, OFF - ON));
+        CHECK_RANGE(dbfs(tone_amp(p_out + PLAY + FS / 2, FS, 1500) / sqrt(2)), -40.3, -39.3);
+        CHECK_RANGE(dbfs(rms(p_out + PLAY + 3 * FS, FS)), -40.5, -39.5); /* the floor alone, after */
+    }
+}
+
+/* The delay is never shorter than the tail the recording needs. */
+static void test_parrot_no_delay(void)
+{
+    enum { ON = FS / 2, OFF = ON + FS, TAIL = AE_PARROT_TAIL_MS * (FS / 1000) };
+    ae_t e;
+    parrot_engine(&e, 0, 0);
+    tx_tone(ON, OFF, 1500, 8000);
+    radio(&e, 0, PN, 100, ON, OFF);
+    CHECK(all_zero(p_out, OFF + TAIL));
+    CHECK_RANGE(max_diff(p_out + OFF + TAIL + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
+}
+
 static void test_config_clamping(void)
 {
     ae_t e;
@@ -485,6 +820,15 @@ int main(void)
     test_gain_limit();
     test_level_tracking();
     test_radio_route();
+    test_process_routes();
+    test_parrot_replay();
+    test_parrot_odd_blocks();
+    test_parrot_period();
+    test_parrot_rekey();
+    test_parrot_full_buffer();
+    test_parrot_replay_again();
+    test_parrot_through_channel();
+    test_parrot_no_delay();
     test_config_clamping();
     test_reconfigure_mid_stream();
     test_determinism();

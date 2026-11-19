@@ -17,7 +17,8 @@
  *
  *   00            identity, read only: <protocol version> <Hamlib model, 2 bytes>
  *   01            put every setting back to its power-up value
- *   10 <00|01>    receive route: 00 monitor, 01 radio
+ *   10 <00..02>   receive route: 00 monitor, 01 radio, 02 parrot (refused
+ *                 if the parrot has no buffer)
  *   11 <00|01>    noise off / on
  *   12 <2> <sign> SNR, tenths of a dB, -60.0 .. +80.0
  *   13 <3>        bandwidth the SNR is quoted in, Hz, 100 .. 24000
@@ -29,9 +30,20 @@
  *                   level: the receive source, tenths of a dB below full
  *                          scale; 99 99 if nothing has been measured yet
  *                   gain:  what the channel applies to it, tenths of a dB
+ *   30            play the parrot's recording again now; refused unless the
+ *                 route is parrot, there is a recording and PTT is off
+ *   32 <2>        parrot delay from unkeying to the replay, tenths of a
+ *                 second, 0 .. 60.0
+ *   33 <2>        parrot period, tenths of a second, 0 .. 300.0: the replay
+ *                 starts a whole number of periods after key-on; 0 = off
+ *   34            parrot status, read only: <state> <flags> <recorded, 2>
+ *                 <capacity, 2>
+ *                   state: 00 idle, 01 recording, 02 waiting, 03 playing
+ *                   flags: 01 the buffer filled, the recording is cut short
+ *                   recorded, capacity: tenths of a second
  *
- * Reserved for parts that do not exist yet, answered FA: 30 and 31 (parrot:
- * replay, play clip), 40 (link mode), 50 (PTT source), 60 (personality).
+ * Reserved for parts that do not exist yet, answered FA: 31 (play a stored
+ * clip), 40 (link mode), 50 (PTT source), 60 (personality).
  */
 #ifndef MOCK_CTL_H
 #define MOCK_CTL_H
@@ -61,11 +73,19 @@ enum {
     MOCK_CTL_ATTEN = 0x15,
     MOCK_CTL_TURNAROUND = 0x16,
     MOCK_CTL_STATUS = 0x20,
+    MOCK_CTL_PARROT_REPLAY = 0x30,
+    MOCK_CTL_PARROT_DELAY = 0x32,
+    MOCK_CTL_PARROT_PERIOD = 0x33,
+    MOCK_CTL_PARROT_STATUS = 0x34,
 };
 
 enum {
     MOCK_CTL_FLAG_RX_MUTED = 0x01,
     MOCK_CTL_FLAG_GAIN_LIMITED = 0x02,
+};
+
+enum {
+    MOCK_CTL_PARROT_FLAG_TRUNCATED = 0x01,
 };
 
 typedef struct {
