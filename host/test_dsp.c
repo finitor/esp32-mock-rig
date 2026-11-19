@@ -221,7 +221,21 @@ static void test_channel(void)
     dsp_chan_process(&c, in, out, N);
     CHECK(rms(out, N) == 0);
     dsp_chan_set_gain_db(&c, +10.0f); /* never amplifies */
-    CHECK(c.gain_q15 == 32768);
+    CHECK(c.gain_q24 == 1 << 24);
+
+    /* The plain-factor setter does amplify, up to its limit, and saturates. */
+    dsp_chan_set_gain(&c, 0.5f);
+    CHECK(c.gain_q24 == 1 << 23);
+    dsp_chan_set_gain(&c, 4.0f);
+    dsp_chan_process(&c, in, out, N);
+    int railed = 0;
+    for (int i = 0; i < N; i++) railed += out[i] == 32767 || out[i] == -32768;
+    CHECK(railed > 1000); /* AMP * 4 is past full scale */
+    dsp_chan_set_gain(&c, 1e9f);
+    CHECK(c.gain_q24 == (int32_t)DSP_CHAN_GAIN_MAX << 24);
+    dsp_chan_set_gain(&c, -1.0f);
+    CHECK(c.gain_q24 == 0);
+    dsp_chan_set_gain(&c, 1.0f);
 
     /* Noise alone at a set level. */
     dsp_chan_set_noise_rms(&c, 1000.0f);

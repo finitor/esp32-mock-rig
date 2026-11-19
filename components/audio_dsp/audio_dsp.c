@@ -120,18 +120,27 @@ int32_t dsp_gauss(dsp_rng_t *r)
     return sum - 393210; /* 12 * 32767.5 */
 }
 
+#define DSP_GAIN_ONE (1 << 24)
+
 void dsp_chan_init(dsp_chan_t *c, uint32_t seed)
 {
     dsp_rng_seed(&c->rng, seed);
-    c->gain_q15 = 32768;
+    c->gain_q24 = DSP_GAIN_ONE;
     c->noise_rms_q8 = 0;
 }
 
 void dsp_chan_set_gain_db(dsp_chan_t *c, float db)
 {
-    if (db >= 0.0f) c->gain_q15 = 32768;
-    else if (db < -120.0f) c->gain_q15 = 0;
-    else c->gain_q15 = (int32_t)lroundf(32768.0f * powf(10.0f, db / 20.0f));
+    if (db >= 0.0f) c->gain_q24 = DSP_GAIN_ONE;
+    else if (db < -120.0f) c->gain_q24 = 0;
+    else c->gain_q24 = (int32_t)lroundf((float)DSP_GAIN_ONE * powf(10.0f, db / 20.0f));
+}
+
+void dsp_chan_set_gain(dsp_chan_t *c, float gain)
+{
+    if (!(gain > 0.0f)) gain = 0.0f; /* also catches NaN */
+    if (gain > DSP_CHAN_GAIN_MAX) gain = DSP_CHAN_GAIN_MAX;
+    c->gain_q24 = (int32_t)lroundf((float)DSP_GAIN_ONE * gain);
 }
 
 void dsp_chan_set_noise_rms(dsp_chan_t *c, float rms)
@@ -143,15 +152,21 @@ void dsp_chan_set_noise_rms(dsp_chan_t *c, float rms)
 
 void dsp_chan_process(dsp_chan_t *c, const int16_t *in, int16_t *out, size_t n)
 {
+    /* Signal and noise are added with 8 fractional bits and rounded once, so
+     * a signal of only a few counts is dithered by the noise instead of
+     * being rounded on its own first. */
     for (size_t i = 0; i < n; i++) {
-        int32_t s = 0;
-        if (in) s = (int32_t)(((int64_t)in[i] * c->gain_q15 + (1 << 14)) >> 15);
+        int64_t acc = 0;
+        if (in) acc = ((int64_t)in[i] * c->gain_q24 + (1 << 15)) >> 16;
         if (c->noise_rms_q8) {
             /* gauss has sigma 2^16, the level is scaled by 2^8 */
             int64_t nz = (int64_t)dsp_gauss(&c->rng) * (int64_t)c->noise_rms_q8;
-            s += (int32_t)((nz + (1 << 23)) >> 24);
+            acc += (nz + (1 << 15)) >> 16;
         }
-        out[i] = sat16(s);
+        int64_t s = (acc + (1 << 7)) >> 8;
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        out[i] = (int16_t)s;
     }
 }
 

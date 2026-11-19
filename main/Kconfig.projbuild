@@ -1,0 +1,55 @@
+menu "Mock radio: receive channel at power-up"
+
+    comment "Build-time settings until the mock-only CAT controls exist."
+
+    choice MOCK_ROUTE
+        prompt "Receive route"
+        default MOCK_ROUTE_MONITOR
+        help
+            Monitor: audio the host plays comes straight back, whatever PTT
+            does. Radio: receive is muted while keyed and for the turnaround
+            time after; until parrot mode or the board link exists there is
+            no receive source, so the host hears the noise floor only.
+
+        config MOCK_ROUTE_MONITOR
+            bool "Monitor (loopback, PTT ignored)"
+        config MOCK_ROUTE_RADIO
+            bool "Radio (mute while keyed)"
+    endchoice
+
+    config MOCK_NOISE_ON
+        bool "Add noise and hold the signal at a set SNR"
+        default n
+
+    config MOCK_SNR_DB
+        int "SNR in dB"
+        range -60 80
+        default 10
+        depends on MOCK_NOISE_ON
+
+    config MOCK_SNR_REF_BW_HZ
+        int "Bandwidth the SNR is quoted in, Hz"
+        range 100 24000
+        default 2500
+        depends on MOCK_NOISE_ON
+        help
+            2500 for WSJT-X and Data2G, 3000 for VARA and most channel simulators.
+
+    config MOCK_NOISE_FLOOR_DBFS
+        int "Noise floor in dBFS (RMS over the whole audio band)"
+        range -90 -12
+        default -40
+        depends on MOCK_NOISE_ON
+
+    config MOCK_ATTEN_DB
+        int "Extra attenuation in dB"
+        range 0 120
+        default 0
+
+    config MOCK_TURNAROUND_MS
+        int "Receive mute after unkeying, ms"
+        range 0 5000
+        default 30
+        depends on MOCK_ROUTE_RADIO
+
+endmenu

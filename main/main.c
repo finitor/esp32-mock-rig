@@ -1,18 +1,23 @@
 /*
  * USB mock radio firmware entry point.
  *
- * Milestone 1 wiring: the USB serial port feeds the CI-V parser, and audio
- * the host plays comes straight back as audio it can record (loopback).
- * Before USB starts, a short self-check proves the portable modules run on
- * the target.
+ * The USB serial port feeds the CI-V parser. Audio the host plays goes
+ * through a FIFO to the audio engine, which applies the receive channel
+ * (mute while keyed, noise at a set SNR, attenuation) and hands the result
+ * back as audio the host can record. With the default settings that is a
+ * plain loopback. Before USB starts, a short self-check proves the portable
+ * modules run on the target.
  */
 #include <inttypes.h>
 #include <string.h>
 
 #include "esp_log.h"
 #include "esp_psram.h"
+#include "esp_random.h"
+#include "sdkconfig.h"
 
 #include "audio_dsp.h"
+#include "audio_engine.h"
 #include "cat_civ.h"
 #include "rig_ic705.h"
 #include "usb_composite.h"
@@ -65,6 +70,7 @@ static bool check_dsp(void)
 /* ---- CAT over the USB serial port ---------------------------------------- */
 
 static civ_t s_civ;
+static ae_t s_engine;
 
 static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
 {
@@ -75,6 +81,7 @@ static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
 static void cat_ptt(void *ctx, bool on)
 {
     (void)ctx;
+    ae_set_ptt(&s_engine, on);
     ESP_LOGI(TAG, "PTT %s (CAT)", on ? "on" : "off");
 }
 
@@ -92,13 +99,17 @@ static void line_state(void *ctx, bool dtr, bool rts)
     ESP_LOGI(TAG, "serial lines: DTR=%d RTS=%d (not used for PTT)", dtr, rts);
 }
 
-/* ---- audio loopback --------------------------------------------------------
+/* ---- audio ----------------------------------------------------------------
  *
  * Playback audio arrives 1 ms at a time on the host's clock; capture audio
  * is fetched 10 ms at a time on this board's clock. A FIFO sits between
- * them, held near LOOP_TARGET samples by drift steering. Capture stays
- * silent until the FIFO first reaches the target, and re-buffers after an
+ * them, held near LOOP_TARGET samples by drift steering. Nothing is taken
+ * from it until it first reaches the target, and it re-buffers after an
  * underrun, so a stream starting up does not stutter.
+ *
+ * What the FIFO delivers is the receive source in the monitor route. The
+ * radio route has no receive source until parrot mode or the board link
+ * exists, so the host then gets the engine's noise floor alone.
  */
 #define LOOP_CAPACITY  4096
 #define LOOP_TARGET    960 /* 20 ms at 48 kHz, measured when capture fetches */
@@ -117,15 +128,45 @@ static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
 static void audio_to_host(void *ctx, int16_t *samples, size_t n)
 {
     (void)ctx;
-    if (!s_loop_primed) {
-        if (dsp_fifo_level(&s_loop) < LOOP_TARGET) {
-            memset(samples, 0, n * sizeof(int16_t));
-            return;
+    bool have_audio = false;
+    if (!s_loop_primed && dsp_fifo_level(&s_loop) >= LOOP_TARGET) s_loop_primed = true;
+    if (s_loop_primed) {
+        if (dsp_fifo_read_steered(&s_loop, samples, n, LOOP_TARGET, LOOP_TOLERANCE) < n) {
+            s_loop_primed = false; /* ran dry: playback stopped or stalled */
         }
-        s_loop_primed = true;
+        have_audio = true;
     }
-    if (dsp_fifo_read_steered(&s_loop, samples, n, LOOP_TARGET, LOOP_TOLERANCE) < n) {
-        s_loop_primed = false; /* ran dry: playback stopped or stalled */
+    ae_config_t cfg;
+    ae_get_config(&s_engine, &cfg);
+    bool monitor = cfg.route == AE_ROUTE_MONITOR;
+    ae_rx_process(&s_engine, have_audio && monitor ? samples : NULL, samples, n);
+}
+
+/* The receive channel as configured at build time (menuconfig). */
+static void engine_start(void)
+{
+    ae_config_t cfg;
+    ae_init(&s_engine, esp_random());
+    ae_config_defaults(&cfg);
+#ifdef CONFIG_MOCK_ROUTE_RADIO
+    cfg.route = AE_ROUTE_RADIO;
+    cfg.turnaround_ms = CONFIG_MOCK_TURNAROUND_MS;
+#endif
+#ifdef CONFIG_MOCK_NOISE_ON
+    cfg.noise_on = true;
+    cfg.snr_db = (float)CONFIG_MOCK_SNR_DB;
+    cfg.ref_bw_hz = (float)CONFIG_MOCK_SNR_REF_BW_HZ;
+    cfg.noise_floor_dbfs = (float)CONFIG_MOCK_NOISE_FLOOR_DBFS;
+#endif
+    cfg.atten_db = (float)CONFIG_MOCK_ATTEN_DB;
+    ae_configure(&s_engine, &cfg);
+
+    ESP_LOGI(TAG, "receive channel: %s route, %s, attenuation %d dB",
+             cfg.route == AE_ROUTE_RADIO ? "radio" : "monitor",
+             cfg.noise_on ? "noise on" : "noise off", CONFIG_MOCK_ATTEN_DB);
+    if (cfg.noise_on) {
+        ESP_LOGI(TAG, "  SNR %d dB in %d Hz, noise floor %d dBFS", (int)cfg.snr_db, (int)cfg.ref_bw_hz,
+                 (int)cfg.noise_floor_dbfs);
     }
 }
 
@@ -144,6 +185,7 @@ void app_main(void)
     bool dsp_ok = check_dsp();
     ESP_LOGI(TAG, "self-check: CAT %s, DSP %s", cat_ok ? "ok" : "FAILED", dsp_ok ? "ok" : "FAILED");
 
+    engine_start();
     civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
 

@@ -67,7 +67,7 @@ int32_t dsp_gauss(dsp_rng_t *r);
 
 typedef struct {
     dsp_rng_t rng;
-    int32_t gain_q15;      /* 32768 = unity */
+    int32_t gain_q24;      /* 1 << 24 = unity; fine enough for gains far below 1 */
     uint32_t noise_rms_q8; /* noise RMS in sample units, times 256; 0 = off */
 } dsp_chan_t;
 
@@ -75,6 +75,10 @@ void dsp_chan_init(dsp_chan_t *c, uint32_t seed);
 
 /* Signal gain in dB. 0 = unchanged, negative = attenuation; capped at 0. */
 void dsp_chan_set_gain_db(dsp_chan_t *c, float db);
+
+/* Signal gain as a plain factor, which may be above 1: 0..DSP_CHAN_GAIN_MAX. */
+#define DSP_CHAN_GAIN_MAX 64.0f
+void dsp_chan_set_gain(dsp_chan_t *c, float gain);
 
 /* Noise level as an RMS value in sample units (0..32767). 0 turns it off. */
 void dsp_chan_set_noise_rms(dsp_chan_t *c, float rms);

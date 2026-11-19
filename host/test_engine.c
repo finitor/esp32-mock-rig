@@ -1,0 +1,493 @@
+/* Unit tests for audio_engine. Signals are synthesised; no files, no hardware. */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "audio_engine.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define FS    48000
+#define BLOCK 480 /* what the USB audio component fetches: 10 ms */
+
+static int g_failed;
+static int g_checks;
+
+#define CHECK(cond)                                                \
+    do {                                                           \
+        g_checks++;                                                \
+        if (!(cond)) {                                             \
+            g_failed++;                                            \
+            printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #cond);  \
+        }                                                          \
+    } while (0)
+
+/* Like CHECK, but prints the measured value when it fails. */
+#define CHECK_RANGE(value, lo, hi)                                                          \
+    do {                                                                                    \
+        double v_ = (value);                                                                \
+        g_checks++;                                                                         \
+        if (!(v_ >= (lo) && v_ <= (hi))) {                                                  \
+            g_failed++;                                                                     \
+            printf("FAIL %s:%d %s = %g, want %g..%g\n", __FILE__, __LINE__, #value, v_,     \
+                   (double)(lo), (double)(hi));                                             \
+        }                                                                                   \
+    } while (0)
+
+static void sine(int16_t *out, size_t n, double freq, double amp)
+{
+    for (size_t i = 0; i < n; i++) out[i] = (int16_t)lround(amp * sin(2 * M_PI * freq * (double)i / FS));
+}
+
+/* Amplitude of the component at freq. n must hold a whole number of cycles. */
+static double tone_amp(const int16_t *x, size_t n, double freq)
+{
+    double re = 0, im = 0;
+    for (size_t i = 0; i < n; i++) {
+        double ph = 2 * M_PI * freq * (double)i / FS;
+        re += x[i] * cos(ph);
+        im += x[i] * sin(ph);
+    }
+    return 2 * sqrt(re * re + im * im) / (double)n;
+}
+
+static double rms(const int16_t *x, size_t n)
+{
+    double s = 0;
+    for (size_t i = 0; i < n; i++) s += (double)x[i] * x[i];
+    return sqrt(s / (double)n);
+}
+
+static double dbfs(double rms_value)
+{
+    return 20 * log10(rms_value / 32768.0);
+}
+
+static bool all_zero(const int16_t *x, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        if (x[i]) return false;
+    return true;
+}
+
+/* Run n samples through the engine in blocks. in may be NULL. */
+static void run(ae_t *e, const int16_t *in, int16_t *out, size_t n, size_t block)
+{
+    for (size_t i = 0; i < n; i += block) {
+        size_t m = n - i < block ? n - i : block;
+        ae_rx_process(e, in ? in + i : NULL, out + i, m);
+    }
+}
+
+static void configure(ae_t *e, void (*edit)(ae_config_t *))
+{
+    ae_config_t cfg;
+    ae_get_config(e, &cfg);
+    edit(&cfg);
+    ae_configure(e, &cfg);
+}
+
+enum { N = 4 * FS };       /* long enough to measure noise to a fraction of a dB */
+enum { SETTLE = FS / 10 }; /* measurements skip the first 100 ms */
+static int16_t g_in[N], g_out[N], g_out2[N];
+
+/* What came out, measured after the settling time. */
+typedef struct {
+    double tone_rms, noise_rms, snr_db;
+} measured_t;
+
+static float g_snr, g_bw, g_atten;
+static void edit_snr(ae_config_t *c)
+{
+    c->noise_on = true;
+    c->snr_db = g_snr;
+    c->ref_bw_hz = g_bw;
+    c->atten_db = g_atten;
+}
+
+/* Run a tone of the given amplitude through an engine set to g_snr, g_bw and
+ * g_atten, and measure signal and noise separately. A second engine with the
+ * same seed and no source produces the identical noise, so subtracting its
+ * output leaves the scaled signal alone and the measurement has no scatter. */
+static measured_t run_snr_case(uint32_t seed, double freq, double amp)
+{
+    ae_t with, without;
+    ae_init(&with, seed);
+    ae_init(&without, seed);
+    configure(&with, edit_snr);
+    configure(&without, edit_snr);
+
+    sine(g_in, N, freq, amp);
+    run(&with, g_in, g_out, N, BLOCK);
+    run(&without, NULL, g_out2, N, BLOCK);
+
+    measured_t m;
+    m.noise_rms = rms(g_out2 + SETTLE, N - SETTLE);
+    for (size_t i = 0; i < N; i++) g_out2[i] = (int16_t)(g_out[i] - g_out2[i]);
+    m.tone_rms = tone_amp(g_out2 + SETTLE, N - SETTLE, freq) / sqrt(2); /* a whole number of cycles */
+    m.snr_db = 20 * log10(m.tone_rms / (m.noise_rms * sqrt(g_bw / (FS / 2.0))));
+    return m;
+}
+
+static void test_defaults_pass_through(void)
+{
+    ae_t e;
+    ae_status_t st;
+    ae_init(&e, 1);
+    sine(g_in, N, 1500, 12000);
+
+    run(&e, g_in, g_out, N, BLOCK);
+    CHECK(memcmp(g_in, g_out, sizeof g_in) == 0);
+
+    memcpy(g_out, g_in, sizeof g_in); /* in place */
+    run(&e, g_out, g_out, N, BLOCK);
+    CHECK(memcmp(g_in, g_out, sizeof g_in) == 0);
+
+    ae_set_ptt(&e, true); /* the monitor route ignores PTT */
+    run(&e, g_in, g_out, N, BLOCK);
+    CHECK(memcmp(g_in, g_out, sizeof g_in) == 0);
+
+    ae_get_status(&e, &st);
+    CHECK_RANGE(st.gain_db, -0.001, 0.001);
+    CHECK(!st.gain_limited && !st.rx_muted);
+    CHECK_RANGE(st.signal_dbfs, dbfs(12000 / sqrt(2)) - 0.05, dbfs(12000 / sqrt(2)) + 0.05);
+
+    run(&e, NULL, g_out, BLOCK, BLOCK); /* no source, no noise: silence */
+    CHECK(all_zero(g_out, BLOCK));
+}
+
+static void edit_atten_6(ae_config_t *c) { c->atten_db = 6.0206f; }
+
+static void test_attenuation(void)
+{
+    ae_t e;
+    ae_init(&e, 1);
+    configure(&e, edit_atten_6);
+    sine(g_in, N, 1500, 12000);
+    run(&e, g_in, g_out, N, BLOCK);
+    CHECK_RANGE(tone_amp(g_out, N, 1500), 6000 - 2, 6000 + 2);
+    CHECK_RANGE(rms(g_out, N), 6000 / sqrt(2) - 2, 6000 / sqrt(2) + 2); /* nothing but the tone */
+}
+
+static void edit_noise_on(ae_config_t *c) { c->noise_on = true; }
+static void edit_floor_30(ae_config_t *c) { c->noise_floor_dbfs = -30.0f; }
+
+static void test_noise_floor(void)
+{
+    ae_t e;
+    ae_init(&e, 7);
+    configure(&e, edit_noise_on);
+    run(&e, NULL, g_out, N, BLOCK);
+    CHECK_RANGE(dbfs(rms(g_out, N)), -40.15, -39.85);
+
+    configure(&e, edit_floor_30);
+    run(&e, NULL, g_out, N, BLOCK);
+    CHECK_RANGE(dbfs(rms(g_out, N)), -30.15, -29.85);
+}
+
+/* The SNR comes out as set whatever the drive level, with the floor fixed. */
+static void test_snr(void)
+{
+    static const float snrs[] = {-30, -20, -10, 0, 10, 25};
+    static const double amps[] = {20000, 1000};
+    static const float bws[] = {2500, 3000};
+
+    for (size_t b = 0; b < 2; b++) {
+        for (size_t s = 0; s < 6; s++) {
+            for (size_t a = 0; a < 2; a++) {
+                g_snr = snrs[s];
+                g_bw = bws[b];
+                g_atten = 0;
+                measured_t m = run_snr_case(100 + (uint32_t)(s * 2 + a), 1500, amps[a]);
+                CHECK_RANGE(m.snr_db, snrs[s] - 0.1, snrs[s] + 0.1);
+                CHECK_RANGE(dbfs(m.noise_rms), -40.1, -39.9);
+            }
+        }
+    }
+
+    /* A tone that does not fit the 1 ms measuring pieces is placed as well. */
+    g_snr = -20;
+    g_bw = 2500;
+    measured_t m = run_snr_case(55, 1234, 15000);
+    CHECK_RANGE(m.snr_db, -20.1, -19.9);
+}
+
+/* Above what the floor allows, the signal stops at -12 dBFS and the floor drops. */
+static void test_snr_cap(void)
+{
+    g_snr = 45;
+    g_bw = 2500;
+    g_atten = 0;
+    measured_t m = run_snr_case(3, 1500, 3000);
+    CHECK_RANGE(dbfs(m.tone_rms), AE_SIGNAL_MAX_DBFS - 0.05, AE_SIGNAL_MAX_DBFS + 0.05);
+    CHECK_RANGE(m.snr_db, 44.9, 45.1);
+    CHECK_RANGE(dbfs(m.noise_rms), -47.3, -47.1); /* 7.2 dB below the -40 dBFS setting */
+}
+
+/* Attenuation comes on top: it lowers the signal, and so the SNR, by as much. */
+static void test_atten_with_noise(void)
+{
+    g_snr = 10;
+    g_bw = 2500;
+    g_atten = 6;
+    measured_t m = run_snr_case(4, 1500, 10000);
+    CHECK_RANGE(m.snr_db, 3.9, 4.1);
+    CHECK_RANGE(dbfs(m.noise_rms), -40.1, -39.9);
+}
+
+static void test_gain_limit(void)
+{
+    ae_t e;
+    ae_status_t st;
+    ae_init(&e, 5);
+    g_snr = 30;
+    g_bw = 2500;
+    g_atten = 0;
+    configure(&e, edit_snr);
+
+    /* -53 dBFS in, -20 dBFS wanted: 33.5 dB is more than the engine gives. */
+    sine(g_in, N, 1500, 100);
+    run(&e, g_in, g_out, N, BLOCK);
+    ae_get_status(&e, &st);
+    CHECK(st.gain_limited);
+    CHECK_RANGE(st.gain_db, AE_GAIN_MAX_DB - 0.05, AE_GAIN_MAX_DB + 0.05);
+    CHECK_RANGE(tone_amp(g_out + SETTLE, N - SETTLE, 1500), 3162 * 0.97, 3162 * 1.03);
+
+    /* A normal level is within reach. */
+    ae_init(&e, 5);
+    configure(&e, edit_snr);
+    sine(g_in, N, 1500, 10000);
+    run(&e, g_in, g_out, N, BLOCK);
+    ae_get_status(&e, &st);
+    CHECK(!st.gain_limited);
+    CHECK_RANGE(st.gain_db, -19.82 - dbfs(10000 / sqrt(2)) - 0.1, -19.82 - dbfs(10000 / sqrt(2)) + 0.1);
+}
+
+static double level_now(ae_t *e)
+{
+    ae_status_t st;
+    ae_get_status(e, &st);
+    return st.signal_dbfs;
+}
+
+static void test_level_tracking(void)
+{
+    ae_t e;
+    const double loud = dbfs(8000 / sqrt(2)), soft = dbfs(800 / sqrt(2)), half = dbfs(4000 / sqrt(2));
+
+    /* Silence, then a tone that starts part-way through a block. */
+    ae_init(&e, 1);
+    memset(g_in, 0, sizeof g_in);
+    size_t start = 10 * BLOCK + 250;
+    sine(g_in + start, FS, 1234, 8000);
+    run(&e, g_in, g_out, start - 250, BLOCK);
+    CHECK(level_now(&e) == DSP_SILENCE_DBFS);
+    run(&e, g_in + start - 250, g_out, BLOCK, BLOCK); /* the block the tone starts in */
+    CHECK_RANGE(level_now(&e), loud - 1.0, loud + 1.0);
+    run(&e, g_in + start - 250 + BLOCK, g_out, 30 * BLOCK, BLOCK);
+    CHECK_RANGE(level_now(&e), loud - 0.2, loud + 0.2);
+
+    /* After a gap, a quieter transmission is measured afresh. */
+    memset(g_in, 0, sizeof g_in);
+    run(&e, g_in, g_out, 30 * BLOCK, BLOCK);
+    CHECK_RANGE(level_now(&e), loud - 0.2, loud + 0.2); /* held through the gap */
+    sine(g_in, FS, 1234, 800);
+    run(&e, g_in, g_out, 2 * BLOCK, BLOCK);
+    CHECK_RANGE(level_now(&e), soft - 1.0, soft + 1.0);
+    run(&e, g_in + 2 * BLOCK, g_out, 30 * BLOCK, BLOCK);
+    CHECK_RANGE(level_now(&e), soft - 0.2, soft + 0.2);
+
+    /* A level change with no gap is followed within a few seconds. */
+    ae_init(&e, 1);
+    sine(g_in, N, 1500, 8000);
+    run(&e, g_in, g_out, 2 * FS, BLOCK);
+    CHECK_RANGE(level_now(&e), loud - 0.05, loud + 0.05);
+    sine(g_in, N, 1500, 4000);
+    run(&e, g_in, g_out, N, BLOCK);
+    run(&e, g_in, g_out, FS, BLOCK);
+    CHECK_RANGE(level_now(&e), half - 0.2, half + 0.2);
+
+    /* The estimate does not depend on how the audio is cut into blocks. */
+    ae_t a, b;
+    ae_init(&a, 1);
+    ae_init(&b, 1);
+    memset(g_in, 0, sizeof g_in);
+    sine(g_in + 777, FS, 1234, 5000);
+    run(&a, g_in, g_out, 2 * FS, BLOCK);
+    run(&b, g_in, g_out, 2 * FS, 37);
+    CHECK(level_now(&a) == level_now(&b));
+}
+
+static uint32_t g_turnaround;
+static void edit_radio_noise(ae_config_t *c)
+{
+    c->route = AE_ROUTE_RADIO;
+    c->noise_on = true;
+    c->turnaround_ms = g_turnaround;
+}
+static void edit_radio_clean(ae_config_t *c)
+{
+    c->route = AE_ROUTE_RADIO;
+    c->noise_on = false;
+    c->turnaround_ms = g_turnaround;
+}
+static void edit_monitor(ae_config_t *c) { c->route = AE_ROUTE_MONITOR; }
+
+static void test_radio_route(void)
+{
+    enum { ODD = 441, TURN = 2400 }; /* 50 ms */
+    ae_t e;
+    ae_status_t st;
+    ae_init(&e, 9);
+    g_turnaround = 50;
+    configure(&e, edit_radio_noise);
+
+    /* Not keyed: the noise floor. */
+    run(&e, NULL, g_out, FS, ODD);
+    CHECK_RANGE(dbfs(rms(g_out, FS)), -40.5, -39.5);
+
+    /* Keyed: silence. */
+    ae_set_ptt(&e, true);
+    run(&e, NULL, g_out, FS, ODD);
+    CHECK(all_zero(g_out, FS));
+    ae_get_status(&e, &st);
+    CHECK(st.rx_muted);
+
+    /* Unkeyed: silence for the turnaround time to the sample, then noise. */
+    ae_set_ptt(&e, false);
+    run(&e, NULL, g_out, FS, ODD);
+    CHECK(all_zero(g_out, TURN));
+    CHECK_RANGE(dbfs(rms(g_out + TURN, ODD)), -42, -38);
+    CHECK_RANGE(dbfs(rms(g_out + TURN, FS - TURN)), -40.5, -39.5);
+    ae_get_status(&e, &st);
+    CHECK(!st.rx_muted);
+
+    /* Keying again during the turnaround starts it over. */
+    ae_set_ptt(&e, true);
+    run(&e, NULL, g_out, ODD, ODD);
+    ae_set_ptt(&e, false);
+    run(&e, NULL, g_out, 2 * ODD, ODD); /* 882 samples into the turnaround */
+    ae_set_ptt(&e, true);
+    run(&e, NULL, g_out, ODD, ODD);
+    ae_set_ptt(&e, false);
+    run(&e, NULL, g_out, FS, ODD);
+    CHECK(all_zero(g_out, TURN));
+    CHECK(!all_zero(g_out + TURN, ODD));
+
+    /* With a source and no noise, the source comes through after the turnaround. */
+    configure(&e, edit_radio_clean);
+    sine(g_in, FS, 1500, 9000);
+    ae_set_ptt(&e, true);
+    run(&e, g_in, g_out, ODD, ODD);
+    CHECK(all_zero(g_out, ODD));
+    ae_set_ptt(&e, false);
+    memcpy(g_out, g_in, FS * sizeof(int16_t)); /* in place */
+    run(&e, g_out, g_out, FS, ODD);
+    CHECK(all_zero(g_out, TURN));
+    CHECK(memcmp(g_out + TURN, g_in + TURN, (FS - TURN) * sizeof(int16_t)) == 0);
+
+    /* No turnaround time: receive opens with the first unkeyed block. */
+    g_turnaround = 0;
+    configure(&e, edit_radio_clean);
+    ae_set_ptt(&e, true);
+    run(&e, g_in, g_out, ODD, ODD);
+    ae_set_ptt(&e, false);
+    run(&e, g_in, g_out, ODD, ODD);
+    CHECK(memcmp(g_out, g_in, ODD * sizeof(int16_t)) == 0);
+
+    /* Leaving the radio route while keyed opens receive at once. */
+    g_turnaround = 50;
+    configure(&e, edit_radio_clean);
+    ae_set_ptt(&e, true);
+    run(&e, g_in, g_out, ODD, ODD);
+    CHECK(all_zero(g_out, ODD));
+    configure(&e, edit_monitor);
+    run(&e, g_in, g_out, ODD, ODD);
+    CHECK(memcmp(g_out, g_in, ODD * sizeof(int16_t)) == 0);
+}
+
+static void test_config_clamping(void)
+{
+    ae_t e;
+    ae_config_t c;
+    ae_init(&e, 1);
+
+    ae_get_config(&e, &c);
+    CHECK(c.route == AE_ROUTE_MONITOR && !c.noise_on && c.atten_db == 0.0f);
+    CHECK(c.snr_db == 10.0f && c.ref_bw_hz == 2500.0f && c.noise_floor_dbfs == -40.0f && c.turnaround_ms == 30);
+
+    c.snr_db = 200.0f;
+    c.ref_bw_hz = 0.0f;
+    c.noise_floor_dbfs = 0.0f;
+    c.atten_db = -5.0f;
+    c.turnaround_ms = 99999;
+    ae_configure(&e, &c);
+    ae_get_config(&e, &c);
+    CHECK(c.snr_db == 80.0f && c.ref_bw_hz == 100.0f && c.noise_floor_dbfs == AE_SIGNAL_MAX_DBFS);
+    CHECK(c.atten_db == 0.0f && c.turnaround_ms == 5000);
+
+    c.snr_db = nanf("");
+    c.atten_db = nanf("");
+    ae_configure(&e, &c);
+    ae_get_config(&e, &c);
+    CHECK(c.snr_db == -60.0f && c.atten_db == 0.0f);
+
+    c.snr_db = -12.34f; /* kept to a hundredth of a dB */
+    ae_configure(&e, &c);
+    ae_get_config(&e, &c);
+    CHECK_RANGE(c.snr_db, -12.341, -12.339);
+}
+
+/* A change made between blocks applies from the next block. */
+static void test_reconfigure_mid_stream(void)
+{
+    ae_t e;
+    ae_init(&e, 1);
+    sine(g_in, 4 * BLOCK, 1500, 12000);
+    run(&e, g_in, g_out, 2 * BLOCK, BLOCK);
+    configure(&e, edit_atten_6);
+    run(&e, g_in + 2 * BLOCK, g_out + 2 * BLOCK, 2 * BLOCK, BLOCK);
+    CHECK(memcmp(g_in, g_out, 2 * BLOCK * sizeof(int16_t)) == 0);
+    CHECK_RANGE(tone_amp(g_out + 2 * BLOCK, 2 * BLOCK, 1500), 6000 - 2, 6000 + 2);
+}
+
+static void test_determinism(void)
+{
+    ae_t a, b, c;
+    ae_init(&a, 42);
+    ae_init(&b, 42);
+    ae_init(&c, 43);
+    g_snr = 0;
+    g_bw = 2500;
+    g_atten = 0;
+    configure(&a, edit_snr);
+    configure(&b, edit_snr);
+    configure(&c, edit_snr);
+    sine(g_in, FS, 1500, 5000);
+    run(&a, g_in, g_out, FS, BLOCK);
+    run(&b, g_in, g_out2, FS, BLOCK);
+    CHECK(memcmp(g_out, g_out2, FS * sizeof(int16_t)) == 0);
+    run(&c, g_in, g_out2, FS, BLOCK);
+    CHECK(memcmp(g_out, g_out2, FS * sizeof(int16_t)) != 0);
+}
+
+int main(void)
+{
+    test_defaults_pass_through();
+    test_attenuation();
+    test_noise_floor();
+    test_snr();
+    test_snr_cap();
+    test_atten_with_noise();
+    test_gain_limit();
+    test_level_tracking();
+    test_radio_route();
+    test_config_clamping();
+    test_reconfigure_mid_stream();
+    test_determinism();
+    printf("%d checks, %d failed\n", g_checks, g_failed);
+    return g_failed ? 1 : 0;
+}
