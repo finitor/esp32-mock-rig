@@ -10,9 +10,10 @@ Last updated: Nov 19, 2026.
 
 - The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
-- Nothing runs on an ESP32 yet, and no modem application has been tried against any of it.
+- The ESP-IDF project is scaffolded and builds for the ESP32-S3 (ESP-IDF v5.5.6, 208 KB image). It contains only a boot self-check of the CAT parser and the DSP; there is no USB device code yet.
+- Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: Milestone 0, step 4 (install ESP-IDF and scaffold the firmware project). Everything that can be done without ESP-IDF is done.
+- Next step: Milestone 1, step 5 (USB descriptors for UAC2 + CDC-ACM). It can be written and compiled before the boards arrive, but not tested.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -97,6 +98,8 @@ Repository layout:
 | `components/cat_civ/` | CI-V core |
 | `components/rig_ic705/` | IC-705 personality |
 | `components/audio_dsp/` | Audio DSP |
+| `main/` | Firmware entry point; for now a boot self-check |
+| `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
 | `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ` and `test_dsp` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/gen_resampler_fir.py` (filter generator) |
 
 ## USB device
@@ -282,14 +285,14 @@ To check on a phone:
 
 ## Build plan
 
-Framework: ESP-IDF with `esp_tinyusb` (Arduino is the fallback if descriptor work gets easier there). Each milestone is testable on its own.
+Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descriptor work gets easier there). Each milestone is testable on its own.
 
 **Milestone 0: groundwork, no ESP32 board needed**
 
 1. Done: `cat_civ` and `rig_ic705` as portable C: bytes in, reply bytes out, PTT change callback, with the personality interface in place from the start.
 2. Done: host test harness. `make -C host test` runs the unit tests; `make -C host rigctl` runs real `rigctl -m 3085` against the parser over a pseudo-terminal.
 3. Done: `audio_dsp` as portable C with host unit tests: 48↔12 kHz decimator and interpolator, noise at SNR, level meter, VOX detector, FIFO with drift steering. `make -C host test` runs them.
-4. Install ESP-IDF and scaffold the project: target `esp32s3`, 16 MB flash, octal PSRAM, console on the UART jack, the module layout above.
+4. Done: ESP-IDF v5.5.6 installed and the project scaffolded: target `esp32s3`, 16 MB flash, octal PSRAM, console on the UART jack, the three portable modules as components, and a boot self-check in `main/`. It builds; it has not been flashed.
 
 **Milestone 1: USB composite + CAT + loopback**
 
@@ -334,6 +337,7 @@ Framework: ESP-IDF with `esp_tinyusb` (Arduino is the fallback if descriptor wor
 | Nov 19, 2026 | Answer CI-V frames at any radio address. | Hamlib's default G90 address differs by version (`A4` in 4.7.1, `88` in master, `70` reported), and 4.7.1 uses `A4` for the IC-705 too. |
 | Nov 19, 2026 | All-digital audio; no codec, no RF. | No extra parts; USB-only build. |
 | Nov 19, 2026 | ESP-IDF with `esp_tinyusb`. | Custom composite descriptors; Arduino kept as fallback. |
+| Nov 19, 2026 | Pin ESP-IDF to v5.5.6 rather than the newer 6.x line. | The USB references this design leans on are written against 5.5; revisit once the USB device works. |
 | Nov 19, 2026 | One audio function and one CDC port only. | S3 endpoint budget. |
 | Nov 19, 2026 | Control-line PTT is a selectable mode, off by default. | Hosts hold RTS and DTR high on open; found in Data2G's source. |
 | Nov 19, 2026 | Keep the CDC notification endpoint; device class 0xEF/2/1 with a CDC IAD. | Required by usb-serial-for-android's CDC-ACM driver. |

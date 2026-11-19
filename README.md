@@ -39,4 +39,10 @@ With Hamlib installed, this runs real `rigctl` against the parser through a pseu
 make -C host rigctl
 ```
 
-The firmware itself will use ESP-IDF with `esp_tinyusb`; those build commands will be added once the project is scaffolded.
+The firmware builds with ESP-IDF v5.5.6. With ESP-IDF activated in the shell:
+
+```bash
+idf.py build
+```
+
+So far the firmware is only a boot self-check; the USB device is not written yet.

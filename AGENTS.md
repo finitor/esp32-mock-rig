@@ -8,7 +8,7 @@ Keep it current as part of the work: update the section a fact belongs to, add a
 
 ## Status
 
-The CI-V core, the IC-705 personality and the audio DSP exist as portable C with host tests; the CAT side passes real Hamlib on the host. No ESP-IDF project exists yet. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
+The CI-V core, the IC-705 personality and the audio DSP exist as portable C with host tests; the CAT side passes real Hamlib on the host. The ESP-IDF project builds for the ESP32-S3 but contains only a boot self-check; there is no USB device code yet, and nothing has been flashed. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
 
 ## Stack
 
@@ -41,13 +41,21 @@ make -C host rigctl
 
 Run the first after any change under `components/`, and the second after any change to `components/cat_civ` or a personality. Regenerate the resampler table with `host/tools/gen_resampler_fir.py --table` rather than editing it by hand. The host build uses `-Werror` with address and undefined-behaviour sanitizers; keep it clean.
 
-Once an ESP-IDF project exists:
+Firmware build, with ESP-IDF v5.5.6 (the repository root is the ESP-IDF project). Activate ESP-IDF in the shell first, from wherever it is installed:
 
 ```bash
-idf.py set-target esp32s3
+. ~/esp/esp-idf/export.sh
+```
+
+```bash
 idf.py build
+```
+
+```bash
 idf.py -p <COM port> flash monitor
 ```
+
+Board settings live in `sdkconfig.defaults`; `sdkconfig` is generated and not committed. After changing the defaults, delete `sdkconfig` and rebuild. The portable components must keep building in both the host Makefile and ESP-IDF.
 
 CAT acceptance test on a PC (must pass with no Hamlib errors):
 

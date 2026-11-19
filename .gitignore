@@ -12,3 +12,6 @@ managed_components/
 
 # Host build output
 host/build/
+
+# ESP-IDF generated configuration (sdkconfig.defaults is the source)
+sdkconfig
