@@ -2,7 +2,7 @@
 
 ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
 
-**Status:** early. The CAT protocol core, the IC-705 personality and the audio DSP are written and tested on a desktop, and the CAT side passes real Hamlib; nothing runs on an ESP32 yet.
+**Status:** early. The CAT protocol core, the IC-705 personality and the audio DSP are written and tested on a desktop, and the CAT side passes real Hamlib. The firmware, including the USB sound card and serial port, builds but has not yet been run on a board.
 
 ## What it will do
 
@@ -45,4 +45,8 @@ The firmware builds with ESP-IDF v5.5.6. With ESP-IDF activated in the shell:
 idf.py build
 ```
 
-So far the firmware is only a boot self-check; the USB device is not written yet.
+The firmware presents the sound card and CAT serial port, with audio looped back. It has not been tested on hardware yet. To check the USB descriptors in a build against the ESP32-S3's limits:
+
+```bash
+python3 host/tools/check_usb_descriptors.py
+```

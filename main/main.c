@@ -1,9 +1,10 @@
 /*
  * USB mock radio firmware entry point.
  *
- * So far this only proves that the portable modules run on the target: it
- * reports the hardware it found and runs a short self-check of the CAT
- * parser and the audio DSP. The USB device comes next (Milestone 1).
+ * Milestone 1 wiring: the USB serial port feeds the CI-V parser, and audio
+ * the host plays comes straight back as audio it can record (loopback).
+ * Before USB starts, a short self-check proves the portable modules run on
+ * the target.
  */
 #include <inttypes.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #include "audio_dsp.h"
 #include "cat_civ.h"
 #include "rig_ic705.h"
+#include "usb_composite.h"
 
 static const char *TAG = "mock-radio";
 
@@ -60,6 +62,73 @@ static bool check_dsp(void)
     return error >= -8 && error <= 8;
 }
 
+/* ---- CAT over the USB serial port ---------------------------------------- */
+
+static civ_t s_civ;
+
+static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
+{
+    (void)ctx;
+    usb_composite_serial_write(bytes, len);
+}
+
+static void cat_ptt(void *ctx, bool on)
+{
+    (void)ctx;
+    ESP_LOGI(TAG, "PTT %s (CAT)", on ? "on" : "off");
+}
+
+static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
+{
+    (void)ctx;
+    civ_feed(&s_civ, bytes, len);
+}
+
+static void line_state(void *ctx, bool dtr, bool rts)
+{
+    (void)ctx;
+    /* Hosts raise both lines on open. Line keying is a selectable mode that
+     * does not exist yet, so this is information only. */
+    ESP_LOGI(TAG, "serial lines: DTR=%d RTS=%d (not used for PTT)", dtr, rts);
+}
+
+/* ---- audio loopback --------------------------------------------------------
+ *
+ * Playback audio arrives 1 ms at a time on the host's clock; capture audio
+ * is fetched 10 ms at a time on this board's clock. A FIFO sits between
+ * them, held near LOOP_TARGET samples by drift steering. Capture stays
+ * silent until the FIFO first reaches the target, and re-buffers after an
+ * underrun, so a stream starting up does not stutter.
+ */
+#define LOOP_CAPACITY  4096
+#define LOOP_TARGET    960 /* 20 ms at 48 kHz, measured when capture fetches */
+#define LOOP_TOLERANCE 240
+
+static int16_t s_loop_store[LOOP_CAPACITY];
+static dsp_fifo_t s_loop;
+static bool s_loop_primed;
+
+static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
+{
+    (void)ctx;
+    dsp_fifo_write(&s_loop, samples, n);
+}
+
+static void audio_to_host(void *ctx, int16_t *samples, size_t n)
+{
+    (void)ctx;
+    if (!s_loop_primed) {
+        if (dsp_fifo_level(&s_loop) < LOOP_TARGET) {
+            memset(samples, 0, n * sizeof(int16_t));
+            return;
+        }
+        s_loop_primed = true;
+    }
+    if (dsp_fifo_read_steered(&s_loop, samples, n, LOOP_TARGET, LOOP_TOLERANCE) < n) {
+        s_loop_primed = false; /* ran dry: playback stopped or stalled */
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "USB mock radio: %s personality (Hamlib model %d)", rig_ic705.name, rig_ic705.hamlib_model);
@@ -74,4 +143,20 @@ void app_main(void)
     bool cat_ok = check_cat();
     bool dsp_ok = check_dsp();
     ESP_LOGI(TAG, "self-check: CAT %s, DSP %s", cat_ok ? "ok" : "FAILED", dsp_ok ? "ok" : "FAILED");
+
+    civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
+    dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
+
+    const usb_composite_config_t usb = {
+        .serial_rx = serial_rx,
+        .line_state = line_state,
+        .audio_from_host = audio_from_host,
+        .audio_to_host = audio_to_host,
+    };
+    esp_err_t err = usb_composite_init(&usb);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "USB device started on the native USB port: sound card + CAT serial port");
+    } else {
+        ESP_LOGE(TAG, "USB device failed to start: %s", esp_err_to_name(err));
+    }
 }

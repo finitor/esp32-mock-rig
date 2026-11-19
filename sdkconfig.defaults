@@ -18,3 +18,14 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# USB audio (espressif/usb_device_uac), used as one function of our own
+# composite device: 48 kHz 16-bit mono playback and capture. The descriptors
+# and tusb_config.h are in components/usb_composite.
+CONFIG_USB_DEVICE_UAC_AS_PART=y
+CONFIG_UAC_SPEAKER_CHANNEL_NUM=1
+CONFIG_UAC_MIC_CHANNEL_NUM=1
+CONFIG_UAC_SAMPLE_RATE=48000
+CONFIG_UAC_BIT_RESOLUTION_16=y
+# Rate-feedback format that macOS accepts on full-speed devices.
+CONFIG_UAC_SUPPORT_MACOS=y

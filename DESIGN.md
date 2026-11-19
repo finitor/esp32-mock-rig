@@ -10,10 +10,10 @@ Last updated: Nov 19, 2026.
 
 - The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
-- The ESP-IDF project is scaffolded and builds for the ESP32-S3 (ESP-IDF v5.5.6, 208 KB image). It contains only a boot self-check of the CAT parser and the DSP; there is no USB device code yet.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 241 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: Milestone 1, step 5 (USB descriptors for UAC2 + CDC-ACM). It can be written and compiled before the boards arrive, but not tested.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 code can be written meanwhile.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -98,9 +98,10 @@ Repository layout:
 | `components/cat_civ/` | CI-V core |
 | `components/rig_ic705/` | IC-705 personality |
 | `components/audio_dsp/` | Audio DSP |
+| `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
 | `main/` | Firmware entry point; for now a boot self-check |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ` and `test_dsp` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/gen_resampler_fir.py` (filter generator) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ` and `test_dsp` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -112,7 +113,25 @@ Requirements:
 - **CDC control interface with an interrupt IN notification endpoint as its first endpoint**, plus a CDC data interface with bulk IN and bulk OUT. usb-serial-for-android refuses the port without the notification endpoint, so it cannot be dropped to save an endpoint.
 - **No extra functions.** No HID, second serial port or second audio function.
 
-Endpoint budget (the main technical risk): the S3 USB-OTG supports 6 endpoints beyond EP0, with a tighter limit on IN endpoints. IN endpoints needed are EP0, CDC notification, CDC data and audio capture, plus an audio feedback endpoint if playback is asynchronous. That is believed to be exactly at the limit; confirm the numbers in the ESP-IDF USB device docs before fixing the descriptors, and fall back to adaptive or synchronous playback (no feedback endpoint) if it doesn't fit.
+**Stack.** The sound card is Espressif's `usb_device_uac` component (v1.3.2) in its "part of a composite device" mode, which supplies the UAC2 class handling including playback rate feedback. The serial port is TinyUSB's CDC class used directly (TinyUSB 0.19). Espressif's `esp_tinyusb` wrapper is not used, because it has no audio support and insists on its own configuration. Our `usb_composite` component owns `tusb_config.h` and the descriptors that join the two.
+
+**Layout as built:**
+
+| Interface | Function | Endpoints |
+| --- | --- | --- |
+| 0 | Audio control | none |
+| 1 | Audio streaming, playback from host (transmit audio) | `01` isochronous OUT, 98 bytes; `81` isochronous IN feedback, 4 bytes |
+| 2 | Audio streaming, capture to host (receive audio) | `82` isochronous IN, 98 bytes |
+| 3 | CDC control | `83` interrupt IN notification, 8 bytes |
+| 4 | CDC data | `04` bulk OUT and `84` bulk IN, 64 bytes |
+
+Audio packets are 98 bytes: 48 samples per millisecond plus one spare for rate adjustment. Each streaming interface has an alternate setting 0 with no endpoints, which is how a host turns a stream off.
+
+**Endpoint budget (the main technical risk).** The S3 has endpoint numbers 1 to 6, and TinyUSB's driver allows four IN endpoints besides EP0 (`ep_in_count = 5` including EP0, in its `dwc2_esp32.h`). The layout uses all four: audio feedback, audio capture, CDC notification and CDC data. All endpoints share 1024 bytes of FIFO; the layout needs 214 of 256 words in TinyUSB's worst case. There is no room for another IN endpoint. If the feedback endpoint ever has to go, playback would become adaptive, which means replacing the audio component's handling.
+
+`host/tools/check_usb_descriptors.py` reads the descriptors out of the built firmware and checks all of the above, plus the CDC and audio structure. It checks structure only; it cannot tell whether a host accepts the device.
+
+**Identity.** The device uses the pid.codes test IDs (VID `1209`, PID `0001`), which are for private bench use. It must never use a radio manufacturer's IDs. The serial number string is the chip's MAC address, so two boards on one host are distinguishable.
 
 Line-keyed PTT arrives as CDC `SET_CONTROL_LINE_STATE`. Baud rate and framing are accepted and ignored, so whatever serial settings the host uses for the selected radio work unchanged.
 
@@ -296,10 +315,10 @@ Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descrip
 
 **Milestone 1: USB composite + CAT + loopback**
 
-5. Descriptors for UAC2 + CDC-ACM within the endpoint budget, starting from the Seeed reSpeaker bridge.
+5. Written, not yet on hardware: descriptors for UAC2 + CDC-ACM within the endpoint budget, built on Espressif's `usb_device_uac` component. They pass `host/tools/check_usb_descriptors.py`.
 6. Enumeration check on macOS, Linux and Windows.
-7. Wire CDC to the parser; line-state callback as the control-line PTT source.
-8. Audio loopback: USB OUT through a small FIFO to USB IN, receive muted while keyed.
+7. Written, not yet on hardware: CDC wired to the parser. Line-state changes are logged only; line keying waits for the selectable PTT mode.
+8. Written, not yet on hardware: audio loopback, USB OUT through a drift-steered FIFO (about 20 ms) to USB IN. It passes audio regardless of PTT, so a round trip can be checked with any recorder; muting receive while keyed belongs to parrot and link modes.
 9. Acceptance: `rigctl -m 3085 -r /dev/ttyACM0 -vvvv`, then `f`, `F 7074000`, `m`, `T 1`, `T 0`, with no Hamlib errors; audio round-trips in Audacity or between two fldigi or WSJT-X instances.
 
 **Milestone 2: parrot + channel simulation**
@@ -337,6 +356,9 @@ Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descrip
 | Nov 19, 2026 | Answer CI-V frames at any radio address. | Hamlib's default G90 address differs by version (`A4` in 4.7.1, `88` in master, `70` reported), and 4.7.1 uses `A4` for the IC-705 too. |
 | Nov 19, 2026 | All-digital audio; no codec, no RF. | No extra parts; USB-only build. |
 | Nov 19, 2026 | ESP-IDF with `esp_tinyusb`. | Custom composite descriptors; Arduino kept as fallback. |
+| Nov 19, 2026 | Build the sound card on Espressif's `usb_device_uac` component and the serial port on TinyUSB's CDC class, without `esp_tinyusb`. | The audio component is vendor-tested UAC2 handling for the S3; `esp_tinyusb` has no audio class. |
+| Nov 19, 2026 | Keep asynchronous playback with a feedback endpoint. | It is what the tested component does, and it fits: four IN endpoints of four. |
+| Nov 19, 2026 | Use the pid.codes test VID/PID for development. | Private bench device; no allocated ID, and a real maker's ID would be impersonation. |
 | Nov 19, 2026 | Pin ESP-IDF to v5.5.6 rather than the newer 6.x line. | The USB references this design leans on are written against 5.5; revisit once the USB device works. |
 | Nov 19, 2026 | One audio function and one CDC port only. | S3 endpoint budget. |
 | Nov 19, 2026 | Control-line PTT is a selectable mode, off by default. | Hosts hold RTS and DTR high on open; found in Data2G's source. |
@@ -352,7 +374,10 @@ Framework: ESP-IDF v5.5.6 with `esp_tinyusb` (Arduino is the fallback if descrip
 - [ ] G90, later pass: exact replies (BCD byte order, mode bytes for U-D and L-D, ID bytes for `19 00` and `1D 19`, behaviour on unknown commands, echo), and whether to support `25`/`26` (steps 23–24)
 - [ ] G90, later pass: what the real DE-19 presents over USB (VID/PID, one or two COM ports, audio format, device name), and whether it keys the G90 from RTS or DTR or only by CAT. One setup guide says to hold both lines low with PTT set to CAT. (step 24)
 - [ ] How control-line PTT mode is selected and stored (mock-only CAT command saved to flash, the BOOT button, or both)
-- [ ] Exact S3 IN-endpoint limit, and whether duplex UAC2 with a feedback endpoint plus CDC fits (step 5)
+- [x] Exact S3 IN-endpoint limit, and whether duplex UAC2 with a feedback endpoint plus CDC fits. Four IN endpoints besides EP0; it fits exactly, with FIFO space to spare.
+- [ ] Does each host (macOS, Windows, Linux, Android) enumerate the device and stream audio both ways? Structure is checked; behaviour is not. (step 6)
+- [ ] Audio latency: the audio component moves capture audio in 10 ms blocks and the loopback FIFO holds about 20 ms. Is that acceptable for ARQ turnaround, or do the intervals need tightening? (after step 9)
+- [ ] USB VID/PID if a board ever leaves the bench
 - [ ] Does the S3 composite device enumerate cleanly on both test phones? (after step 9)
 - [x] How does Data2G on Android key PTT? VOX, CAT, DTR or RTS, chosen in its rig pane.
 - [x] Does Data2G on Android support network rig control? Yes: "Network (rigctld or ser2net)".

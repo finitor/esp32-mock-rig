@@ -8,17 +8,18 @@ Keep it current as part of the work: update the section a fact belongs to, add a
 
 ## Status
 
-The CI-V core, the IC-705 personality and the audio DSP exist as portable C with host tests; the CAT side passes real Hamlib on the host. The ESP-IDF project builds for the ESP32-S3 but contains only a boot self-check; there is no USB device code yet, and nothing has been flashed. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
+The CI-V core, the IC-705 personality and the audio DSP exist as portable C with host tests; the CAT side passes real Hamlib on the host. The firmware builds for the ESP32-S3 with the USB composite device, CAT over serial and audio loopback written, and its descriptors pass a structural check. Nothing has been flashed, so no USB behaviour is verified. Work proceeds in the milestones in DESIGN.md (host-testable groundwork, then USB composite + CAT + loopback, then parrot + channel simulation, then two-board link, then the G90 personality), each testable on its own.
 
 ## Stack
 
 - ESP-IDF with `esp_tinyusb` (Arduino only as a fallback if descriptor work is easier there).
 - Target: ESP32-S3-DevKitC-1 clone, ESP32-S3-WROOM-1 N16R8 (16 MB flash, 8 MB octal PSRAM).
-- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later) and `audio_dsp` exist. Planned: `usb_composite`, `audio_engine`, `link`, `ui`.
+- Modules: `cat_civ` (shared CI-V core), `rig_ic705` (personality; `rig_g90` later), `audio_dsp` and `usb_composite` exist. Planned: `audio_engine`, `link`, `ui`.
+- USB stack: Espressif's `usb_device_uac` component in composite mode for audio, TinyUSB's CDC class directly for serial. Do not add `esp_tinyusb`; it brings its own `tusb_config.h` and has no audio class.
 
 ## Hard constraints
 
-- **Endpoint budget:** the S3 USB-OTG has 6 endpoints (5 IN/OUT + 1 IN). One UAC2 audio function (48 kHz 16-bit mono, playback + capture) plus one CDC-ACM port uses nearly all of them. Do not add HID, a second serial port, or a second audio function.
+- **Endpoint budget:** the S3 allows four IN endpoints besides EP0, and the device uses all four (audio feedback, audio capture, CDC notification, CDC data). Do not add HID, a second serial port, a second audio function, or any other IN endpoint. After any change to the descriptors or `tusb_config.h`, build and run `python3 host/tools/check_usb_descriptors.py`; it must pass.
 - **Native USB only:** the mock radio runs on the "USB" jack (GPIO19/20). The "COM"/"UART" jack is for flashing and logs.
 - **Reserved pins:** GPIO35, 36, 37 belong to the octal PSRAM. PSRAM must be configured as Octal (OPI) in menuconfig.
 - **CAT is Icom CI-V, first as an IC-705** (Hamlib rig model 3085, address `A4`): binary frames `FE FE <to> <from> <cmd> ... FD`, OK is `FB`, error is `FA`. Answer frames at any radio address and reply from that address. Take reply layouts from Icom's IC-705 CI-V Reference Guide and from what `rigctl -m 3085 -vvvv` sends, not from memory; Hamlib's simulators are incomplete and only a hint.
