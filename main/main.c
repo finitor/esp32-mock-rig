@@ -5,8 +5,9 @@
  * through a FIFO to the audio engine, which applies the receive channel
  * (mute while keyed, noise at a set SNR, attenuation) and hands the result
  * back as audio the host can record. With the default settings that is a
- * plain loopback. Before USB starts, a short self-check proves the portable
- * modules run on the target.
+ * plain loopback. CI-V frames to the mock's own address change the channel
+ * settings at run time. Before USB starts, a short self-check proves the
+ * portable modules run on the target.
  */
 #include <inttypes.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "audio_dsp.h"
 #include "audio_engine.h"
 #include "cat_civ.h"
+#include "mock_ctl.h"
 #include "rig_ic705.h"
 #include "usb_composite.h"
 
@@ -71,6 +73,7 @@ static bool check_dsp(void)
 
 static civ_t s_civ;
 static ae_t s_engine;
+static mock_ctl_t s_ctl;
 
 static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
 {
@@ -142,7 +145,9 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
     ae_rx_process(&s_engine, have_audio && monitor ? samples : NULL, samples, n);
 }
 
-/* The receive channel as configured at build time (menuconfig). */
+/* The receive channel as configured at build time (menuconfig). These are
+ * the power-up settings; the mock's own CAT controls change them from there
+ * and can put them back. */
 static void engine_start(void)
 {
     ae_config_t cfg;
@@ -160,6 +165,7 @@ static void engine_start(void)
 #endif
     cfg.atten_db = (float)CONFIG_MOCK_ATTEN_DB;
     ae_configure(&s_engine, &cfg);
+    mock_ctl_init(&s_ctl, &s_engine, &cfg);
 
     ESP_LOGI(TAG, "receive channel: %s route, %s, attenuation %d dB",
              cfg.route == AE_ROUTE_RADIO ? "radio" : "monitor",
@@ -187,6 +193,8 @@ void app_main(void)
 
     engine_start();
     civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
+    civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
+    ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
 
     const usb_composite_config_t usb = {

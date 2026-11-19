@@ -1,3 +1,3 @@
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
-                       PRIV_REQUIRES cat_civ rig_ic705 audio_dsp audio_engine usb_composite esp_psram)
+                       PRIV_REQUIRES cat_civ rig_ic705 audio_dsp audio_engine mock_ctl usb_composite esp_psram)

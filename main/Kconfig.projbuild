@@ -1,6 +1,6 @@
 menu "Mock radio: receive channel at power-up"
 
-    comment "Build-time settings until the mock-only CAT controls exist."
+    comment "Power-up values. Change them at run time with host/tools/mockctl.py."
 
     choice MOCK_ROUTE
         prompt "Receive route"

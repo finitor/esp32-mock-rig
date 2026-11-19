@@ -45,6 +45,16 @@ extern "C" {
  * and does not move the level estimate. */
 #define AE_SILENCE_DBFS (-60.0f)
 
+/* Setting ranges. ae_configure() clamps to them. */
+#define AE_SNR_MIN_DB (-60.0f)
+#define AE_SNR_MAX_DB 80.0f
+#define AE_REF_BW_MIN_HZ 100.0f
+#define AE_REF_BW_MAX_HZ (AE_FS_HZ / 2.0f)
+#define AE_FLOOR_MIN_DBFS (-90.0f)
+#define AE_FLOOR_MAX_DBFS AE_SIGNAL_MAX_DBFS
+#define AE_ATTEN_MAX_DB 120.0f
+#define AE_TURNAROUND_MAX_MS 5000u
+
 typedef enum {
     AE_ROUTE_MONITOR = 0, /* receive is always open; PTT is ignored */
     AE_ROUTE_RADIO,       /* receive is muted while keyed and for the turnaround time after */

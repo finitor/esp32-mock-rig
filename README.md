@@ -2,7 +2,7 @@
 
 ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
 
-**Status:** early. The CAT protocol core, the IC-705 personality, the audio DSP and the channel simulation are written and tested on a desktop, and the CAT side passes real Hamlib. The firmware, including the USB sound card and serial port, builds but has not yet been run on a board.
+**Status:** early. The CAT protocol core, the IC-705 personality, the audio DSP, the channel simulation and its run-time controls are written and tested on a desktop, and the CAT side passes real Hamlib. The firmware, including the USB sound card and serial port, builds but has not yet been run on a board.
 
 ## What it will do
 
@@ -45,7 +45,15 @@ The firmware builds with ESP-IDF v5.5.6. With ESP-IDF activated in the shell:
 idf.py build
 ```
 
-The firmware presents the sound card and CAT serial port, with audio looped back. Noise at a set SNR, attenuation and radio-style receive muting can be switched on at build time with `idf.py menuconfig`. None of it has been tested on hardware yet. To check the USB descriptors in a build against the ESP32-S3's limits:
+The firmware presents the sound card and CAT serial port, with audio looped back. Noise at a set SNR, attenuation and radio-style receive muting are off at power-up unless switched on at build time with `idf.py menuconfig`, and can be changed while it runs over the CAT serial port:
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> noise=on snr=-12.5
+```
+
+None of it has been tested on hardware yet.
+
+To check the USB descriptors in a build against the ESP32-S3's limits:
 
 ```bash
 python3 host/tools/check_usb_descriptors.py

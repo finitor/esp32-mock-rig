@@ -64,7 +64,7 @@ void civ_u16_to_bcd_be(uint16_t v, uint8_t *bcd, size_t nbytes)
 
 /* ---- replies ---------------------------------------------------------- */
 
-void civ_reply(civ_t *c, const civ_frame_t *f, const uint8_t *payload, size_t len)
+static void send_frame(civ_t *c, const civ_frame_t *f, const uint8_t *payload, size_t len)
 {
     uint8_t out[CIV_MAX_FRAME];
     if (len + 5 > sizeof out) return;
@@ -81,21 +81,21 @@ void civ_reply_ok(civ_t *c, const civ_frame_t *f)
 {
     const uint8_t ok = CIV_OK;
     c->frames_ok++;
-    civ_reply(c, f, &ok, 1);
+    send_frame(c, f, &ok, 1);
 }
 
 void civ_reply_ng(civ_t *c, const civ_frame_t *f)
 {
     const uint8_t ng = CIV_NG;
     c->frames_ng++;
-    civ_reply(c, f, &ng, 1);
+    send_frame(c, f, &ng, 1);
 }
 
 /* A data reply: counts as a success. */
-static void reply_data(civ_t *c, const civ_frame_t *f, const uint8_t *payload, size_t len)
+void civ_reply(civ_t *c, const civ_frame_t *f, const uint8_t *payload, size_t len)
 {
     c->frames_ok++;
-    civ_reply(c, f, payload, len);
+    send_frame(c, f, payload, len);
 }
 
 /* ---- state helpers ---------------------------------------------------- */
@@ -171,6 +171,13 @@ bool civ_set_meter(civ_t *c, uint8_t sub, uint16_t value)
     return true;
 }
 
+void civ_set_private(civ_t *c, uint8_t addr, civ_private_fn fn, void *ctx)
+{
+    c->private_addr = addr;
+    c->private_fn = fn;
+    c->private_ctx = ctx;
+}
+
 void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, void *ctx)
 {
     memset(c, 0, sizeof *c);
@@ -210,7 +217,7 @@ static void send_freq(civ_t *c, const civ_frame_t *f, const uint8_t *head, size_
     uint8_t p[8];
     memcpy(p, head, head_len);
     civ_u64_to_bcd_le(c->vfo[vfo].freq, &p[head_len], 5);
-    reply_data(c, f, p, head_len + 5);
+    civ_reply(c, f, p, head_len + 5);
 }
 
 /* 06 <mode> [<filter>] and the transceive form 01 <mode> [<filter>]. */
@@ -265,7 +272,7 @@ static void cmd_split(civ_t *c, const civ_frame_t *f)
 {
     if (f->len == 0) {
         const uint8_t p[2] = {0x0F, (uint8_t)(c->split ? 0x01 : 0x00)};
-        reply_data(c, f, p, 2);
+        civ_reply(c, f, p, 2);
         return;
     }
     if (f->len == 1) {
@@ -289,7 +296,7 @@ static void cmd_byte(civ_t *c, const civ_frame_t *f, uint8_t *value)
 {
     if (f->len == 0) {
         const uint8_t p[2] = {f->cmd, *value};
-        reply_data(c, f, p, 2);
+        civ_reply(c, f, p, 2);
     } else if (f->len == 1) {
         *value = f->data[0];
         civ_reply_ok(c, f);
@@ -309,7 +316,7 @@ static void cmd_level(civ_t *c, const civ_frame_t *f)
     if (f->len == 1) {
         uint8_t p[4] = {0x14, f->data[0]};
         civ_u16_to_bcd_be(c->level[i], &p[2], 2);
-        reply_data(c, f, p, 4);
+        civ_reply(c, f, p, 4);
         return;
     }
     uint16_t v;
@@ -333,10 +340,10 @@ static void cmd_meter(civ_t *c, const civ_frame_t *f)
     uint8_t p[4] = {0x15, sub};
     if (sub == 0x01 || sub == 0x05 || sub == 0x07) { /* squelch, tone squelch, overflow */
         p[2] = (uint8_t)(c->meter[i] ? 0x01 : 0x00);
-        reply_data(c, f, p, 3);
+        civ_reply(c, f, p, 3);
     } else {
         civ_u16_to_bcd_be(c->meter[i], &p[2], 2);
-        reply_data(c, f, p, 4);
+        civ_reply(c, f, p, 4);
     }
 }
 
@@ -350,7 +357,7 @@ static void cmd_func(civ_t *c, const civ_frame_t *f)
     }
     if (f->len == 1) {
         const uint8_t p[3] = {0x16, f->data[0], (uint8_t)c->func[i]};
-        reply_data(c, f, p, 3);
+        civ_reply(c, f, p, 3);
     } else if (f->len == 2) {
         c->func[i] = f->data[1];
         civ_reply_ok(c, f);
@@ -371,7 +378,7 @@ static void cmd_1a(civ_t *c, const civ_frame_t *f)
         if (!has(c, CIV_CAP_FILTER_BW)) break;
         if (f->len == 1) {
             const uint8_t p[3] = {0x1A, 0x03, c->filter_bw};
-            reply_data(c, f, p, 3);
+            civ_reply(c, f, p, 3);
             return;
         }
         if (f->len == 2) {
@@ -386,7 +393,7 @@ static void cmd_1a(civ_t *c, const civ_frame_t *f)
         if (i < 0) break;
         if (f->len == 3) {
             const uint8_t p[5] = {0x1A, 0x05, f->data[1], f->data[2], c->setting[i]};
-            reply_data(c, f, p, 5);
+            civ_reply(c, f, p, 5);
             return;
         }
         unsigned d;
@@ -399,7 +406,7 @@ static void cmd_1a(civ_t *c, const civ_frame_t *f)
         if (!has(c, CIV_CAP_DATA_MODE)) break;
         if (f->len == 1) {
             const uint8_t p[4] = {0x1A, 0x06, (uint8_t)(v->data ? 0x01 : 0x00), (uint8_t)(v->data ? v->filter : 0x00)};
-            reply_data(c, f, p, 4);
+            civ_reply(c, f, p, 4);
             return;
         }
         if ((f->len == 2 || f->len == 3) && f->data[1] <= 0x01) {
@@ -429,7 +436,7 @@ static void cmd_1c(civ_t *c, const civ_frame_t *f)
     case 0x00: /* PTT */
         if (f->len == 1) {
             const uint8_t p[3] = {0x1C, 0x00, (uint8_t)(c->ptt ? 0x01 : 0x00)};
-            reply_data(c, f, p, 3);
+            civ_reply(c, f, p, 3);
             return;
         }
         if (f->len == 2 && f->data[1] <= 0x01) {
@@ -442,7 +449,7 @@ static void cmd_1c(civ_t *c, const civ_frame_t *f)
         if (!has(c, CIV_CAP_TUNER)) break;
         if (f->len == 1) {
             const uint8_t p[3] = {0x1C, 0x01, c->tuner};
-            reply_data(c, f, p, 3);
+            civ_reply(c, f, p, 3);
             return;
         }
         if (f->len == 2 && f->data[1] <= 0x02) {
@@ -471,7 +478,7 @@ static void cmd_rit(civ_t *c, const civ_frame_t *f)
             int hz = c->rit_hz < 0 ? -c->rit_hz : c->rit_hz;
             civ_u64_to_bcd_le((uint64_t)hz, &p[2], 2);
             p[4] = (uint8_t)(c->rit_hz < 0 ? 0x01 : 0x00);
-            reply_data(c, f, p, 5);
+            civ_reply(c, f, p, 5);
             return;
         }
         if (f->len == 4 && f->data[3] <= 0x01) {
@@ -486,7 +493,7 @@ static void cmd_rit(civ_t *c, const civ_frame_t *f)
     case 0x02: /* delta-TX shares the RIT flag here: the mock has no RF to offset */
         if (f->len == 1) {
             const uint8_t p[3] = {0x21, f->data[0], (uint8_t)(c->rit_on && f->data[0] == 0x01 ? 0x01 : 0x00)};
-            reply_data(c, f, p, 3);
+            civ_reply(c, f, p, 3);
             return;
         }
         if (f->len == 2 && f->data[1] <= 0x01) {
@@ -529,7 +536,7 @@ static void cmd_x26(civ_t *c, const civ_frame_t *f)
     civ_vfo_t *v = &c->vfo[f->data[0] == 0x00 ? c->sel : c->sel ^ 1];
     if (f->len == 1) {
         const uint8_t p[5] = {0x26, f->data[0], v->mode, (uint8_t)(v->data ? 0x01 : 0x00), v->filter};
-        reply_data(c, f, p, 5);
+        civ_reply(c, f, p, 5);
         return;
     }
     if (f->len > 4 || !mode_ok(c->rig, f->data[1])) {
@@ -573,7 +580,7 @@ static void dispatch(civ_t *c, const civ_frame_t *f)
         if (f->len == 0) {
             const civ_vfo_t *v = &c->vfo[c->sel];
             const uint8_t p[3] = {0x04, v->mode, v->filter};
-            reply_data(c, f, p, 3);
+            civ_reply(c, f, p, 3);
         } else {
             civ_reply_ng(c, f);
         }
@@ -621,7 +628,7 @@ static void dispatch(civ_t *c, const civ_frame_t *f)
         if (f->len == 1 && f->data[0] == 0x00 && c->rig->id_len + 2 <= 8) {
             uint8_t p[8] = {0x19, 0x00};
             memcpy(&p[2], c->rig->id, c->rig->id_len);
-            reply_data(c, f, p, 2 + c->rig->id_len);
+            civ_reply(c, f, p, 2 + c->rig->id_len);
         } else {
             civ_reply_ng(c, f);
         }
@@ -666,6 +673,10 @@ static void end_of_frame(civ_t *c)
     /* Acknowledgements are never commands; a frame to itself is noise. */
     if (f.cmd == CIV_OK || f.cmd == CIV_NG || f.to == f.from) {
         c->frames_dropped++;
+        return;
+    }
+    if (c->private_fn && f.to == c->private_addr) {
+        c->private_fn(c, &f, c->private_ctx); /* not a radio command: the personality never sees it */
         return;
     }
     dispatch(c, &f);

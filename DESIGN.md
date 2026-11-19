@@ -10,11 +10,12 @@ Last updated: Nov 19, 2026.
 
 - The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected. The commands the Android FT8 apps FT8CN and FT8AF send an IC-705 were read from their source and all get correct replies on the host; neither app has been run.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
-- The receive channel of Milestone 2 (`audio_engine`) exists as portable C with host unit tests: a fixed noise floor with the signal held at a set SNR, attenuation, and receive mute while keyed plus a turnaround delay. It is wired into the firmware's audio path with build-time settings; the default is still a plain loopback. Run-time control waits for the mock-only CAT commands (step 12).
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 246 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The receive channel of Milestone 2 (`audio_engine`) exists as portable C with host unit tests: a fixed noise floor with the signal held at a set SNR, attenuation, and receive mute while keyed plus a turnaround delay. It is wired into the firmware's audio path; the power-up settings are build-time and the default is still a plain loopback.
+- The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the channel settings at run time and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 248 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 is under way meanwhile: the channel (step 11) is written; the parrot buffer, mock-only controls and VOX remain.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 is under way meanwhile: the channel (step 11) and the mock-only controls (step 12) are written; the parrot buffer and VOX remain.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -85,10 +86,11 @@ Firmware modules:
 - `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
 - `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
 - `audio_engine`: what happens to receive audio, using `audio_dsp`: mute while keyed, turnaround delay, noise at a set SNR, attenuation. Routing between USB, the parrot buffer in PSRAM and the link will join it
+- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: channel settings and status now; parrot, link mode, PTT source and personality later
 - `link`: one interface with loopback, ESP-NOW and UART backends; jitter buffer and drift correction
 - `ui`: RGB LED states; a Wi-Fi status page later if wanted
 
-`cat_civ`, the personalities, `audio_dsp` and `audio_engine` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
+`cat_civ`, the personalities, `audio_dsp`, `audio_engine` and `mock_ctl` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
 
 Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB, the audio engine and the link layer each get a task; `cat_civ` is passive and runs in whichever task delivers serial bytes.
 
@@ -100,10 +102,11 @@ Repository layout:
 | `components/rig_ic705/` | IC-705 personality |
 | `components/audio_dsp/` | Audio DSP |
 | `components/audio_engine/` | Receive channel: mute and turnaround, SNR, attenuation |
+| `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
-| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring; `Kconfig.projbuild` holds the build-time channel settings |
+| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring; `Kconfig.projbuild` holds the power-up channel settings |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp` and `test_engine` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine` and `test_ctl` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -169,7 +172,7 @@ OK:       FE FE <controller addr> <radio addr> FB FD
 error:    FE FE <controller addr> <radio addr> FA FD
 ```
 
-**Address rule: answer whatever radio address the frame is sent to, and reply from that same address.** The controller address is normally `E0`. Measured with Hamlib 4.7.1 on the development Mac: the IC-705 backend opens with `FE FE A4 E0 03 FD`, the IC-7300 backend with `FE FE 94 E0 03 FD` followed by `25 00`, and the G90 backend with `FE FE A4 E0 03 FD`. Accepting any address keeps the mock independent of the host's Hamlib version and lets closely related models be tried.
+**Address rule: answer whatever radio address the frame is sent to, and reply from that same address.** The controller address is normally `E0`. Measured with Hamlib 4.7.1 on the development Mac: the IC-705 backend opens with `FE FE A4 E0 03 FD`, the IC-7300 backend with `FE FE 94 E0 03 FD` followed by `25 00`, and the G90 backend with `FE FE A4 E0 03 FD`. Accepting any address keeps the mock independent of the host's Hamlib version and lets closely related models be tried. The one exception is `F0`, which the mock keeps for its own controls (see [Mock-only controls](#mock-only-controls)).
 
 **No bus echo.** The IC-705 has a "CI-V USB Echo Back" setting; the mock behaves as with it off.
 
@@ -219,7 +222,49 @@ What is known so far, kept here so the later pass starts from it:
 
 ### Mock-only controls
 
-Replay last TX, play canned clip N, set SNR, set link mode, set PTT source and select personality need a channel that no real radio command uses. Proposal: CI-V frames sent to a private radio address reserved for the mock. Still to be decided.
+Settings that belong to the mock, not to the radio it imitates, travel as CI-V frames on the same serial port, sent to an address the mock keeps for itself: **`F0`**. Frames to `F0` go to `mock_ctl` and never reach the personality; every other address is still the radio. Because the split is by address, the command numbers below are a space of their own and cannot collide with any radio's commands, whichever personality is loaded.
+
+Why `F0`: in Hamlib 4.7.1's Icom backends the default radio addresses run from `01` to `B6`, one receiver (the Perseus) sits at `E1`, and the controller is `E0`. `FA` to `FF` are protocol bytes. Nothing uses `F0`. The core itself does not know the address; `cat_civ` only offers a hook that takes one address away from the radio (`civ_set_private`), and the firmware gives it `F0`.
+
+```
+command:  FE FE F0 <controller> <cmd> [<data>...] FD
+read:     FE FE <controller> F0 <cmd> <data>... FD
+set OK:   FE FE <controller> F0 FB FD
+refused:  FE FE <controller> F0 FA FD
+```
+
+A command with no data reads; with data it sets. Numbers are BCD, most significant byte first, like the radio's `14` levels: 12.5 dB is `01 25`, in tenths. A signed number has one more byte, `00` for plus and `01` for minus. A value outside its range is refused with `FA`, not clamped.
+
+| Command | Meaning | Data |
+| --- | --- | --- |
+| `00` | Identity, read only | Protocol version (`01`), then the personality's Hamlib model in 2 bytes (`30 85`) |
+| `01` | Put every setting back to its power-up value | None |
+| `10` | Receive route | `00` monitor, `01` radio |
+| `11` | Noise | `00` off, `01` on |
+| `12` | SNR | Tenths of a dB, 2 bytes plus sign: −60.0 to +80.0 |
+| `13` | Bandwidth the SNR is quoted in | Hz, 3 bytes: 100 to 24000 |
+| `14` | Noise floor | Tenths of a dB below full scale, 2 bytes: 12.0 to 90.0 |
+| `15` | Attenuation | Tenths of a dB, 2 bytes: 0 to 120.0 |
+| `16` | Turnaround time | ms, 2 bytes: 0 to 5000 |
+| `20` | Status, read only | Flags (`01` receive muted, `02` gain limited); level of the receive source in tenths of a dB below full scale, 2 bytes (`99 99` if nothing has been measured); gain the channel applies, tenths of a dB, 2 bytes plus sign |
+| `30`, `31`, `40`, `50`, `60` | Reserved: parrot replay, play clip N, link mode, PTT source, personality | Refused until those parts exist |
+
+Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
+
+`host/tools/mockctl.py` sends these from a PC (Python 3 only; it uses pyserial if installed, which Windows needs):
+
+```
+mockctl.py -p PORT                          show every setting and the status
+mockctl.py -p PORT noise=on snr=-12.5       change settings, then show them
+mockctl.py -p PORT reset                    back to the power-up settings
+```
+
+Limits, as built:
+
+- Settings live in RAM. A power cycle returns to the build-time values (menuconfig); `01` returns to them without one.
+- The controls share the CAT port, so they can only be sent while no other program is using it, or by the program that is. A reply read by a second program on the same port is lost to the sender and may confuse the other. A phone app holding the port leaves no way in at all; see the open questions.
+- `rigctl`'s `w` command sends a frame to `F0` (seen in the pseudo-terminal log) but printed no reply with Hamlib 4.7.1, so it can set but not usefully read.
+- Verified on the host only: unit tests through the real parser and engine, and `mockctl.py` against the parser over a pseudo-terminal. Not run on a board.
 
 ## PTT
 
@@ -269,7 +314,7 @@ As built in `audio_engine` (host-tested, not yet run on a board):
 - **Level measurement.** The signal level is the mean square of its loud parts, measured in 1 ms pieces (anything under −60 dBFS is ignored), as a plain average for the first second and a running average over about a second after that. 200 ms of silence ends a transmission and the next one is measured afresh. The gain therefore settles within the first few milliseconds of a transmission and moves little after.
 - **Attenuation** applies on top: with noise off it is a plain loss; with noise on it lowers the signal, and so the SNR, by that many dB.
 - **Routes.** *Monitor*: receive is always open and PTT is ignored; with noise off and no attenuation this is the Milestone 1 loopback, bit for bit. *Radio*: receive is silent while keyed and for the turnaround time after unkeying (default 30 ms), then carries the receive source through the channel. PTT is sampled once per audio block, so the turnaround can run up to 10 ms long. Until parrot mode or the link exists the radio route has no receive source, so the host hears the noise floor only.
-- **Settings** are build-time for now (`idf.py menuconfig`, "Mock radio: receive channel at power-up"): route, noise on/off, SNR, reference bandwidth, noise floor, attenuation, turnaround time. The engine accepts changes at run time from any task; the mock-only CAT controls will use that.
+- **Settings:** route, noise on/off, SNR, reference bandwidth, noise floor, attenuation and turnaround time. Their power-up values are build-time (`idf.py menuconfig`, "Mock radio: receive channel at power-up"); the [mock-only controls](#mock-only-controls) change them at run time, and the engine takes a change at the next audio block.
 - **Precision.** The channel's gain has 24 fractional bits and signal and noise are summed before rounding, so a signal of a few counts at −30 dB SNR keeps its level and is dithered by the noise.
 
 ## Two-board link
@@ -369,8 +414,8 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 **Milestone 2: parrot + channel simulation**
 
 10. PSRAM parrot buffer at 12 kHz: record on PTT on, replay on PTT off after a configurable delay.
-11. Written, not yet on hardware: channel on the receive path in `audio_engine`: noise at SNR, attenuation, receive mute while keyed and TX→RX turnaround delay, with host tests. Settings are build-time until step 12.
-12. Mock-only controls on their own CI-V address, checked against the IC-705 and G90 command sets and Hamlib for collisions.
+11. Written, not yet on hardware: channel on the receive path in `audio_engine`: noise at SNR, attenuation, receive mute while keyed and TX→RX turnaround delay, with host tests. Power-up settings are build-time; step 12 changes them at run time.
+12. Written, not yet on hardware: mock-only controls in `mock_ctl` on CI-V address `F0`, which no radio in Hamlib 4.7.1 uses; a separate address keeps them clear of every radio's command set. Channel settings and status so far, with host tests and `host/tools/mockctl.py`. Parrot, link, PTT-source and personality commands have numbers reserved and join with those parts.
 13. VOX PTT and LED states (red recording, green playing).
 14. Optional flash persistence for the last transmission and canned clips.
 15. Acceptance: WSJT-X FT8 self-decode with replay aligned to the 15 s slot.
@@ -413,6 +458,9 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | SNR is quoted in 2500 Hz by default. | Data2G and WSJT-X both use 2500 Hz. |
 | Nov 19, 2026 | Two receive routes: monitor (always open, PTT ignored) and radio (mute while keyed plus turnaround). Monitor with noise off is the power-up default. | Loopback testing needs receive open during transmit; parrot and link need radio behaviour. The default keeps Milestone 1's acceptance test unchanged. |
 | Nov 19, 2026 | Channel settings are build-time (menuconfig) until the mock-only CAT controls exist. | Lets the channel be tried on a board before step 12 without inventing a temporary control path. |
+| Nov 19, 2026 | Mock-only controls are CI-V frames to a private address, `F0`, handled by a separate module (`mock_ctl`) through a one-address hook in the core. | No extra USB endpoint is needed; an address of its own means no command number can collide with a radio's, for any personality; `F0` is used by no radio or controller in Hamlib 4.7.1. The core stays radio-neutral and does not know what the controls are. |
+| Nov 19, 2026 | Control values are BCD in tenths of a dB (Hz and ms as whole numbers), most significant byte first, with a sign byte where needed; out-of-range values are refused with `FA`. | Reads like the radio's own frames in a log; a refusal tells the sender its value did not take, where clamping would hide it. |
+| Nov 19, 2026 | Run-time settings are not stored; the build-time values are the power-up values and control `01` restores them. | Persistence is step 14; a bench device should start in a known state. |
 
 ## Open questions
 
@@ -422,13 +470,15 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [x] Which CI-V commands FT8CN sends an IC-705. `26 00`, `05`, `1A 05 01 19`, `1C 00`, `15 12` and `15 13`; see [Other Android clients: FT8CN](#other-android-clients-ft8cn). Read from source and replayed on the host, not run on a phone.
 - [x] Should the IC-705 personality accept `1A 05 01 19` (data modulation input) and answer `FB`? Yes, added Nov 19, 2026. Its power-up value is USB because that is the mock's only input; the real radio's factory default was not checked.
 - [ ] Does FT8AF (or FT8CN) work end to end against the mock on a phone, and does it show a decode of its own replayed transmission in parrot mode? (after step 9 and step 10)
-- [ ] Which CI-V address and command numbers to use for mock-only controls (step 12)
+- [x] Which CI-V address and command numbers to use for mock-only controls. Address `F0`; numbers in [Mock-only controls](#mock-only-controls). Decided Nov 19, 2026.
+- [ ] How to change the mock's settings while a modem application holds the CAT port (always the case on a phone, and with WSJT-X on a PC). A line console on the UART jack driving the same settings is the likely answer; it needs no USB endpoint. (before step 15)
+- [ ] Do the mock-only controls work on a board, and does a setting change mid-stream sound clean? Host-tested only. (after step 9)
 - [x] Default reference bandwidth for the SNR setting: 2500 Hz. Data2G reports its SNR in 2500 Hz (`SNR_REF_BW_HZ` in `native/core/generated/config.hpp`), as does WSJT-X; 3000 Hz remains a setting for VARA.
 - [ ] Are the channel defaults right for real modems: noise floor −40 dBFS, turnaround 30 ms, and silence (not a low noise floor) on receive while keyed? To be judged with WSJT-X, FT8AF and Data2G on a board. (after step 9)
-- [ ] Should the S-meter (`15 02`) follow the receive level the engine produces? `civ_set_meter` exists for it. (step 12 or 13)
+- [ ] Should the S-meter (`15 02`) follow the receive level the engine produces? `civ_set_meter` exists for it. (step 13)
 - [ ] G90, later pass: exact replies (BCD byte order, mode bytes for U-D and L-D, ID bytes for `19 00` and `1D 19`, behaviour on unknown commands, echo), and whether to support `25`/`26` (steps 23–24)
 - [ ] G90, later pass: what the real DE-19 presents over USB (VID/PID, one or two COM ports, audio format, device name), and whether it keys the G90 from RTS or DTR or only by CAT. One setup guide says to hold both lines low with PTT set to CAT. (step 24)
-- [ ] How control-line PTT mode is selected and stored (mock-only CAT command saved to flash, the BOOT button, or both)
+- [ ] How control-line PTT mode is selected and stored (mock-only CAT command saved to flash, the BOOT button, or both). Control number `50` is reserved for it.
 - [x] Exact S3 IN-endpoint limit, and whether duplex UAC2 with a feedback endpoint plus CDC fits. Four IN endpoints besides EP0; it fits exactly, with FIFO space to spare.
 - [ ] Does each host (macOS, Windows, Linux, Android) enumerate the device and stream audio both ways? Structure is checked; behaviour is not. (step 6)
 - [ ] Audio latency: the audio component moves capture audio in 10 ms blocks and the loopback FIFO holds about 20 ms. Is that acceptable for ARQ turnaround, or do the intervals need tightening? (after step 9)

@@ -127,11 +127,20 @@ typedef struct {
 typedef void (*civ_tx_fn)(void *ctx, const uint8_t *bytes, size_t len);
 typedef void (*civ_ptt_fn)(void *ctx, bool on);
 
+/* Handler for frames sent to the private address (see civ_set_private).
+ * It must answer every frame itself, with civ_reply(), civ_reply_ok() or
+ * civ_reply_ng(). */
+typedef void (*civ_private_fn)(civ_t *c, const civ_frame_t *f, void *ctx);
+
 struct civ {
     const civ_rig_t *rig;
     civ_tx_fn tx;
     civ_ptt_fn on_ptt;
     void *ctx;
+
+    civ_private_fn private_fn; /* NULL: every address is the radio */
+    void *private_ctx;
+    uint8_t private_addr;
 
     /* receive framing */
     uint8_t rx[CIV_MAX_FRAME];
@@ -167,6 +176,12 @@ struct civ {
 /* Reset to the personality's power-up state. tx must not be NULL. */
 void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, void *ctx);
 
+/* Take one address away from the radio. Frames sent to addr go to fn and
+ * nowhere else; every other address is still answered as the radio. For
+ * controls that belong to the device rather than to the radio it imitates.
+ * Call after civ_init(), which clears it. fn NULL gives the address back. */
+void civ_set_private(civ_t *c, uint8_t addr, civ_private_fn fn, void *ctx);
+
 /* Feed received serial bytes. Replies are sent from inside this call. */
 void civ_feed(civ_t *c, const uint8_t *bytes, size_t len);
 
@@ -192,7 +207,8 @@ void civ_reply_ok(civ_t *c, const civ_frame_t *f);
 void civ_reply_ng(civ_t *c, const civ_frame_t *f);
 
 /* Reply with a data frame: FE FE <from> <to> <payload...> FD.
- * payload starts with the command byte. */
+ * payload starts with the command byte. Nothing is sent if the frame would
+ * be longer than CIV_MAX_FRAME. */
 void civ_reply(civ_t *c, const civ_frame_t *f, const uint8_t *payload, size_t len);
 
 /* Frequency BCD, least significant byte first (CI-V wire order). */

@@ -10,6 +10,9 @@
  *   rigctl -m 3085 -r <link-path> -vvvv
  *
  * Every frame is logged to stderr in hex unless -q is given.
+ *
+ * The mock's own controls answer at address F0 as in the firmware, so
+ * tools/mockctl.py can be tried against it too.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -26,7 +29,9 @@
 #include <pty.h>
 #endif
 
+#include "audio_engine.h"
 #include "cat_civ.h"
+#include "mock_ctl.h"
 #include "rig_ic705.h"
 
 static int g_master = -1;
@@ -105,8 +110,18 @@ int main(int argc, char **argv)
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
 
+    /* The mock's own controls, on an engine that never sees audio: settings
+     * can be set and read back, and the status stays at "nothing measured". */
+    static ae_t engine;
+    static mock_ctl_t ctl;
+    ae_config_t power_up;
+    ae_init(&engine, 1u);
+    ae_config_defaults(&power_up);
+    mock_ctl_init(&ctl, &engine, &power_up);
+
     civ_t civ;
     civ_init(&civ, &rig_ic705, tx, on_ptt, NULL);
+    civ_set_private(&civ, MOCK_CTL_ADDR, mock_ctl_command, &ctl);
     fprintf(stderr, "%s on %s (link %s)\n", rig_ic705.name, name, g_link);
 
     uint8_t buf[256];

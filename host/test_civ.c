@@ -265,6 +265,56 @@ static void test_identity_and_addressing(void)
     CHECK(civ_in_tx_range(&c, 14074000) && !civ_in_tx_range(&c, 14500000));
 }
 
+static int g_private_calls;
+
+/* A stand-in for the mock's own controls: 01 is a set, 02 a read. */
+static void private_fn(civ_t *c, const civ_frame_t *f, void *ctx)
+{
+    static const uint8_t data[] = {0x02, 0x12, 0x34};
+    (*(int *)ctx)++;
+    if (f->cmd == 0x01 && f->len == 1) civ_reply_ok(c, f);
+    else if (f->cmd == 0x02 && f->len == 0) civ_reply(c, f, data, sizeof data);
+    else civ_reply_ng(c, f);
+}
+
+static void test_private_address(void)
+{
+    civ_t c;
+    fresh(&c);
+    /* Until an address is taken, F0 is the radio like any other. */
+    EXPECT(&c, "fe fe f0 e0 03 fd", "fe fe e0 f0 03 00 40 07 14 00 fd");
+
+    g_private_calls = 0;
+    civ_set_private(&c, 0xF0, private_fn, &g_private_calls);
+    EXPECT(&c, "fe fe f0 e0 01 55 fd", "fe fe e0 f0 fb fd");
+    EXPECT(&c, "fe fe f0 e1 02 fd", "fe fe e1 f0 02 12 34 fd");
+    CHECK(g_private_calls == 2);
+
+    /* Radio commands sent there do not reach the radio. */
+    EXPECT(&c, "fe fe f0 e0 03 fd", "fe fe e0 f0 fa fd");
+    EXPECT(&c, "fe fe f0 e0 05 00 00 10 07 00 fd", "fe fe e0 f0 fa fd");
+    EXPECT(&c, "fe fe f0 e0 1c 00 01 fd", "fe fe e0 f0 fa fd");
+    CHECK(g_ptt_events == 0 && !civ_ptt(&c));
+    CHECK(g_private_calls == 5);
+
+    /* Every other address is still the radio, unchanged by the above. */
+    EXPECT(&c, "fe fe a4 e0 03 fd", "fe fe e0 a4 03 00 40 07 14 00 fd");
+    EXPECT(&c, "fe fe 94 e0 03 fd", "fe fe e0 94 03 00 40 07 14 00 fd");
+    CHECK(g_private_calls == 5);
+    CHECK(c.frames_ok == 5 && c.frames_ng == 3); /* the handler's replies are counted too */
+
+    /* Acknowledgements are dropped before the handler, as for the radio. */
+    EXPECT(&c, "fe fe f0 e0 fb fd", "");
+    CHECK(g_private_calls == 5);
+
+    civ_set_private(&c, 0xF0, NULL, NULL);
+    EXPECT(&c, "fe fe f0 e0 03 fd", "fe fe e0 f0 03 00 40 07 14 00 fd");
+
+    civ_set_private(&c, 0xF0, private_fn, &g_private_calls);
+    fresh(&c); /* civ_init clears it */
+    EXPECT(&c, "fe fe f0 e0 03 fd", "fe fe e0 f0 03 00 40 07 14 00 fd");
+}
+
 static void test_framing(void)
 {
     civ_t c;
@@ -322,6 +372,7 @@ int main(void)
     test_levels_meters_funcs();
     test_menu_settings();
     test_identity_and_addressing();
+    test_private_address();
     test_framing();
     test_external_ptt();
     printf("%d checks, %d failed\n", g_checks, g_failed);

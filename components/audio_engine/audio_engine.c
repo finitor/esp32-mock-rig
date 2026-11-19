@@ -54,11 +54,12 @@ void ae_configure(ae_t *e, const ae_config_t *cfg)
 {
     atomic_store(&e->cfg_route, cfg->route == AE_ROUTE_RADIO ? 1 : 0);
     atomic_store(&e->cfg_noise_on, cfg->noise_on ? 1 : 0);
-    atomic_store(&e->cfg_snr_cdb, to_cdb(cfg->snr_db, -60.0f, 80.0f));
-    atomic_store(&e->cfg_ref_bw_hz, (int32_t)lroundf(clampf(cfg->ref_bw_hz, 100.0f, (float)AE_FS_HZ / 2.0f)));
-    atomic_store(&e->cfg_floor_cdb, to_cdb(cfg->noise_floor_dbfs, -90.0f, AE_SIGNAL_MAX_DBFS));
-    atomic_store(&e->cfg_atten_cdb, to_cdb(cfg->atten_db, 0.0f, 120.0f));
-    atomic_store(&e->cfg_turnaround_ms, cfg->turnaround_ms > 5000u ? 5000u : cfg->turnaround_ms);
+    atomic_store(&e->cfg_snr_cdb, to_cdb(cfg->snr_db, AE_SNR_MIN_DB, AE_SNR_MAX_DB));
+    atomic_store(&e->cfg_ref_bw_hz, (int32_t)lroundf(clampf(cfg->ref_bw_hz, AE_REF_BW_MIN_HZ, AE_REF_BW_MAX_HZ)));
+    atomic_store(&e->cfg_floor_cdb, to_cdb(cfg->noise_floor_dbfs, AE_FLOOR_MIN_DBFS, AE_FLOOR_MAX_DBFS));
+    atomic_store(&e->cfg_atten_cdb, to_cdb(cfg->atten_db, 0.0f, AE_ATTEN_MAX_DB));
+    atomic_store(&e->cfg_turnaround_ms,
+                 cfg->turnaround_ms > AE_TURNAROUND_MAX_MS ? AE_TURNAROUND_MAX_MS : cfg->turnaround_ms);
     atomic_fetch_add(&e->cfg_gen, 1u);
 }
 
