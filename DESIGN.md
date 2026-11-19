@@ -302,6 +302,39 @@ To check on a phone:
 - Android grants serial access on a device that also has audio capture. Android is believed to require microphone permission first; Data2G requests it, so grant that before the USB prompt.
 - Opening the serial port succeeds on a composite audio+serial device. Data2G's own comments note it can fail if another driver holds the device.
 
+## Other Android clients: FT8CN
+
+[FT8CN](https://github.com/N0BOY/FT8CN) is an open-source Android FT8 app with USB audio and USB serial CAT. FT8 is one-way, so it is the phone-side counterpart of the WSJT-X self-decode test for parrot mode. It also speaks CI-V itself instead of going through Hamlib, which makes it a second, independent client for the IC-705 personality.
+
+What its source sends an IC-705 over a USB cable (read on Nov 19, 2026 from the `release` branch, last pushed Jan 2025: `rigs/IcomRig.java`, `rigs/IcomRigConstant.java`, `MainViewModel.java`). The frames were replayed through `cat_civ` + `rig_ic705` on the host; the app itself has not been run.
+
+| When | Command | Meaning | Mock's reply |
+| --- | --- | --- | --- |
+| On connect and on band change | `26 00 01 01 01` | Selected VFO to USB, data on, filter 1 | `FB` |
+| 800 ms later | `05 <5 BCD bytes>` | Set frequency | `FB` |
+| Every PTT on | `1A 05 01 19 01` | Set the data modulation input to USB (`02` over Bluetooth, `03` over WLAN) | `FA` (not implemented) |
+| PTT on, CAT mode only | `1C 00 01` | Transmit | `FB` |
+| Every 500 ms while keyed | `15 12` | Read SWR meter | `15 12 00 00` |
+| Every 500 ms while keyed | `15 13` | Read ALC meter | `15 13 00 00` |
+| PTT off, CAT mode only | `1C 00 00` | Receive | `FB` |
+
+- It never checks `FB` or `FA`; "connected" means the serial port opened. The `FA` on `1A 05 01 19` therefore does no harm, though a real IC-705 accepts that command.
+- It never asks for the frequency. A `03` read exists in the code but nothing calls it; it only follows unsolicited `00` frames, which the mock does not send.
+- It accepts replies addressed to `E0` or `00` from the configured radio address, so the mock's replies parse.
+- PTT modes are VOX (the default), CAT, RTS and DTR. In RTS or DTR mode it toggles the line and sends no `1C 00`, so the mock keys only with control-line PTT mode enabled. The serial open code does not set DTR or RTS itself.
+- It warns when the SWR reading is 120 or more, or the ALC reading is above 120. The mock returns 0 for both. Driving the ALC reading from the transmit audio level would make the app's overdrive warning usable against the mock.
+- Its rig list has the IC-705 at address `A4`, 115200 baud.
+
+Not checked: its audio side (sample rate, how it picks the USB sound card), whether it shows a decode of its own transmission, and the FT8TW fork.
+
+**FT8AF** ([patrickrb/FT8AF](https://github.com/patrickrb/FT8AF)) is a maintained fork of FT8CN (last pushed Nov 14, 2026; source read on Nov 19, 2026, app not run). For an IC-705 it uses the same CI-V code and the same commands as the table above, plus:
+
+- A `03` frequency read every 2 s while not transmitting, starting a few seconds after connect. The mock answers with the frequency last set.
+- A liveness watchdog: once the radio has answered at least once, 8 s without a reply turns the app's connection status to error. So unlike FT8CN it depends on the mock's replies.
+- `1C 01 02` (start antenna tuner) when the user asks for a tune. The mock answers `FB` and does not key.
+
+It bundles Hamlib 4.7.2, but only its "(Hamlib)" rig entries (FT-891, QMX) use it; the IC-705 entry goes through the app's own CI-V code. FT8AF is the preferred Android FT8 client for testing the mock, because it reads replies and is maintained. qFT8 and Decodium Mobile also claim USB CAT; no source was found for them and neither has been looked at.
+
 ## Build plan
 
 Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio and TinyUSB's CDC class used directly for serial; `esp_tinyusb` is not used (see [USB device](#usb-device)). Arduino is the fallback if descriptor work gets easier there. Each milestone is testable on its own.
@@ -369,6 +402,9 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [x] Which commands Hamlib's IC-705 backend sends. With Hamlib 4.7.1: `03`, `25 00`, `14 0C`, `26 00`, `1A 03`, `0F` and `1C 00` on open and for reads; `25`/`26` for frequency and mode sets, including the unselected VFO for split; `07` for VFO select; `14`/`15`/`16` for levels, meters and functions. It sent no `1A 05` items and no `19 00`.
 - [x] Does selecting IC-7300 (model 3073) also work against the IC-705 personality? Yes for frequency, mode and PTT with Hamlib 4.7.1; the G90 model (3088) worked for the same commands too. Checked once by hand, not part of the automated check.
 - [ ] Do WSJT-X, fldigi/flrig and VARA accept the personality? They send commands `rigctl` was not asked to send here. (after step 9, or earlier through the pty)
+- [x] Which CI-V commands FT8CN sends an IC-705. `26 00`, `05`, `1A 05 01 19`, `1C 00`, `15 12` and `15 13`; see [Other Android clients: FT8CN](#other-android-clients-ft8cn). Read from source and replayed on the host, not run on a phone.
+- [ ] Should the IC-705 personality accept `1A 05 01 19` (data modulation input) and answer `FB`? FT8CN sends it on every PTT on and ignores the `FA` it gets now; a client that checks replies would not. Left as is on Nov 19, 2026.
+- [ ] Does FT8AF (or FT8CN) work end to end against the mock on a phone, and does it show a decode of its own replayed transmission in parrot mode? (after step 9 and step 10)
 - [ ] Which CI-V address and command numbers to use for mock-only controls (step 12)
 - [ ] Default reference bandwidth for the SNR setting: 2500 Hz (WSJT-X) or 3000 Hz (VARA, channel simulators)? Whatever Data2G reports its SNR in would be the natural choice. (step 11)
 - [ ] G90, later pass: exact replies (BCD byte order, mode bytes for U-D and L-D, ID bytes for `19 00` and `1D 19`, behaviour on unknown commands, echo), and whether to support `25`/`26` (steps 23–24)
@@ -399,5 +435,6 @@ No existing project does exactly this (checked Nov 2026); these are the closest 
 | Radioddity "Xiegu G90 CAT control and digital modes" manual v1.0 (2021-06-23) | The CAT command source Hamlib's backend cites |
 | [G90 digital modes with the DE-19 (user write-up)](https://hmdsamarasekara.github.io/posts/xiegu-g90-digital-modes/) | DE-19 cabling, serial settings and G90 menu settings; reports a CH342 chip |
 | [Data2G](https://github.com/arodland/Data2G/) | Target modem; Android USB code under `native/core/audio/android`, `native/core/rig/android`, `native/android-app` |
+| [FT8CN](https://github.com/N0BOY/FT8CN) and its maintained fork [FT8AF](https://github.com/patrickrb/FT8AF) | Android FT8 apps with their own CI-V code; Icom commands in `rigs/IcomRig.java` and `rigs/IcomRigConstant.java` |
 
 Side project for the spare boards: ESP-SDR (ESPARGOS) and esp32-sdr-trx (DA2JH) turn an S3's Wi-Fi radio into a 2.4 GHz receiver / 13 cm transceiver.
