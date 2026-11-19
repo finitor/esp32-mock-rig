@@ -1,0 +1,14 @@
+# ESP-IDF
+build/
+sdkconfig.old
+managed_components/
+
+# Editors and OS
+.vscode/
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Host build output
+host/build/
