@@ -507,7 +507,12 @@ static void test_info(void)
     CHECK_HAS(g_buf, "{\"name\":\"doppler\",\"label\":\"Doppler spread\",\"group\":\"Path\",");
     CHECK_HAS(g_buf, "\"unit\":\"Hz\",\"min\":0.01,\"max\":30.00,\"step\":0.01}");
     CHECK_HAS(g_buf, "\"choices\":[\"off\",\"mpg\",\"mpp\",\"mpd\",\"mps\",\"nvis-d\",\"lowlat-d\",\"hilat-m\",\"hilat-d\","
-                     "\"custom\"]}");
+                     "\"custom\"],\"labels\":[\"Off\",\"Good: mpg (0.1 Hz, 0.5 ms)\",");
+    CHECK_HAS(g_buf, "\"ITU high latitude disturbed: hilat-d (30 Hz, 7 ms)\",\"Custom: the two numbers below\"]}");
+    /* A label for every choice of a setting that has labels, and none for the others. */
+    size_t labelled = 0;
+    for (const char *q = g_buf; (q = strstr(q, "\"labels\":[")) != NULL; q++) labelled++;
+    CHECK(labelled == 1);
     size_t listed = 0;
     for (const char *p = g_buf; (p = strstr(p, "{\"name\":\"")) != NULL; p++) listed++;
     CHECK(listed == sizeof names / sizeof names[0]);
@@ -516,7 +521,7 @@ static void test_info(void)
         snprintf(key, sizeof key, "{\"name\":\"%s\",", names[i]);
         CHECK_HAS(g_buf, key);
     }
-    CHECK(n < CONSOLE_JSON_MAX - 512); /* room to grow */
+    CHECK(n < CONSOLE_JSON_MAX - 1024); /* room to grow */
 
     /* A name is escaped; no buffer, no parrot capacity. */
     const console_info_t odd = {.name = "a\"b\\c\n", .rig = NULL, .hamlib_model = 0};

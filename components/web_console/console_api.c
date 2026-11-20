@@ -123,6 +123,20 @@ static const char *const w_fade[] = {"off",    "mpg",      "mpp",     "mpd",    
 
 #define G_RX "Receive"
 #define G_PARROT "Parrot"
+/* The fading conditions by what they are; the words are Data2G's names. */
+static const char *const l_fade[] = {
+    "Off",
+    "Good: mpg (0.1 Hz, 0.5 ms)",
+    "Poor: mpp (1 Hz, 2 ms)",
+    "Disturbed: mpd (2 Hz, 4 ms)",
+    "Slow, selective: mps (0.15 Hz, 2 ms)",
+    "ITU mid-latitude disturbed NVIS: nvis-d (1 Hz, 7 ms)",
+    "ITU low latitude disturbed: lowlat-d (10 Hz, 6 ms)",
+    "ITU high latitude moderate: hilat-m (10 Hz, 3 ms)",
+    "ITU high latitude disturbed: hilat-d (30 Hz, 7 ms)",
+    "Custom: the two numbers below",
+};
+
 #define G_PATH "Path"
 #define G_LINK "Link"
 #define G_PTT "PTT"
@@ -140,8 +154,8 @@ static const cset_t csets[] = {
     {"turnaround", MOCK_CTL_TURNAROUND, 1, "Turnaround", G_RX, "ms", "Receive mute after unkeying; not in monitor.",
      NULL, 0},
     {"fade", MOCK_CTL_FADE, 0, "Fading", G_PATH, NULL,
-     "Two paths that fade apart. mpg good, mpp poor, mpd disturbed, mps slow and selective; nvis-d, lowlat-d, "
-     "hilat-m and hilat-d are severe ITU-R F.1487 conditions; custom uses the two numbers below.",
+     "An HF path: two paths that fade apart, by Doppler spread and the delay between them. The names are the "
+     "Data2G simulator's; the ITU ones are severe conditions from ITU-R F.1487.",
      w_fade, 10},
     {"doppler", MOCK_CTL_DOPPLER, 100, "Doppler spread", G_PATH, "Hz", "For custom fading: how fast it fades.", NULL,
      0},
@@ -165,6 +179,15 @@ static const cset_t csets[] = {
     {"voxlevel", MOCK_CTL_VOX_THRESHOLD, -10, "VOX threshold", G_PTT, "dBFS", NULL, NULL, 0},
     {"voxhang", MOCK_CTL_VOX_HANG, 1, "VOX hang", G_PTT, "ms", NULL, NULL, 0},
 };
+
+/* What to call each value of a choice on the page, where its word alone does
+ * not say enough; NULL where it does. */
+static const char *const *cset_labels(const cset_t *s)
+{
+    return s->cmd == MOCK_CTL_FADE ? l_fade : NULL;
+}
+
+_Static_assert(sizeof l_fade / sizeof l_fade[0] == AE_FADE_COUNT, "a label for every fading condition");
 
 static const cset_t *find_cset(const char *name, size_t len)
 {
@@ -219,6 +242,15 @@ size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, s
             out_f(&o, ",\"choices\":[");
             for (size_t w = 0; w < s->n_words; w++) out_f(&o, "%s\"%s\"", w ? "," : "", s->words[w]);
             out_f(&o, "]");
+            const char *const *labels = cset_labels(s);
+            if (labels) {
+                out_f(&o, ",\"labels\":[");
+                for (size_t w = 0; w < s->n_words; w++) {
+                    out_f(&o, "%s", w ? "," : "");
+                    out_str(&o, labels[w]);
+                }
+                out_f(&o, "]");
+            }
         } else {
             int32_t lo, hi;
             cset_range(s, &lo, &hi);

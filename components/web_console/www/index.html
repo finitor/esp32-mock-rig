@@ -34,7 +34,9 @@ h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 13px; margin: 0 0 10px; color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
 .sub { color: var(--ink2); }
 select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--axis);
-  border-radius: 6px; padding: 3px 6px; }
+  border-radius: 6px; padding: 3px 6px; max-width: 100%; }
+.row.wide { grid-template-columns: 1fr; }
+.row.wide .ctl select { width: 100%; }
 #rigpick[hidden] { display: none; }
 .link { margin-left: auto; color: var(--ink2); white-space: nowrap; }
 .link::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -241,7 +243,8 @@ function buildSettings() {
       /* too many for a row of buttons: a list */
       const lab = el("label", null, s.label); lab.htmlFor = id; row.appendChild(lab);
       const sel = el("select"); sel.id = id;
-      for (const c of s.choices) { const o = el("option", null, c); o.value = c; sel.appendChild(o); }
+      if (s.labels) row.classList.add("wide"); /* long entries: the list gets a line of its own */
+      s.choices.forEach((c, i) => { const o = el("option", null, s.labels ? s.labels[i] : c); o.value = c; sel.appendChild(o); });
       sel.addEventListener("change", () => change(s.name, sel.value));
       ctl.appendChild(sel);
       set = (v, force) => { if (force || document.activeElement !== sel) sel.value = v; };

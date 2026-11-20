@@ -38,7 +38,7 @@
 extern "C" {
 #endif
 
-#define CONSOLE_JSON_MAX 4096
+#define CONSOLE_JSON_MAX 6144
 #define CONSOLE_ERR_MAX  128
 #define CONSOLE_API_VERSION 1
 
@@ -52,7 +52,8 @@ typedef struct {
 
 /* Who this is and what can be set: the radio imitated and the ones it could
  * be instead, and each setting's name, label, group, and either its choices
- * or its unit, range and step. The page builds its form from this. */
+ * (with a label for each, where the word alone does not say enough) or its
+ * unit, range and step. The page builds its form from this. */
 size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, size_t cap);
 
 /* ---- settings ---------------------------------------------------------------- */
