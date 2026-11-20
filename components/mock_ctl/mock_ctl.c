@@ -2,6 +2,7 @@
 #include "mock_ctl.h"
 
 #include <math.h>
+#include <string.h>
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -265,10 +266,178 @@ static void cmd_parrot_status(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
     civ_reply(c, f, p, sizeof p);
 }
 
+/* ---- power-up settings kept in flash -------------------------------------------
+ *
+ *   "MS" <version 01> <count> then count times <command> <value, 4, little-endian>
+ *   and a CRC-16 of all before it
+ */
+#define BLOB_VERSION 1
+
+static uint16_t crc16(const uint8_t *p, size_t n)
+{
+    uint16_t crc = 0xFFFF; /* CCITT-FALSE, as on the link's wire */
+    while (n--) {
+        crc ^= (uint16_t)(*p++ << 8);
+        for (int i = 0; i < 8; i++) crc = (uint16_t)((crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1);
+    }
+    return crc;
+}
+
+size_t mock_ctl_settings_pack(const ae_config_t *cfg, uint8_t *out, size_t cap)
+{
+    size_t len = 4 + 5 * ARRAY_LEN(settings) + 2;
+    if (cap < len) return 0;
+    out[0] = 'M';
+    out[1] = 'S';
+    out[2] = BLOB_VERSION;
+    out[3] = (uint8_t)ARRAY_LEN(settings);
+    for (size_t i = 0; i < ARRAY_LEN(settings); i++) {
+        uint8_t *p = &out[4 + 5 * i];
+        uint32_t v = (uint32_t)mock_ctl_setting_get(cfg, settings[i].cmd);
+        p[0] = settings[i].cmd;
+        p[1] = (uint8_t)v;
+        p[2] = (uint8_t)(v >> 8);
+        p[3] = (uint8_t)(v >> 16);
+        p[4] = (uint8_t)(v >> 24);
+    }
+    uint16_t crc = crc16(out, len - 2);
+    out[len - 2] = (uint8_t)(crc >> 8);
+    out[len - 1] = (uint8_t)crc;
+    return len;
+}
+
+void mock_ctl_set_store(mock_ctl_t *m, const mock_ctl_store_t *store)
+{
+    if (store) {
+        m->store = *store;
+    } else {
+        memset(&m->store, 0, sizeof m->store);
+    }
+}
+
+bool mock_ctl_restore(mock_ctl_t *m, const uint8_t *blob, size_t len)
+{
+    if (!blob || len < 6 || blob[0] != 'M' || blob[1] != 'S' || blob[2] != BLOB_VERSION) return false;
+    size_t count = blob[3];
+    if (len != 4 + 5 * count + 2) return false;
+    if (crc16(blob, len - 2) != (uint16_t)((blob[len - 2] << 8) | blob[len - 1])) return false;
+
+    ae_config_t cfg = m->built_in;
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *p = &blob[4 + 5 * i];
+        uint32_t v = (uint32_t)p[1] | ((uint32_t)p[2] << 8) | ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
+        /* A setting this firmware does not have, a value outside today's
+         * range, a route this board cannot do: each is skipped, and that
+         * setting keeps the build's value. */
+        (void)mock_ctl_setting_put(m, &cfg, p[0], (int32_t)v);
+    }
+    m->power_up = cfg;
+    m->kept = true;
+    ae_configure(m->engine, &cfg);
+    return true;
+}
+
+bool mock_ctl_keep_settings(mock_ctl_t *m)
+{
+    uint8_t blob[MOCK_CTL_BLOB_MAX];
+    ae_config_t cfg;
+    if (!m->store.save) return false;
+    ae_get_config(m->engine, &cfg);
+    size_t len = mock_ctl_settings_pack(&cfg, blob, sizeof blob);
+    if (!len || !m->store.save(m->store.ctx, blob, len)) return false;
+    m->power_up = cfg;
+    m->kept = true;
+    return true;
+}
+
+bool mock_ctl_forget_settings(mock_ctl_t *m)
+{
+    if (!m->store.forget || !m->store.forget(m->store.ctx)) return false;
+    m->power_up = m->built_in;
+    m->kept = false;
+    return true;
+}
+
+bool mock_ctl_settings_kept(const mock_ctl_t *m)
+{
+    return m->kept;
+}
+
+/* ---- clips ----------------------------------------------------------------------- */
+
+void mock_ctl_set_clips(mock_ctl_t *m, const mock_ctl_clips_t *clips)
+{
+    if (clips && clips->start && clips->status) {
+        m->clips = *clips;
+    } else {
+        memset(&m->clips, 0, sizeof m->clips);
+    }
+}
+
+bool mock_ctl_clips_status(mock_ctl_t *m, mock_ctl_clips_status_t *st)
+{
+    memset(st, 0, sizeof *st);
+    if (!m->clips.status) return false;
+    m->clips.status(m->clips.ctx, st);
+    if (st->slots > MOCK_CTL_CLIPS_MAX) st->slots = MOCK_CTL_CLIPS_MAX;
+    return st->slots > 0;
+}
+
+mock_ctl_clip_result_t mock_ctl_clip(mock_ctl_t *m, mock_ctl_clip_op_t op, unsigned slot)
+{
+    mock_ctl_clips_status_t st;
+    ae_parrot_status_t par;
+    ae_config_t cfg;
+    ae_ptt_t ptt;
+
+    if (!mock_ctl_clips_status(m, &st) || slot < 1 || slot > st.slots) return MOCK_CTL_CLIP_NONE;
+    if (st.busy) return MOCK_CTL_CLIP_BUSY;
+    ae_get_parrot_status(m->engine, &par);
+    ae_get_config(m->engine, &cfg);
+    ae_get_ptt(m->engine, &ptt);
+
+    switch (op) {
+    case MOCK_CTL_CLIP_SAVE:
+        if (par.capacity_ms == 0 || par.recorded_ms == 0) return MOCK_CTL_CLIP_NOTHING;
+        if (par.state == AE_PARROT_RECORDING) return MOCK_CTL_CLIP_STATE;
+        break;
+    case MOCK_CTL_CLIP_PLAY:
+        if (st.length_ms[slot - 1] == 0) return MOCK_CTL_CLIP_NOTHING;
+        if (cfg.route != AE_ROUTE_PARROT || ptt.cat || ptt.line || ptt.vox || par.state == AE_PARROT_RECORDING) {
+            return MOCK_CTL_CLIP_STATE;
+        }
+        break;
+    case MOCK_CTL_CLIP_ERASE:
+        break;
+    default:
+        return MOCK_CTL_CLIP_NONE;
+    }
+    return m->clips.start(m->clips.ctx, op, slot) ? MOCK_CTL_CLIP_OK : MOCK_CTL_CLIP_BUSY;
+}
+
+static void cmd_clip_status(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
+{
+    mock_ctl_clips_status_t st;
+    uint8_t p[3 + 2 * MOCK_CTL_CLIPS_MAX] = {MOCK_CTL_CLIP_STATUS};
+
+    (void)mock_ctl_clips_status(m, &st); /* none: no clips, and it says so */
+    p[1] = (uint8_t)((st.busy ? MOCK_CTL_CLIP_FLAG_BUSY : 0) | (st.failed ? MOCK_CTL_CLIP_FLAG_FAILED : 0));
+    p[2] = (uint8_t)st.slots;
+    for (unsigned i = 0; i < st.slots; i++) {
+        int32_t tenths_s = tenths_of_s(st.length_ms[i]);
+        put_num(&p[3 + 2 * i], tenths_s > 9999 ? 9999 : tenths_s, 2, false);
+    }
+    civ_reply(c, f, p, 3 + 2 * (size_t)st.slots);
+}
+
 void mock_ctl_init(mock_ctl_t *m, ae_t *engine, const ae_config_t *power_up)
 {
     m->engine = engine;
     m->power_up = *power_up;
+    m->built_in = *power_up;
+    m->kept = false;
+    memset(&m->store, 0, sizeof m->store);
+    memset(&m->clips, 0, sizeof m->clips);
     m->civ = NULL;
     m->rigs = NULL;
     m->n_rigs = 0;
@@ -347,6 +516,44 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
         if (f->len == 0) {
             mock_ctl_reset(m);
             civ_reply_ok(c, f);
+            return;
+        }
+        break;
+    case MOCK_CTL_KEEP:
+        if (f->len == 0 && mock_ctl_keep_settings(m)) {
+            civ_reply_ok(c, f);
+            return;
+        }
+        break;
+    case MOCK_CTL_FORGET:
+        if (f->len == 0 && mock_ctl_forget_settings(m)) {
+            civ_reply_ok(c, f);
+            return;
+        }
+        break;
+    case MOCK_CTL_KEPT:
+        if (f->len == 0) {
+            const uint8_t p[2] = {MOCK_CTL_KEPT, (uint8_t)(m->kept ? 0x01 : 0x00)};
+            civ_reply(c, f, p, 2);
+            return;
+        }
+        break;
+    case MOCK_CTL_CLIP_PLAY_CMD:
+    case MOCK_CTL_CLIP_SAVE_CMD:
+    case MOCK_CTL_CLIP_ERASE_CMD: {
+        uint16_t slot;
+        mock_ctl_clip_op_t op = f->cmd == MOCK_CTL_CLIP_PLAY_CMD   ? MOCK_CTL_CLIP_PLAY
+                                : f->cmd == MOCK_CTL_CLIP_SAVE_CMD ? MOCK_CTL_CLIP_SAVE
+                                                                   : MOCK_CTL_CLIP_ERASE;
+        if (f->len == 1 && civ_bcd_be_to_u16(f->data, 1, &slot) && mock_ctl_clip(m, op, slot) == MOCK_CTL_CLIP_OK) {
+            civ_reply_ok(c, f);
+            return;
+        }
+        break;
+    }
+    case MOCK_CTL_CLIP_STATUS:
+        if (f->len == 0) {
+            cmd_clip_status(m, c, f);
             return;
         }
         break;

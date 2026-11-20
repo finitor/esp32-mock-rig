@@ -1,0 +1,12 @@
+# Flash layout for the 16 MB module. Offsets are left for the tool to fill in.
+#
+#   nvs      the choice of radio, kept settings, the Wi-Fi network, Wi-Fi's own data
+#   factory  the firmware, with room to grow (it is about 1 MB)
+#   clips    recordings kept by the clip store: five of up to 120 s each
+#            (components/clips/include/clip_store.h). Raw, no file system.
+#
+# Name,   Type, SubType, Offset,  Size
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        2M,
+clips,    data, 0x40,    ,        0xDF0000,

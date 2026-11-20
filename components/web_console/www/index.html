@@ -101,6 +101,10 @@ button { font: inherit; color: var(--ink); background: var(--field); border: 1px
   border-radius: 6px; padding: 6px 14px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+section[hidden] { display: none; }
+.clip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.clip:first-child { border-top: 0; }
+.clip .what { min-width: 150px; font-weight: 550; }
 .msg { color: var(--ink2); } .msg.bad { color: var(--red); font-weight: 600; }
 details summary { cursor: pointer; font-weight: 600; }
 .wifi { display: grid; gap: 8px; max-width: 420px; margin-top: 10px; }
@@ -173,8 +177,18 @@ details summary { cursor: pointer; font-weight: 600; }
     <div class="actions">
       <button id="replay" type="button">Replay the parrot's recording</button>
       <button id="reset" type="button">Reset to power-up values</button>
-      <span class="msg" id="actmsg" role="status"></span>
+      <button id="keep" type="button">Keep these for power-up</button>
+      <button id="forget" type="button">Forget kept settings</button>
+      <span class="sub" id="kept"></span>
     </div>
+    <div class="actions"><span class="msg" id="actmsg" role="status"></span></div>
+  </section>
+
+  <section aria-label="Clips" id="clipsec" hidden>
+    <h2>Clips: recordings kept in flash</h2>
+    <div class="sub">A clip is the parrot's recording, kept through a power cycle and replayed as receive audio in the parrot route. Keeping a long one takes many seconds and disturbs audio while it lasts.</div>
+    <div id="clips"></div>
+    <div class="actions"><span class="msg" id="clipmsg" role="status"></span></div>
   </section>
 
   <section aria-label="Wi-Fi">
@@ -282,6 +296,42 @@ async function action(path, done) {
 }
 $("replay").addEventListener("click", () => action("/api/replay", "Replaying."));
 $("reset").addEventListener("click", () => action("/api/reset", "Settings are back to their power-up values."));
+$("keep").addEventListener("click", () => action("/api/keep", "Kept: the board will power up with these settings."));
+$("forget").addEventListener("click", () => action("/api/forget", "Forgotten: the board will power up with its built-in settings."));
+
+/* ---- clips ---- */
+const clipRows = [];          // per clip: {what, play, save, erase}
+async function clipDo(op, clip, done) {
+  const msg = $("clipmsg");
+  try { await api("POST", "/api/clip", { op, clip }); msg.className = "msg"; msg.textContent = done; }
+  catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+  setTimeout(() => { msg.textContent = ""; }, 6000);
+}
+function showClips(t) {
+  const c = t.clips;
+  $("clipsec").hidden = !c;
+  if (!c) return;
+  while (clipRows.length < c.seconds.length) {
+    const n = clipRows.length + 1, row = el("div", "clip"), what = el("span", "what num");
+    const mk = (label, op, done) => { const b = el("button", null, label); b.type = "button"; b.addEventListener("click", () => clipDo(op, n, done)); return b; };
+    const r = { what, play: mk("Play", "play", "Playing clip " + n + "."),
+      save: mk("Keep the recording here", "save", "Keeping the recording as clip " + n + "; wait until its length shows."),
+      erase: mk("Erase", "erase", "Erasing clip " + n + ".") };
+    row.append(what, r.play, r.save, r.erase);
+    $("clips").appendChild(row);
+    clipRows.push(r);
+  }
+  c.seconds.forEach((sec, i) => {
+    const r = clipRows[i];
+    r.what.textContent = "Clip " + (i + 1) + ": " + (sec ? sec.toFixed(1) + " s" : "empty");
+    r.play.disabled = c.busy || !sec || t.ptt.on || t.parrot.state === "recording";
+    r.save.disabled = c.busy || !(t.parrot.recorded > 0) || t.parrot.state === "recording";
+    r.erase.disabled = c.busy || !sec;
+  });
+  const msg = $("clipmsg");
+  if (c.busy) { msg.className = "msg"; msg.textContent = "Working: writing flash."; }
+  else if (c.failed && !msg.textContent) { msg.className = "msg bad"; msg.textContent = "The last clip operation failed."; }
+}
 
 /* ---- live status ---- */
 function meter(id, lvl, idle) {
@@ -334,6 +384,10 @@ function update(t) {
   pr.textContent = t.parrot.capacity ? t.parrot.recorded.toFixed(1) + " of " + t.parrot.capacity.toFixed(1) + " s" + (t.parrot.truncated ? ", cut short" : "") : "no buffer";
   pr.className = "num" + (t.parrot.truncated ? " warn" : "");
   $("replay").disabled = !(t.parrot.recorded > 0 && !t.ptt.on);
+
+  $("kept").textContent = t.kept ? "Powers up with kept settings." : "Powers up with its built-in settings.";
+  $("forget").disabled = !t.kept;
+  showClips(t);
 
   const k = t.link;
   $("linkcard").hidden = !k;

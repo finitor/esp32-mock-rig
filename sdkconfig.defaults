@@ -31,10 +31,12 @@ CONFIG_UAC_BIT_RESOLUTION_16=y
 CONFIG_UAC_SUPPORT_MACOS=y
 
 # Web console: the HTTP server needs WebSocket support for the live
-# telemetry. Wi-Fi brings the image past the 1 MB of the default partition
-# table, so use the one with a 1.5 MB application partition; the flash has
-# 16 MB. Wi-Fi network names and passwords do not belong in this file: set
-# them in menuconfig (they stay in sdkconfig, which is not committed) or from
-# the console's own Wi-Fi form.
+# telemetry. Wi-Fi network names and passwords do not belong in this file:
+# set them in menuconfig (they stay in sdkconfig, which is not committed) or
+# from the console's own Wi-Fi form.
 CONFIG_HTTPD_WS_SUPPORT=y
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Flash layout: partitions.csv. 2 MB for the firmware, which with Wi-Fi is
+# about 1 MB, and the rest of the 16 MB for clips.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

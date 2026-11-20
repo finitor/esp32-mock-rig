@@ -10,6 +10,8 @@
  *   a info | a settings | a telemetry | a reset | a replay
  *   a apply <json>      change settings
  *   a rig <json>        change the radio imitated: {"hamlib":3088}
+ *   a keep | a forget   keep the settings for power-up, or forget them
+ *   a clip <json>       a clip operation: {"op":"save","clip":1}
  *   a play on|off       the host plays a tone, or stops playing
  *   a record on|off     the host records, or stops (on at the start)
  *   a civ <hex bytes>   bytes from the host's CAT port; the body is the reply in hex
@@ -17,8 +19,9 @@
  *   loss <percent>      how many of the link's packets the path loses
  *
  * The engine, the controls, the link and the JSON are the firmware's own
- * code. The path between the boards delivers at once, and the audio FIFO's
- * numbers are made up.
+ * code. The path between the boards delivers at once, the audio FIFO's
+ * numbers are made up, and the flash is memory: kept settings and clips last
+ * as long as the simulator runs, and a clip operation is done at once.
  */
 #include <math.h>
 #include <stdio.h>
@@ -27,6 +30,7 @@
 
 #include "audio_engine.h"
 #include "cat_civ.h"
+#include "clip_store.h"
 #include "console_api.h"
 #include "link.h"
 #include "mock_ctl.h"
@@ -36,6 +40,7 @@
 #define BLOCK 240 /* 5 ms, as the firmware's capture side delivers it */
 #define PARROT_SECONDS 30
 #define BOARDS 2
+#define CLIPS 2
 
 _Static_assert(AE_LINK_BUFFER_MIN_MS == LINK_BUFFER_MIN_MS && AE_LINK_BUFFER_MAX_MS == LINK_BUFFER_MAX_MS,
                "the engine's range for the link buffer must be the link's");
@@ -51,6 +56,11 @@ typedef struct {
     console_meter_t tx_meter, rx_meter;
     uint32_t tx_seen, rx_seen;
     int16_t parrot[PARROT_SECONDS * AE_PARROT_FS_HZ];
+    uint8_t kept[MOCK_CTL_BLOB_MAX];
+    size_t kept_len;
+    uint8_t flash[CLIPS * CLIP_SLOT_BYTES];
+    clip_store_t clips;
+    bool clip_failed;
     bool playing;
     bool recording;
     float phase;
@@ -91,6 +101,67 @@ static bool path_send(void *ctx, const uint8_t *dst, const uint8_t *data, size_t
     return true;
 }
 
+/* ---- the pretend flash: kept settings and clips ------------------------------ */
+
+static bool kept_save(void *ctx, const uint8_t *blob, size_t len)
+{
+    board_t *b = ctx;
+    if (len > sizeof b->kept) return false;
+    memcpy(b->kept, blob, len);
+    b->kept_len = len;
+    return true;
+}
+
+static bool kept_forget(void *ctx)
+{
+    board_t *b = ctx;
+    b->kept_len = 0;
+    return true;
+}
+
+static bool flash_read(void *ctx, uint32_t off, void *buf, size_t len)
+{
+    board_t *b = ctx;
+    if (off > sizeof b->flash || len > sizeof b->flash - off) return false;
+    memcpy(buf, &b->flash[off], len);
+    return true;
+}
+
+static bool flash_write(void *ctx, uint32_t off, const void *buf, size_t len)
+{
+    board_t *b = ctx;
+    if (off > sizeof b->flash || len > sizeof b->flash - off) return false;
+    memcpy(&b->flash[off], buf, len);
+    return true;
+}
+
+static bool flash_erase(void *ctx, uint32_t off, uint32_t len)
+{
+    board_t *b = ctx;
+    if (off > sizeof b->flash || len > sizeof b->flash - off) return false;
+    memset(&b->flash[off], 0xFF, len);
+    return true;
+}
+
+static bool clips_start(void *ctx, mock_ctl_clip_op_t op, unsigned slot)
+{
+    board_t *b = ctx;
+    /* No audio runs while a command is handled, so there is nothing to wait for. */
+    b->clip_failed = !clip_run(&b->clips, &b->engine, (clip_op_t)op, slot, NULL, NULL);
+    return true;
+}
+
+static void clips_status(void *ctx, mock_ctl_clips_status_t *st)
+{
+    board_t *b = ctx;
+    memset(st, 0, sizeof *st);
+    st->slots = clip_store_slots(&b->clips);
+    st->failed = b->clip_failed;
+    for (unsigned i = 0; i < st->slots; i++) {
+        st->length_ms[i] = clip_store_length(&b->clips, i + 1) / (CLIP_FS_HZ / 1000u);
+    }
+}
+
 static void link_tx_op(void *ctx, const int16_t *tx, size_t n, bool keyed)
 {
     link_tx(ctx, tx, n, keyed);
@@ -122,6 +193,15 @@ static void board_init(board_t *b, int index)
     civ_init(&b->civ, &rig_ic705, civ_tx, on_ptt, b);
     civ_set_private(&b->civ, MOCK_CTL_ADDR, mock_ctl_command, &b->ctl);
     mock_ctl_set_rigs(&b->ctl, &b->civ, rigs, sizeof rigs / sizeof rigs[0], NULL, NULL);
+
+    const mock_ctl_store_t store = {.save = kept_save, .forget = kept_forget, .ctx = b};
+    const mock_ctl_clips_t clips = {.start = clips_start, .status = clips_status, .ctx = b};
+    const clip_dev_t flash = {
+        .read = flash_read, .write = flash_write, .erase = flash_erase, .ctx = b, .size = sizeof b->flash,
+    };
+    clip_store_init(&b->clips, &flash);
+    mock_ctl_set_store(&b->ctl, &store);
+    mock_ctl_set_clips(&b->ctl, &clips);
     console_meter_init(&b->tx_meter);
     console_meter_init(&b->rx_meter);
 }
@@ -248,6 +328,21 @@ static void board_command(board_t *b, char *line)
     } else if (strcmp(line, "rig") == 0) {
         char err[CONSOLE_ERR_MAX];
         console_result_t r = console_rig_apply(&b->ctl, arg, err, sizeof err);
+        if (r == CONSOLE_OK) {
+            printf("200 {}\n");
+        } else {
+            error(r == CONSOLE_UNAVAILABLE ? 409 : 400, err);
+        }
+    } else if (strcmp(line, "keep") == 0 || strcmp(line, "forget") == 0) {
+        bool ok = line[0] == 'k' ? mock_ctl_keep_settings(&b->ctl) : mock_ctl_forget_settings(&b->ctl);
+        if (ok) {
+            printf("200 {}\n");
+        } else {
+            error(500, "the board could not write its flash");
+        }
+    } else if (strcmp(line, "clip") == 0) {
+        char err[CONSOLE_ERR_MAX];
+        console_result_t r = console_clip_apply(&b->ctl, arg, err, sizeof err);
         if (r == CONSOLE_OK) {
             printf("200 {}\n");
         } else {

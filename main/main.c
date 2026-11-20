@@ -13,8 +13,9 @@
  * audio goes to a second board and that board's comes back as receive
  * audio. A web console over Wi-Fi changes the same settings and shows live
  * telemetry. The radio imitated is an Icom IC-705 or a Xiegu G90, chosen over
- * either control path and remembered in flash. Before USB starts, a short
- * self-check proves the portable modules run on the target.
+ * either control path and remembered in flash, as are the settings when
+ * asked, and recordings kept as clips. Before USB starts, a short self-check
+ * proves the portable modules run on the target.
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -29,8 +30,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 #include "sdkconfig.h"
 
 #include "audio_dsp.h"
@@ -40,6 +39,7 @@
 #include "rig_g90.h"
 #include "rig_ic705.h"
 #include "status_led.h"
+#include "storage.h"
 #include "ui_led.h"
 #include "usb_composite.h"
 #ifdef CONFIG_MOCK_WEB_CONSOLE
@@ -153,7 +153,6 @@ static bool link_rx_op(void *ctx, int16_t *out, size_t n)
 static const civ_rig_t *const s_rigs[] = {&rig_ic705, &rig_g90};
 #define N_RIGS (sizeof s_rigs / sizeof s_rigs[0])
 
-#define RIG_NAMESPACE "mockradio"
 #define RIG_KEY "rig"
 
 static const civ_rig_t *rig_at_start(void)
@@ -163,25 +162,13 @@ static const civ_rig_t *rig_at_start(void)
 #else
     const civ_rig_t *rig = &rig_ic705;
 #endif
-    nvs_handle_t nvs;
     uint16_t model = 0;
 
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        err = nvs_flash_erase();
-        if (err == ESP_OK) err = nvs_flash_init();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "no flash storage (%s): the choice of radio will not be remembered", esp_err_to_name(err));
-        return rig;
-    }
-    if (nvs_open(RIG_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return rig; /* nothing stored yet */
-    if (nvs_get_u16(nvs, RIG_KEY, &model) == ESP_OK) {
+    if (storage_get_u16(RIG_KEY, &model)) {
         for (size_t i = 0; i < N_RIGS; i++) {
             if (s_rigs[i]->hamlib_model == model) rig = s_rigs[i];
         }
     }
-    nvs_close(nvs);
     return rig;
 }
 
@@ -189,17 +176,28 @@ static const civ_rig_t *rig_at_start(void)
  * console's for the page. A flash write takes a few milliseconds. */
 static void rig_changed(void *ctx, const civ_rig_t *rig)
 {
-    nvs_handle_t nvs;
     (void)ctx;
-
     ESP_LOGI(TAG, "now imitating %s (Hamlib model %d)", rig->name, rig->hamlib_model);
-    esp_err_t err = nvs_open(RIG_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, RIG_KEY, (uint16_t)rig->hamlib_model);
-        if (err == ESP_OK) err = nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    if (err != ESP_OK) ESP_LOGW(TAG, "the choice of radio was not stored: %s", esp_err_to_name(err));
+    if (!storage_set_u16(RIG_KEY, (uint16_t)rig->hamlib_model)) ESP_LOGW(TAG, "the choice of radio was not stored");
+}
+
+/* ---- settings kept for power-up -------------------------------------------------
+ *
+ * mock_ctl packs and checks them; here they are only put in flash and taken
+ * out. Like the choice of radio, written on the task that asked.
+ */
+#define SETTINGS_KEY "settings"
+
+static bool settings_save(void *ctx, const uint8_t *blob, size_t len)
+{
+    (void)ctx;
+    return storage_set_blob(SETTINGS_KEY, blob, len);
+}
+
+static bool settings_forget(void *ctx)
+{
+    (void)ctx;
+    return storage_erase(SETTINGS_KEY);
 }
 
 /* Call with the CAT lock held, or before anything else uses the parser. */
@@ -377,11 +375,35 @@ static void engine_start(void)
     ae_configure(&s_engine, &cfg);
     mock_ctl_init(&s_ctl, &s_engine, &cfg);
 
+    /* Settings kept in flash replace the build's, above, as the power-up
+     * settings. mock_ctl checks them: what it cannot use it leaves alone. */
+    static const mock_ctl_store_t store = {.save = settings_save, .forget = settings_forget};
+    uint8_t blob[MOCK_CTL_BLOB_MAX];
+    size_t blob_len = storage_get_blob(SETTINGS_KEY, blob, sizeof blob);
+    mock_ctl_set_store(&s_ctl, &store);
+    if (blob_len) {
+        if (mock_ctl_restore(&s_ctl, blob, blob_len)) {
+            ae_get_config(&s_engine, &cfg);
+            ESP_LOGI(TAG, "power-up settings are the ones kept in flash");
+        } else {
+            ESP_LOGW(TAG, "the settings kept in flash are damaged: using the build's");
+        }
+    }
+
+    /* Clips: recordings kept in their own partition. */
+    static const mock_ctl_clips_t clips = {.start = storage_clip_begin, .status = storage_clip_status};
+    unsigned n_clips = storage_clips_start(&s_engine);
+    if (n_clips) {
+        mock_ctl_set_clips(&s_ctl, &clips);
+        ESP_LOGI(TAG, "room for %u clips of up to 120 s in flash", n_clips);
+    }
+
+    /* As in use: the build's values, or the kept ones where there are any. */
     ESP_LOGI(TAG, "receive channel: %s route, %s, attenuation %d dB", route_name(cfg.route),
-             cfg.noise_on ? "noise on" : "noise off", CONFIG_MOCK_ATTEN_DB);
+             cfg.noise_on ? "noise on" : "noise off", (int)cfg.atten_db);
     if (cfg.route == AE_ROUTE_PARROT) {
-        ESP_LOGI(TAG, "  parrot replays %d ms after unkeying, period %d ms (0 = off)", CONFIG_MOCK_PARROT_DELAY_MS,
-                 CONFIG_MOCK_PARROT_PERIOD_MS);
+        ESP_LOGI(TAG, "  parrot replays %u ms after unkeying, period %u ms (0 = off)", (unsigned)cfg.parrot_delay_ms,
+                 (unsigned)cfg.parrot_period_ms);
     }
     if (cfg.noise_on) {
         ESP_LOGI(TAG, "  SNR %d dB in %d Hz, noise floor %d dBFS", (int)cfg.snr_db, (int)cfg.ref_bw_hz,
@@ -534,6 +556,7 @@ static void console_start(void)
 
 void app_main(void)
 {
+    storage_start();
     const civ_rig_t *rig = rig_at_start();
     ESP_LOGI(TAG, "USB mock radio: %s personality (Hamlib model %d)", rig->name, rig->hamlib_model);
 

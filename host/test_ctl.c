@@ -547,6 +547,284 @@ static void test_link_settings(void)
     CHECK(g_link_ended == 1);
 }
 
+/* ---- power-up settings kept in flash, and clips: with stand-ins for the flash ---- */
+
+static uint8_t g_blob[MOCK_CTL_BLOB_MAX];
+static size_t g_blob_len;
+static bool g_store_broken;
+
+static bool store_save(void *ctx, const uint8_t *blob, size_t len)
+{
+    (void)ctx;
+    if (g_store_broken || len > sizeof g_blob) return false;
+    memcpy(g_blob, blob, len);
+    g_blob_len = len;
+    return true;
+}
+
+static bool store_forget(void *ctx)
+{
+    (void)ctx;
+    if (g_store_broken) return false;
+    g_blob_len = 0;
+    return true;
+}
+
+static const mock_ctl_store_t g_flash_store = {.save = store_save, .forget = store_forget};
+
+static void test_kept_settings(void)
+{
+    static int16_t parrot_store[4 * AE_PARROT_FS_HZ];
+    ae_config_t cfg;
+
+    /* With nowhere to keep them: refused, and it says the build's are in use. */
+    fresh();
+    EXPECT("fe fe f0 e0 04 fd", "fe fe e0 f0 04 00 fd");
+    EXPECT("fe fe f0 e0 02 fd", NG);
+    EXPECT("fe fe f0 e0 03 fd", NG);
+
+    g_blob_len = 0;
+    g_store_broken = false;
+    mock_ctl_set_store(&g_ctl, &g_flash_store);
+    EXPECT("fe fe f0 e0 51 01 fd", OK);       /* VOX on, as Data2G wants it */
+    EXPECT("fe fe f0 e0 12 01 25 01 fd", OK); /* SNR -12.5 dB */
+    EXPECT("fe fe f0 e0 41 00 fd", OK);       /* link frequency match off */
+    EXPECT("fe fe f0 e0 02 fd", OK);
+    CHECK(g_blob_len > 0 && g_blob_len <= MOCK_CTL_BLOB_MAX && mock_ctl_settings_kept(&g_ctl));
+    EXPECT("fe fe f0 e0 04 fd", "fe fe e0 f0 04 01 fd");
+    EXPECT("fe fe f0 e0 02 00 fd", NG); /* it takes no data */
+    EXPECT("fe fe f0 e0 04 01 fd", NG); /* read only */
+
+    /* Reset now returns to what was kept, not to the build's values. */
+    EXPECT("fe fe f0 e0 51 00 fd", OK);
+    EXPECT("fe fe f0 e0 12 00 30 00 fd", OK);
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(config().vox_on && near(config().snr_db, -12.5f, 0.001f) && !config().link_match);
+
+    /* The next start: the build's settings, then what the flash holds. */
+    uint8_t kept[MOCK_CTL_BLOB_MAX];
+    size_t kept_len = g_blob_len;
+    memcpy(kept, g_blob, kept_len);
+    fresh();
+    CHECK(!config().vox_on && !mock_ctl_settings_kept(&g_ctl));
+    CHECK(mock_ctl_restore(&g_ctl, kept, kept_len));
+    CHECK(config().vox_on && near(config().snr_db, -12.5f, 0.001f) && !config().link_match);
+    CHECK(config().route == AE_ROUTE_MONITOR && config().turnaround_ms == 30); /* the rest as the build has it */
+    EXPECT("fe fe f0 e0 04 fd", "fe fe e0 f0 04 01 fd");
+    EXPECT("fe fe f0 e0 51 00 fd", OK);
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(config().vox_on);
+
+    /* Forget: the power-up values are the build's again, the settings in
+     * use stay until reset. */
+    mock_ctl_set_store(&g_ctl, &g_flash_store);
+    EXPECT("fe fe f0 e0 03 fd", OK);
+    CHECK(g_blob_len == 0 && !mock_ctl_settings_kept(&g_ctl) && config().vox_on);
+    EXPECT("fe fe f0 e0 04 fd", "fe fe e0 f0 04 00 fd");
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(!config().vox_on && near(config().snr_db, 10.0f, 0.001f) && config().link_match);
+
+    /* Flash that fails: refused, and nothing is believed kept. */
+    g_store_broken = true;
+    EXPECT("fe fe f0 e0 51 01 fd", OK);
+    EXPECT("fe fe f0 e0 02 fd", NG);
+    CHECK(!mock_ctl_settings_kept(&g_ctl));
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(!config().vox_on);
+    EXPECT("fe fe f0 e0 03 fd", NG);
+    g_store_broken = false;
+
+    /* Damaged, cut short, from another version, or not this at all: not
+     * restored, and nothing changes. */
+    fresh();
+    for (size_t i = 0; i < kept_len; i++) {
+        kept[i] ^= 0x04;
+        g_checks++;
+        if (mock_ctl_restore(&g_ctl, kept, kept_len) || config().vox_on) fail(__FILE__, __LINE__, "damaged settings restored");
+        kept[i] ^= 0x04;
+    }
+    CHECK(!mock_ctl_restore(&g_ctl, kept, kept_len - 1));
+    CHECK(!mock_ctl_restore(&g_ctl, kept, 0) && !mock_ctl_restore(&g_ctl, NULL, kept_len));
+    CHECK(!mock_ctl_restore(&g_ctl, (const uint8_t *)"not settings", 12));
+    CHECK(!mock_ctl_settings_kept(&g_ctl));
+
+    /* Every setting survives the round trip. */
+    ae_config_defaults(&cfg);
+    cfg.route = AE_ROUTE_PARROT;
+    cfg.noise_on = true;
+    cfg.snr_db = -3.5f;
+    cfg.ref_bw_hz = 3000;
+    cfg.noise_floor_dbfs = -55.5f;
+    cfg.atten_db = 6.0f;
+    cfg.turnaround_ms = 150;
+    cfg.parrot_delay_ms = 2500;
+    cfg.parrot_period_ms = 15000;
+    cfg.link_buffer_ms = 80;
+    cfg.link_match = false;
+    cfg.ptt_line = AE_LINE_RTS;
+    cfg.vox_on = true;
+    cfg.vox_threshold_dbfs = -35.5f;
+    cfg.vox_hang_ms = 250;
+    kept_len = mock_ctl_settings_pack(&cfg, kept, sizeof kept);
+    CHECK(kept_len > 0 && kept_len <= MOCK_CTL_BLOB_MAX - 30); /* room for more settings */
+    CHECK(mock_ctl_settings_pack(&cfg, kept, kept_len - 1) == 0);
+
+    /* A board without a parrot buffer cannot start in the parrot route: that
+     * one setting falls back, the others are taken. */
+    fresh();
+    CHECK(mock_ctl_restore(&g_ctl, kept, kept_len));
+    ae_config_t got = config();
+    CHECK(got.route == AE_ROUTE_MONITOR && got.noise_on && near(got.snr_db, -3.5f, 0.001f));
+    /* With one, everything is back. */
+    ae_config_defaults(&cfg);
+    ae_init(&g_engine, 1u);
+    ae_set_parrot_buffer(&g_engine, parrot_store, sizeof parrot_store / sizeof parrot_store[0]);
+    ae_configure(&g_engine, &cfg);
+    mock_ctl_init(&g_ctl, &g_engine, &cfg);
+    CHECK(mock_ctl_restore(&g_ctl, kept, kept_len));
+    got = config();
+    CHECK(got.route == AE_ROUTE_PARROT && got.noise_on && near(got.snr_db, -3.5f, 0.001f));
+    CHECK(near(got.ref_bw_hz, 3000.0f, 0.5f) && near(got.noise_floor_dbfs, -55.5f, 0.001f) && near(got.atten_db, 6.0f, 0.001f));
+    CHECK(got.turnaround_ms == 150 && got.parrot_delay_ms == 2500 && got.parrot_period_ms == 15000);
+    CHECK(got.link_buffer_ms == 80 && !got.link_match && got.ptt_line == AE_LINE_RTS);
+    CHECK(got.vox_on && near(got.vox_threshold_dbfs, -35.5f, 0.001f) && got.vox_hang_ms == 250);
+
+    /* Kept by newer firmware: a setting this one does not know, and a value
+     * out of today's range. Both are passed over. */
+    uint8_t newer[4 + 3 * 5 + 2] = {'M', 'S', 1, 3, 0x7E, 1, 0, 0, 0, MOCK_CTL_VOX_HANG, 0xFF, 0xFF, 0, 0,
+                                    MOCK_CTL_TURNAROUND, 77, 0, 0, 0};
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < sizeof newer - 2; i++) {
+        crc ^= (uint16_t)(newer[i] << 8);
+        for (int b = 0; b < 8; b++) crc = (uint16_t)((crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1);
+    }
+    newer[sizeof newer - 2] = (uint8_t)(crc >> 8);
+    newer[sizeof newer - 1] = (uint8_t)crc;
+    fresh();
+    CHECK(mock_ctl_restore(&g_ctl, newer, sizeof newer));
+    CHECK(config().turnaround_ms == 77 && config().vox_hang_ms == 100);
+}
+
+static mock_ctl_clips_status_t g_clips;
+static int g_clip_starts;
+static mock_ctl_clip_op_t g_clip_op;
+static unsigned g_clip_slot;
+static bool g_clip_refuse;
+
+static bool clips_start(void *ctx, mock_ctl_clip_op_t op, unsigned slot)
+{
+    (void)ctx;
+    if (g_clip_refuse) return false;
+    g_clip_starts++;
+    g_clip_op = op;
+    g_clip_slot = slot;
+    return true;
+}
+
+static void clips_status(void *ctx, mock_ctl_clips_status_t *st)
+{
+    (void)ctx;
+    *st = g_clips;
+}
+
+static void test_clips(void)
+{
+    static const mock_ctl_clips_t clips = {.start = clips_start, .status = clips_status};
+    static int16_t parrot_store[4 * AE_PARROT_FS_HZ];
+    static int16_t audio[4800];
+    ae_config_t cfg;
+
+    /* A mock without clips says it has none and refuses them all. */
+    fresh();
+    EXPECT("fe fe f0 e0 37 fd", "fe fe e0 f0 37 00 00 fd");
+    EXPECT("fe fe f0 e0 35 01 fd", NG);
+    EXPECT("fe fe f0 e0 31 01 fd", NG);
+    EXPECT("fe fe f0 e0 36 01 fd", NG);
+
+    ae_config_defaults(&cfg);
+    ae_init(&g_engine, 1u);
+    ae_set_parrot_buffer(&g_engine, parrot_store, sizeof parrot_store / sizeof parrot_store[0]);
+    cfg.route = AE_ROUTE_PARROT;
+    cfg.parrot_delay_ms = 60000;
+    ae_configure(&g_engine, &cfg);
+    mock_ctl_init(&g_ctl, &g_engine, &cfg);
+    memset(&g_clips, 0, sizeof g_clips);
+    g_clips.slots = 3;
+    g_clips.length_ms[1] = 15040; /* clip 2: an FT8 transmission */
+    g_clip_starts = 0;
+    g_clip_refuse = false;
+    mock_ctl_set_clips(&g_ctl, &clips);
+    EXPECT("fe fe f0 e0 37 fd", "fe fe e0 f0 37 00 03 00 00 01 50 00 00 fd");
+
+    /* Nothing recorded yet: nothing to keep. */
+    EXPECT("fe fe f0 e0 35 01 fd", NG);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_SAVE, 1) == MOCK_CTL_CLIP_NOTHING);
+
+    /* While it records: not yet. Afterwards: begun. */
+    tone(audio, 4800, 8000.0f);
+    ae_set_ptt(&g_engine, true);
+    for (int i = 0; i < 5; i++) ae_process(&g_engine, audio, audio, 4800), tone(audio, 4800, 8000.0f);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_SAVE, 1) == MOCK_CTL_CLIP_STATE);
+    EXPECT("fe fe f0 e0 31 02 fd", NG); /* nor play one over a transmission */
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_PLAY, 2) == MOCK_CTL_CLIP_STATE);
+    ae_set_ptt(&g_engine, false);
+    for (int i = 0; i < 2; i++) ae_process(&g_engine, NULL, audio, 4800);
+    EXPECT("fe fe f0 e0 35 01 fd", OK);
+    CHECK(g_clip_starts == 1 && g_clip_op == MOCK_CTL_CLIP_SAVE && g_clip_slot == 1);
+    EXPECT("fe fe f0 e0 35 03 fd", OK);
+    CHECK(g_clip_starts == 2 && g_clip_slot == 3);
+
+    /* Play: clip 2 is there, clip 1 is not. */
+    EXPECT("fe fe f0 e0 31 02 fd", OK);
+    CHECK(g_clip_starts == 3 && g_clip_op == MOCK_CTL_CLIP_PLAY && g_clip_slot == 2);
+    EXPECT("fe fe f0 e0 31 01 fd", NG);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_PLAY, 1) == MOCK_CTL_CLIP_NOTHING);
+    /* Only in the parrot route. */
+    EXPECT("fe fe f0 e0 10 01 fd", OK);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_PLAY, 2) == MOCK_CTL_CLIP_STATE);
+    EXPECT("fe fe f0 e0 35 02 fd", OK); /* keeping the recording needs no route */
+    EXPECT("fe fe f0 e0 10 02 fd", OK);
+
+    /* Erase, whatever is there. */
+    EXPECT("fe fe f0 e0 36 02 fd", OK);
+    CHECK(g_clip_op == MOCK_CTL_CLIP_ERASE && g_clip_slot == 2);
+    EXPECT("fe fe f0 e0 36 01 fd", OK);
+
+    /* Clips that are not there, and malformed requests. */
+    int starts = g_clip_starts;
+    EXPECT("fe fe f0 e0 35 00 fd", NG);
+    EXPECT("fe fe f0 e0 35 04 fd", NG);
+    EXPECT("fe fe f0 e0 31 0a fd", NG);
+    EXPECT("fe fe f0 e0 36 fd", NG);
+    EXPECT("fe fe f0 e0 35 01 01 fd", NG);
+    EXPECT("fe fe f0 e0 37 01 fd", NG);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_ERASE, 4) == MOCK_CTL_CLIP_NONE);
+    CHECK(mock_ctl_clip(&g_ctl, (mock_ctl_clip_op_t)9, 1) == MOCK_CTL_CLIP_NONE);
+
+    /* One at a time: while one is under way, or if the task will not take
+     * another, it is refused. The status shows it, and a failure. */
+    g_clips.busy = true;
+    EXPECT("fe fe f0 e0 36 01 fd", NG);
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_SAVE, 1) == MOCK_CTL_CLIP_BUSY);
+    EXPECT("fe fe f0 e0 37 fd", "fe fe e0 f0 37 01 03 00 00 01 50 00 00 fd");
+    g_clips.busy = false;
+    g_clips.failed = true;
+    g_clips.length_ms[0] = 120000;
+    g_clips.length_ms[2] = 49; /* rounds to nothing */
+    EXPECT("fe fe f0 e0 37 fd", "fe fe e0 f0 37 02 03 12 00 01 50 00 00 fd");
+    g_clip_refuse = true;
+    CHECK(mock_ctl_clip(&g_ctl, MOCK_CTL_CLIP_ERASE, 1) == MOCK_CTL_CLIP_BUSY);
+    CHECK(g_clip_starts == starts);
+
+    /* All eight, the most there can be; more than that is not believed. */
+    g_clips.slots = 12;
+    g_clips.failed = false;
+    mock_ctl_clips_status_t st;
+    CHECK(mock_ctl_clips_status(&g_ctl, &st) && st.slots == MOCK_CTL_CLIPS_MAX);
+    send("fe fe f0 e0 37 fd");
+    CHECK(g_out_len == 5 + 2 + 16 + 1 && g_out[6] == 0x08);
+}
+
 static int g_rig_changes;
 static const civ_rig_t *g_rig_now;
 
@@ -651,6 +929,8 @@ int main(void)
     test_parrot();
     test_ptt_sources();
     test_link_settings();
+    test_kept_settings();
+    test_clips();
     test_personality();
     test_not_the_radio();
     printf("%d checks, %d failed\n", g_checks, g_failed);

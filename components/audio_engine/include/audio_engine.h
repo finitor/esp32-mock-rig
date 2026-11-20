@@ -39,9 +39,15 @@
  * resampler's delay is taken out: a replayed sample leaves exactly that many
  * periods after it went in.
  *
+ * The parrot's buffer can be lent to another task, to save the recording or
+ * to load a stored one: ae_parrot_hold() asks, the audio task lets go at its
+ * next block, and ae_parrot_release() gives the buffer back, saying whether
+ * it now holds a different recording and whether to replay it.
+ *
  * Threads: ae_configure(), ae_get_config(), ae_config_gen(), ae_set_ptt(),
- * ae_set_lines(), ae_get_ptt(), ae_get_status(), ae_get_parrot_status() and
- * ae_parrot_replay() may be called from any task.
+ * ae_set_lines(), ae_get_ptt(), ae_get_status(), ae_get_parrot_status(),
+ * ae_parrot_replay() and ae_blocks() may be called from any task. The hold
+ * functions belong to one task at a time, other than the audio task.
  * ae_process() and ae_rx_process() belong to one audio task.
  */
 #ifndef AUDIO_ENGINE_H
@@ -201,6 +207,10 @@ typedef struct {
     _Atomic bool dtr;
     _Atomic bool rts;
     _Atomic bool replay_req;
+    _Atomic bool par_hold;      /* another task wants the buffer */
+    _Atomic bool rel_loaded;    /* what ae_parrot_release() said */
+    _Atomic uint32_t rel_len;
+    _Atomic bool rel_play;
 
     /* status: written by the audio task, read by any task */
     _Atomic uint32_t st_level_ms; /* mean square of the source, 0 = none yet */
@@ -211,6 +221,8 @@ typedef struct {
     _Atomic int32_t st_parrot_state;
     _Atomic uint32_t st_parrot_len; /* samples at 12 kHz */
     _Atomic bool st_parrot_truncated;
+    _Atomic bool st_par_held; /* the audio task has let go of the buffer */
+    _Atomic uint32_t st_blocks;
 
     /* set once, before the audio task starts */
     int16_t *par_buf;
@@ -247,6 +259,7 @@ typedef struct {
     dsp_chan_t chan;
 
     uint64_t now; /* samples ae_process() has produced */
+    bool par_lent; /* the buffer is with another task */
     ae_parrot_state_t par_state;
     uint32_t par_len;       /* samples recorded, at 12 kHz */
     bool par_truncated;
@@ -305,6 +318,36 @@ bool ae_has_link(ae_t *e);
  * and does nothing unless the route is parrot, there is a recording and the
  * radio is not transmitting. */
 bool ae_parrot_replay(ae_t *e);
+
+/* ---- lending the parrot's buffer ------------------------------------------
+ *
+ * To read the recording out, or put another in, from a task that is not the
+ * audio task:
+ *
+ *   ae_parrot_hold(e);
+ *   wait until ae_parrot_held(e), or until ae_blocks(e) has stood still for
+ *     a few block times: an audio task that is not running holds nothing,
+ *     and if it starts it sees the hold at once
+ *   use ae_parrot_buffer()
+ *   ae_parrot_release(e, ...);
+ *
+ * While held the parrot neither records nor replays; a transmission made
+ * meanwhile is not recorded.
+ */
+void ae_parrot_hold(ae_t *e);
+bool ae_parrot_held(ae_t *e);
+
+/* How many blocks the audio task has processed. */
+uint32_t ae_blocks(ae_t *e);
+
+/* The buffer, the length of the recording in it and its capacity, in 12 kHz
+ * samples. NULL if the parrot has none. Only for the task holding it. */
+int16_t *ae_parrot_buffer(ae_t *e, uint32_t *len, uint32_t *cap);
+
+/* Give the buffer back. loaded: it now holds a recording of len samples,
+ * which replaces the old one. play: replay it at once, if the route is
+ * parrot and the radio is not transmitting. */
+void ae_parrot_release(ae_t *e, bool loaded, uint32_t len, bool play);
 
 /* One block of audio through the radio: n samples. tx is what the host is
  * transmitting, or NULL when it sends nothing; out is what it should record.

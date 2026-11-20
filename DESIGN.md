@@ -15,9 +15,10 @@ Last updated: Nov 19, 2026.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
 - The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 970 KB image with the web console and the ESP-NOW link; 339 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 979 KB image with the web console and the ESP-NOW link; 344 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The G90 personality (Milestone 5, steps 27 and 28) is written. `rig_g90` is built from the Radioddity CI-V table, Hamlib's Xiegu backend and one log of a real G90, not from a radio: the G90 and DE-19 are not accessible during this project. It passes real Hamlib on the host: `rigctl -m 3088` (Hamlib 4.7.1 only) over a pseudo-terminal, 32 command groups, no command rejected. The radio imitated is chosen at run time, over CI-V (`60`), with `mockctl.py` or in the web console, and the firmware keeps the choice in flash. Reconciling it with the real radio (step 29) waits for the station.
+- Flash persistence (step 14) is written. Settings can be kept as the power-up settings, and the parrot's recording can be kept as one of five clips in a flash partition of its own and played back later. The packing of settings (`mock_ctl`) and the clip store (`clips`) are portable C with host unit tests, the latter on a pretend flash chip that can lose power mid-save. The firmware side (NVS, the partition, the task that writes clips) has only been compiled: no byte has been written to real flash.
 - Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two. Everything that can be written without hardware now is.
 - The two-board link (Milestone 4, steps 21 to 25) is written. Its core (`link`: packets, jitter buffer, loss and clock-drift handling, peer discovery, frequency matching, framing for a wire) is portable C with host unit tests that join two boards by a simulated path with loss, jitter, reordering and clocks that differ. It is a fourth receive route in `audio_engine`, with two settings on both control paths and its statistics in the web console. Two simulated boards have been watched hearing each other in a browser. The ESP-NOW and UART transports have only been compiled: no packet has crossed between two boards.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
@@ -114,13 +115,15 @@ Repository layout:
 | `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/ui/` | LED policy: the state to show and its colour |
+| `components/clips/` | Clip store: recordings kept in a flash partition, and saving and playing them through the parrot |
 | `components/web_console/` | Web console: `console_api.c` (settings and telemetry as JSON, portable), `web_console.c` (HTTP and WebSocket server), `www/index.html` (the page, embedded in the firmware), `Kconfig` (the console switch) |
 | `components/wifi_net/` | Wi-Fi: joining or hosting a network, the board's name, and its `Kconfig` settings |
 | `components/link/` | Two-board link: `link.c` (portable core), `link_espnow.c` and `link_uart.c` (the transports; one is compiled), `Kconfig` (which one, and the UART's pins) |
 | `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
-| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
+| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `storage.c` keeps things in flash (NVS, the clips partition and the task that writes it); `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
+| `partitions.csv` | Flash layout: NVS, 2 MB for the firmware, the rest of the 16 MB for clips |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console` and `test_link` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console`, `test_link` and `test_clips` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -282,6 +285,9 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | --- | --- | --- |
 | `00` | Identity, read only | Protocol version (`01`), then the personality's Hamlib model in 2 bytes (`30 85`) |
 | `01` | Put every setting back to its power-up value | None |
+| `02` | Keep the settings as they are now as the power-up values, in flash | None. Refused if the mock has nowhere to keep them or the write fails |
+| `03` | Forget the kept settings: the power-up values are the build's again | None. The settings in use do not change |
+| `04` | Which power-up values are in force, read only | `00` the build's, `01` kept ones |
 | `10` | Receive route | `00` monitor, `01` radio, `02` parrot (refused if the parrot has no buffer), `03` link (refused if the mock was built without one) |
 | `11` | Noise | `00` off, `01` on |
 | `12` | SNR | Tenths of a dB, 2 bytes plus sign: −60.0 to +80.0 |
@@ -291,9 +297,13 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `16` | Turnaround time | ms, 2 bytes: 0 to 5000 |
 | `20` | Status, read only | Flags (`01` receive muted, `02` gain limited); level of the receive source in tenths of a dB below full scale, 2 bytes (`99 99` if nothing has been measured); gain the channel applies, tenths of a dB, 2 bytes plus sign |
 | `30` | Play the parrot's recording again, now | None. Refused unless the route is parrot, there is a recording and PTT is off |
+| `31` | Play clip N: a recording kept in flash replaces the parrot's and is replayed | N, 1 BCD byte from `01`. Refused unless the route is parrot, PTT is off, clip N exists and no clip operation is under way |
 | `32` | Parrot delay, from unkeying to the replay | Tenths of a second, 2 bytes: 0 to 60.0 |
 | `33` | Parrot period: the replay starts a whole number of periods after key-on | Tenths of a second, 2 bytes: 0 (off) to 300.0 |
 | `34` | Parrot status, read only | State (`00` idle, `01` recording, `02` waiting, `03` playing); flags (`01` the buffer filled and the recording is cut short); length recorded and buffer capacity, each in tenths of a second, 2 bytes |
+| `35` | Keep the parrot's recording as clip N, replacing what was there | N. Refused if there is no recording or one is being made. Answered when it has begun |
+| `36` | Erase clip N | N |
+| `37` | Clip status, read only | Flags (`01` an operation is under way, `02` the last one failed); the number of clips; then each clip's length in tenths of a second, 2 bytes, 0 for none |
 | `40` | Link buffer: audio held before it is played | ms, 2 bytes: 10 to 200 |
 | `41` | Link frequency match | `00` off, `01` on: the other board is heard only when it transmits on this radio's receive frequency |
 | `50` | Control-line PTT | `00` off, `01` RTS keys, `02` DTR keys |
@@ -302,7 +312,6 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `53` | VOX hang time | ms, 2 bytes: 0 to 5000 |
 | `54` | PTT status, read only | The sources keying the radio now: `01` CAT, `02` control line, `04` VOX, added together; `00` is receiving |
 | `60` | The radio imitated | Its Hamlib model number in BCD, 2 bytes: `30 85` the IC-705, `30 88` the G90. Setting it switches radios; the new one starts from its power-up state. Refused for a model the mock does not have |
-| `31` | Reserved: play stored clip N | Refused until that part exists |
 
 Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
 
@@ -318,11 +327,15 @@ mockctl.py -p PORT vox=on voxlevel=-40      key from transmit audio (Data2G's de
 mockctl.py -p PORT line=rts                 key from the RTS line
 mockctl.py -p PORT route=link linkbuffer=50 hear a second board, with 50 ms of buffer
 mockctl.py -p PORT rig=g90                  become a Xiegu G90 (rig=ic705 to go back)
+mockctl.py -p PORT vox=on keep              power up with the VOX on from now on
+mockctl.py -p PORT forget                   power up with the build's settings again
+mockctl.py -p PORT clip-save=1              keep the parrot's recording as clip 1
+mockctl.py -p PORT route=parrot clip-play=1 replay clip 1 as receive audio
 ```
 
 Limits, as built:
 
-- Settings live in RAM. A power cycle returns to the build-time values (menuconfig); `01` returns to them without one. The radio imitated is the exception: the firmware keeps it in flash, and `01` leaves it alone.
+- Settings live in RAM and are written to flash only when asked (`02`, or `keep`). A power cycle returns to the power-up values, which are the kept ones if there are any and the build's (menuconfig) if not; `01` returns to them without a power cycle. The radio imitated is kept in flash whenever it is changed, and `01` leaves it alone.
 - The controls share the CAT port, so they can only be sent while no other program is using it, or by the program that is. A reply read by a second program on the same port is lost to the sender and may confuse the other. A phone app holding the port leaves no way in at all; the [web console](#web-control-and-telemetry-console) is the way in then.
 - `rigctl`'s `w` command sends a frame to `F0` (seen in the pseudo-terminal log) but printed no reply with Hamlib 4.7.1, so it can set but not usefully read.
 - Verified on the host only: unit tests through the real parser and engine, and `mockctl.py` against the parser over a pseudo-terminal. Not run on a board.
@@ -388,6 +401,17 @@ As built in `audio_engine` (host-tested, not yet run on a board):
 - **Slot alignment.** With a period set, the replay waits for a whole number of periods after key-on. Key-on is the one moment the board shares with the host's clock, so this puts the audio at the same place in a later slot without the board knowing the time: 15 s for FT8, 7.5 s for FT4. The resampler's delay (92 samples) is taken out by skipping the first 23 stored samples, and the host test confirms a sample comes back exactly one period after it went in. What remains is the loopback FIFO (about 20 ms) and the host's own audio latency.
 - **Capture must be running.** Recording and replay both run on the capture side, on the board's sample clock. The parrot records only while the host is also recording from the device; a host that stops capturing while it transmits would record nothing. See the open questions.
 - **PTT timing.** PTT is sampled once per audio block (10 ms at most), so key-on and unkeying are seen up to a block late. Alignment does not suffer: the recording and the replay count from the same block edge.
+
+**Clips: recordings kept in flash (step 14).** Built as below; host-tested, and not yet run on a board.
+
+- **What a clip is.** The parrot's recording, 12 kHz 16-bit mono, kept in flash so that it survives a power cycle: a transmission worth keeping, or a signal to test a decoder with. A canned clip gets in the same way as any other: play it into the mock from the host with the radio keyed in the parrot route, then keep the recording.
+- **Three operations.** Keep the recording as clip N; play clip N, which puts it in the parrot's buffer in place of the recording and replays it at once through the channel like any replay; erase clip N. Playing needs the parrot route and PTT off.
+- **Storage.** A flash partition of its own (`clips`, 13.9 MB of the 16 MB), cut into equal slots with no file system: five clips of up to 120 s. Each slot is one 4 KB sector for a header (a mark, the format version, the sample rate, the length, and CRC-32s of the samples and of the header) and then the samples.
+- **Safe against a power cut.** Saving erases what the clip needs, writes the samples and writes the header last, so a save cut short leaves an empty slot. Loading checks both CRCs; a damaged clip is not played.
+- **Slow, and not for a session.** Keeping a clip erases and writes up to 2.9 MB of flash, which takes seconds to tens of seconds, and every flash operation holds up everything else on the chip for milliseconds at a time. It runs in a task of its own at the lowest priority, the command is answered when the work has begun, and the status says when it is done. Audio is likely to be disturbed meanwhile: do it between sessions.
+- **Borrowing the buffer.** The clip task and the audio task share the parrot's buffer by a hand-over in the engine: the clip task asks, the audio task lets go at its next block and neither records nor replays until the buffer is given back. A transmission made during the hand-over is not recorded.
+- **Not automatic.** The last transmission is kept only when asked. Writing megabytes of flash after every transmission would wear the flash and break up the audio of the next one.
+- **Limits.** Clips can only come from the parrot and go to it: there is no way yet to upload or download one as a file. A clip longer than the parrot's buffer plays as far as it fits. No wear levelling: a slot is rewritten only when something is kept in it.
 
 **Resampling.** One 96-tap low-pass serves both directions: flat within 0.01 dB to 4 kHz, 3 dB down at 5 kHz, and at least 69 dB down from 6.5 kHz, so the 12 kHz path carries roughly 0–4.5 kHz. A 48 → 12 → 48 kHz round trip delays audio by 92 samples at 48 kHz, about 1.9 ms. Coefficients come from `host/tools/gen_resampler_fir.py`.
 
@@ -505,6 +529,8 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 | `POST /api/settings` | Change any subset: `{"noise":"on","snr":-12.5}`. Answers with every setting, or with `{"error":"snr: must be between -60.0 and 80.0 dB"}` |
 | `POST /api/rig` | Change the radio imitated: `{"hamlib":3088}` |
 | `POST /api/reset` | Back to the power-up settings |
+| `POST /api/keep`, `POST /api/forget` | Keep the settings as they are for power-up, in flash; forget them again |
+| `POST /api/clip` | A clip operation: `{"op":"save","clip":1}`, with `op` one of `save`, `play`, `erase`. Answered when it has begun; the telemetry says when it is done |
 | `POST /api/replay` | Play the parrot's recording again |
 | `GET /api/telemetry` | One telemetry snapshot |
 | `GET /ws` | WebSocket: the same snapshot, pushed five times a second |
@@ -522,7 +548,7 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 
 - No login and no encryption: it is a bench device on a private network. A Wi-Fi password typed into the form crosses that network in the clear. Requests that change anything must be sent as `application/json`, which a page on another site cannot make a browser do, so such a page cannot change settings behind the operator's back.
 - Once the board has fallen back to hosting its own network it stays there until restarted, even if the configured network returns.
-- Settings are still not stored (step 14); only the Wi-Fi network is.
+- Settings are stored only when asked ("Keep these for power-up"); the Wi-Fi network and the radio imitated are stored when changed.
 - The page's history is 60 seconds and lives in the browser; nothing is recorded on the board.
 - Telemetry is sampled five times a second, so a transmission shorter than 0.2 s can fall between two snapshots.
 - Wi-Fi traffic shares the radio with ESP-NOW link audio, so the console keeps its traffic light: about 3 KB per second per open page.
@@ -608,7 +634,7 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 11. Written, not yet on hardware: channel on the receive path in `audio_engine`: noise at SNR, attenuation, receive mute while keyed and TX→RX turnaround delay, with host tests. Power-up settings are build-time; step 12 changes them at run time.
 12. Written, not yet on hardware: mock-only controls in `mock_ctl` on CI-V address `F0`, which no radio in Hamlib 4.7.1 uses; a separate address keeps them clear of every radio's command set. Route, channel settings, parrot settings, replay and status so far, with host tests and `host/tools/mockctl.py`. Stored-clip, link, PTT-source and personality commands have numbers reserved and join with those parts.
 13. Written, not yet on hardware: VOX PTT and control-line PTT in `audio_engine` beside CAT, both selectable and off at power-up, with host tests and mock-only controls; LED states (red recording, green playing, amber waiting, dim blue receiving, dim white no host) in `ui`, driven through RMT.
-14. Optional flash persistence for the last transmission and canned clips.
+14. Written, not yet on hardware: flash persistence. Settings are kept as the power-up settings on request (`02`), and the parrot's recording is kept as one of five clips in a partition of its own and played back on request (`31`, `35`, `36`), with host tests of the packing and of the clip store. The firmware's NVS and partition code is compiled only.
 15. Acceptance: WSJT-X FT8 self-decode with replay aligned to the 15 s slot.
 
 **Milestone 3: web control and telemetry console**
@@ -693,6 +719,12 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | The G90 identifies itself as `70` to `19 00` and `00 90` to `1D 19`. | Those are the values Hamlib's backend recognises as a G90, in 4.7.1 and in master. |
 | Nov 19, 2026 | The radio imitated is chosen at run time by its Hamlib model number, through mock-only control `60` or the web console, and switching is power-off and power-on: `civ_set_rig()` in the core. | One firmware image serves both radios; the model number is what the user types into their software anyway; a clean power-up state leaves nothing of one radio in the other. The core still names no radio. |
 | Nov 19, 2026 | The firmware stores the choice of radio in flash. Nothing else is stored, and reset (`01`) does not touch it. | A board set up as the station's radio should still be that radio after a power cycle; settings should still start from a known state. |
+| Nov 19, 2026 | Settings are written to flash only when asked, as the power-up settings; reset returns to them, and they can be forgotten. This replaces "run-time settings are not stored" above. | A board for Data2G needs the VOX on at every power-up, and a phone holding the CAT port leaves no way to set it. Keeping them only on request still starts every session from a state someone chose. |
+| Nov 19, 2026 | Kept settings are a list of command numbers and values with a check, read back through the same range checks as any setting. | Firmware with more settings, fewer, or other ranges still reads what an older one kept: what it cannot use stays at the build's value. Nothing unchecked reaches the engine from flash. |
+| Nov 19, 2026 | Clips live in a raw flash partition cut into equal slots, with a header and CRCs, not in a file system. | A handful of large recordings needs no directory. Fixed slots are simple to make safe against a power cut (header last), need no extra component, and are testable on the host against a pretend flash chip. |
+| Nov 19, 2026 | A recording is kept as a clip only when asked, by a task of its own; the command is answered when the work begins. | Megabytes of flash take seconds to write and disturb audio meanwhile, so it cannot follow every transmission or run in the task that reads CAT. |
+| Nov 19, 2026 | A clip plays through the parrot: it replaces the recording in the parrot's buffer and is replayed. The engine lends the buffer to the clip task and takes it back. | The replay path, with the channel applied, exists already; one buffer and one hand-over is less than a second playback path. |
+| Nov 19, 2026 | The firmware uses its own partition table (`partitions.csv`): 2 MB for the application and the rest for clips. This replaces the 1.5 MB table above. | Clips need a partition, and the image is near 1 MB. |
 | Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
@@ -720,6 +752,8 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Are five telemetry snapshots a second enough to follow ARQ turnarounds, or does PTT need to be counted or timestamped on the board? (step 26)
 - [ ] Does Wi-Fi running beside USB audio cause underruns or audible glitches on the S3? (step 20)
 - [ ] Which telemetry is worth recording over time rather than only showing live, and where it is kept (the browser, or a file the page can download)? The page keeps 60 seconds of levels and PTT in the browser; nothing longer yet. (after step 20)
+- [ ] Do kept settings and clips work on a board: how long does keeping a 15 s and a 120 s clip take, and how badly does it disturb USB audio and the link while it lasts? Compiled only. (after step 9)
+- [ ] Should clips be uploaded and downloaded as WAV files through the web console, so that a canned signal need not be played in through the sound card?
 - [ ] Do the mock-only controls work on a board, and does a setting change mid-stream sound clean? Host-tested only. (after step 9)
 - [x] Default reference bandwidth for the SNR setting: 2500 Hz. Data2G reports its SNR in 2500 Hz (`SNR_REF_BW_HZ` in `native/core/generated/config.hpp`), as does WSJT-X; 3000 Hz remains a setting for VARA.
 - [ ] Are the channel defaults right for real modems: noise floor −40 dBFS, turnaround 30 ms, and silence (not a low noise floor) on receive while keyed? To be judged with WSJT-X, FT8AF and Data2G on a board. (after step 9)
@@ -731,7 +765,7 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Does Hamlib master (default address `88`, `1D 19` first) accept the G90 personality when run, not only when read? And do WSJT-X, fldigi and Data2G's bundled Hamlib 4.7.2 with model 3088? (after step 9)
 - [ ] Does writing the choice of radio to flash from the USB task disturb audio for the few milliseconds it takes? (after step 9)
 - [ ] G90, later pass: what the real DE-19 presents over USB (VID/PID, one or two COM ports, audio format, device name), and whether it keys the G90 from RTS or DTR or only by CAT. One setup guide says to hold both lines low with PTT set to CAT. (step 29)
-- [x] How control-line PTT mode is selected and stored. Selected with mock-only control `50` or at build time (Nov 19, 2026). It is not stored: like every setting it returns to its build-time value at power-up until step 14. The BOOT button is not used.
+- [x] How control-line PTT mode is selected and stored. Selected with mock-only control `50` or at build time (Nov 19, 2026). It was not stored at first; since step 14 it is kept with the other settings when they are kept (`02`). The BOOT button is not used.
 - [x] Exact S3 IN-endpoint limit, and whether duplex UAC2 with a feedback endpoint plus CDC fits. Four IN endpoints besides EP0; it fits exactly, with FIFO space to spare.
 - [ ] Does each host (macOS, Windows, Linux, Android) enumerate the device and stream audio both ways? Structure is checked; behaviour is not. (step 6)
 - [ ] Audio latency: the audio component moves capture audio in 10 ms blocks and the loopback FIFO holds about 20 ms. Is that acceptable for ARQ turnaround, or do the intervals need tightening? (after step 9)

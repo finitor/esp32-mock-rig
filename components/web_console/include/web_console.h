@@ -11,6 +11,9 @@
  *   POST /api/settings    change settings: a JSON object, any subset
  *   POST /api/rig         change the radio imitated: {"hamlib":3088}
  *   POST /api/reset       back to the power-up settings
+ *   POST /api/keep        keep the settings as they are for power-up, in flash
+ *   POST /api/forget      forget them: power up with the build's settings
+ *   POST /api/clip        a clip operation: {"op":"save","clip":1}
  *   POST /api/replay      play the parrot's recording again
  *   GET  /api/telemetry   one snapshot of the telemetry
  *   GET  /ws              WebSocket: the same snapshot, pushed 5 times a second

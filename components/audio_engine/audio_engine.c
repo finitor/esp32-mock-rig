@@ -176,6 +176,43 @@ bool ae_has_link(ae_t *e)
     return e->has_link;
 }
 
+void ae_parrot_hold(ae_t *e)
+{
+    atomic_store(&e->rel_loaded, false);
+    atomic_store(&e->par_hold, true);
+}
+
+bool ae_parrot_held(ae_t *e)
+{
+    return atomic_load(&e->st_par_held);
+}
+
+uint32_t ae_blocks(ae_t *e)
+{
+    return atomic_load(&e->st_blocks);
+}
+
+int16_t *ae_parrot_buffer(ae_t *e, uint32_t *len, uint32_t *cap)
+{
+    if (len) *len = atomic_load(&e->st_parrot_len);
+    if (cap) *cap = e->par_cap;
+    return e->par_buf;
+}
+
+void ae_parrot_release(ae_t *e, bool loaded, uint32_t len, bool play)
+{
+    if (loaded) {
+        if (len > e->par_cap) len = e->par_cap;
+        /* For an audio task that is not running: the status is true at once. */
+        atomic_store(&e->st_parrot_len, len);
+        atomic_store(&e->st_parrot_truncated, false);
+    }
+    atomic_store(&e->rel_len, len);
+    atomic_store(&e->rel_play, play);
+    atomic_store(&e->rel_loaded, loaded);
+    atomic_store(&e->par_hold, false);
+}
+
 void ae_get_parrot_status(ae_t *e, ae_parrot_status_t *st)
 {
     st->state = (ae_parrot_state_t)atomic_load(&e->st_parrot_state);
@@ -188,6 +225,7 @@ bool ae_parrot_replay(ae_t *e)
 {
     if (atomic_load(&e->cfg_route) != AE_ROUTE_PARROT || atomic_load(&e->ptt)) return false;
     if (atomic_load(&e->st_parrot_len) == 0 || atomic_load(&e->st_parrot_state) == AE_PARROT_RECORDING) return false;
+    if (atomic_load(&e->par_hold)) return false; /* the buffer is with another task */
     atomic_store(&e->replay_req, true);
     return true;
 }
@@ -505,9 +543,33 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
     bool keyed = ptt.cat || ptt.line || ptt.vox;
     const int16_t *src = NULL;
 
+    /* The buffer lent to another task, and taken back. */
+    bool lent = atomic_load(&e->par_hold);
+    if (lent && !e->par_lent) {
+        e->par_state = AE_PARROT_IDLE; /* whatever it was doing ends here */
+        e->par_tail_left = 0;
+        atomic_store(&e->replay_req, false);
+        atomic_store(&e->st_parrot_state, AE_PARROT_IDLE);
+        atomic_store(&e->st_par_held, true);
+    } else if (!lent) {
+        if (e->par_lent) atomic_store(&e->st_par_held, false);
+        /* Also when this task never saw the hold: it came and went between
+         * two blocks, or while no audio was running. */
+        if (atomic_exchange(&e->rel_loaded, false)) {
+            e->par_len = min_u32(atomic_load(&e->rel_len), e->par_cap);
+            e->par_truncated = false;
+            atomic_store(&e->replay_req, false);
+            if (atomic_load(&e->rel_play) && e->par_len && e->route == AE_ROUTE_PARROT && !keyed) {
+                e->par_play_at = e->now;
+                e->par_state = AE_PARROT_WAITING;
+            }
+        }
+    }
+    e->par_lent = lent;
+
     if (e->route == AE_ROUTE_MONITOR) {
         src = tx;
-    } else if (e->route == AE_ROUTE_PARROT && e->par_buf) {
+    } else if (e->route == AE_ROUTE_PARROT && e->par_buf && !lent) {
         if (parrot_block(e, keyed, tx, out, n)) src = out;
         atomic_store(&e->st_parrot_state, (int32_t)e->par_state);
         atomic_store(&e->st_parrot_len, e->par_len);
@@ -519,6 +581,7 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
     }
     rx_block(e, keyed, src, out, n);
     e->now += n;
+    atomic_fetch_add(&e->st_blocks, 1u);
 }
 
 void ae_rx_process(ae_t *e, const int16_t *src, int16_t *out, size_t n)

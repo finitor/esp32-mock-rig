@@ -527,7 +527,7 @@ static void test_personality(void)
     CHECK_HAS(g_buf, "\"rig\":\"Icom IC-705\",\"hamlib\":3085,\"rigs\":[{\"name\":\"Icom IC-705\",\"hamlib\":3085},"
                      "{\"name\":\"Xiegu G90\",\"hamlib\":3088}],\"parrot_capacity\":");
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
-    CHECK_HAS(g_buf, ",\"hamlib\":3085,\"host\":");
+    CHECK_HAS(g_buf, ",\"hamlib\":3085,\"kept\":false,\"host\":");
 
     CHECK(apply("{\"atten\":6}") == CONSOLE_OK);
     CHECK(console_rig_apply(&g_ctl, " { \"hamlib\" : 3088 } ", g_err, sizeof g_err) == CONSOLE_OK);
@@ -535,7 +535,7 @@ static void test_personality(void)
     CHECK(console_info_json(&g_ctl, &info, g_buf, sizeof g_buf) > 0);
     CHECK_HAS(g_buf, "\"rig\":\"Xiegu G90\",\"hamlib\":3088,\"rigs\":[");
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
-    CHECK_HAS(g_buf, ",\"hamlib\":3088,\"host\":");
+    CHECK_HAS(g_buf, ",\"hamlib\":3088,\"kept\":false,\"host\":");
     CHECK(near(config().atten_db, 6.0f)); /* the mock's settings are not the radio's */
 
     /* What it refuses, leaving the radio as it is. */
@@ -555,6 +555,135 @@ static void test_personality(void)
     CHECK(g_civ.rig == &rig_g90);
     CHECK(console_rig_apply(&g_ctl, "{\"hamlib\":3085}", NULL, 0) == CONSOLE_OK);
     CHECK(g_civ.rig == &rig_ic705);
+}
+
+/* Kept settings and clips, as the page sees and asks for them. */
+static mock_ctl_clips_status_t g_clips;
+static int g_clip_op = -1;
+static unsigned g_clip_slot;
+
+static bool clips_start(void *ctx, mock_ctl_clip_op_t op, unsigned slot)
+{
+    (void)ctx;
+    g_clip_op = (int)op;
+    g_clip_slot = slot;
+    return true;
+}
+
+static void clips_status(void *ctx, mock_ctl_clips_status_t *st)
+{
+    (void)ctx;
+    *st = g_clips;
+}
+
+static bool kept_save(void *ctx, const uint8_t *blob, size_t len)
+{
+    (void)ctx;
+    (void)blob;
+    return len > 0;
+}
+
+static bool kept_forget(void *ctx)
+{
+    (void)ctx;
+    return true;
+}
+
+static void test_kept_and_clips(void)
+{
+    static const mock_ctl_clips_t clips = {.start = clips_start, .status = clips_status};
+    static const mock_ctl_store_t store = {.save = kept_save, .forget = kept_forget};
+    static int16_t audio[4800];
+    console_sample_t s;
+    memset(&s, 0, sizeof s);
+
+    fresh();
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"erase\",\"clip\":1}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "there is no clip 1 on this board");
+
+    /* Kept settings show in the telemetry. */
+    mock_ctl_set_store(&g_ctl, &store);
+    CHECK(mock_ctl_keep_settings(&g_ctl));
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, ",\"kept\":true,\"host\":");
+    CHECK(mock_ctl_forget_settings(&g_ctl));
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, ",\"kept\":false,\"host\":");
+
+    /* Clips: three places, one filled, one operation under way. */
+    memset(&g_clips, 0, sizeof g_clips);
+    g_clips.slots = 3;
+    g_clips.length_ms[1] = 15040;
+    g_clips.busy = true;
+    mock_ctl_set_clips(&g_ctl, &clips);
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK(json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"clips\":{\"busy\":true,\"failed\":false,\"seconds\":[0.0,15.0,0.0]},\"link\":");
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"erase\",\"clip\":2}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "another clip operation is still under way");
+    g_clips.busy = false;
+    g_clips.failed = true;
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, "\"clips\":{\"busy\":false,\"failed\":true,");
+
+    /* Each operation, and why it may not be begun. */
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"save\",\"clip\":1}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "there is no recording to keep: transmit in the parrot route first");
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"play\",\"clip\":1}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "that clip is empty");
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"play\",\"clip\":2}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "a clip plays only in the parrot route, with PTT off");
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"play\",\"clip\":4}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "there is no clip 4 on this board");
+    CHECK(g_clip_op == -1);
+    CHECK(apply("{\"route\":\"parrot\"}") == CONSOLE_OK);
+    CHECK(console_clip_apply(&g_ctl, " {\"clip\":2, \"op\":\"play\"} ", g_err, sizeof g_err) == CONSOLE_OK);
+    CHECK(g_err[0] == '\0' && g_clip_op == MOCK_CTL_CLIP_PLAY && g_clip_slot == 2);
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"erase\",\"clip\":3}", NULL, 0) == CONSOLE_OK);
+    CHECK(g_clip_op == MOCK_CTL_CLIP_ERASE && g_clip_slot == 3);
+
+    /* With a recording: keeping it is begun, but not while it is being made. */
+    ae_set_ptt(&g_engine, true);
+    tone(audio, 4800, 8000.0f);
+    for (int i = 0; i < 3; i++) ae_process(&g_engine, audio, audio, 4800), tone(audio, 4800, 8000.0f);
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"save\",\"clip\":1}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "the parrot is still recording");
+    ae_set_ptt(&g_engine, false);
+    for (int i = 0; i < 2; i++) ae_process(&g_engine, NULL, audio, 4800);
+    CHECK(console_clip_apply(&g_ctl, "{\"op\":\"save\",\"clip\":1}", g_err, sizeof g_err) == CONSOLE_OK);
+    CHECK(g_clip_op == MOCK_CTL_CLIP_SAVE && g_clip_slot == 1);
+
+    /* Malformed. */
+    static const char *const bad[] = {
+        "",
+        "{}",
+        "{\"op\":\"save\"}",
+        "{\"clip\":1}",
+        "{\"op\":\"keep\",\"clip\":1}",
+        "{\"op\":1,\"clip\":1}",
+        "{\"op\":\"save\",\"clip\":\"1\"}",
+        "{\"op\":\"save\",\"clip\":0}",
+        "{\"op\":\"save\",\"clip\":1.5}",
+        "{\"op\":\"save\",\"clip\":-1}",
+        "{\"op\":\"save\",\"clip\":1,\"x\":2}",
+        "{\"op\":\"save\",\"clip\":1",
+    };
+    g_clip_op = -1;
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        g_checks++;
+        if (console_clip_apply(&g_ctl, bad[i], g_err, sizeof g_err) != CONSOLE_BAD_REQUEST || g_err[0] == '\0') {
+            fail(__FILE__, __LINE__, "malformed request accepted");
+            printf("     request: %s\n", bad[i]);
+        }
+    }
+    CHECK(g_clip_op == -1);
+
+    /* Eight clips at the longest still fit the snapshot's room. */
+    g_clips.slots = 8;
+    for (int i = 0; i < 8; i++) g_clips.length_ms[i] = 120000;
+    s.has_link = true;
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) < 2048 - 300);
+    CHECK(json_valid(g_buf));
 }
 
 static void test_json_string(void)
@@ -681,7 +810,7 @@ static void test_telemetry(void)
     CHECK(json_valid(g_buf));
     char want[1024];
     snprintf(want, sizeof want,
-             "{\"t\":1234,\"gen\":%lu,\"hamlib\":0,\"host\":false,"
+             "{\"t\":1234,\"gen\":%lu,\"hamlib\":0,\"kept\":false,\"host\":false,"
              "\"ptt\":{\"on\":false,\"cat\":false,\"line\":false,\"vox\":false},"
              "\"cat\":{\"freq\":7074000,\"txfreq\":7074000,\"mode\":\"USB-D\",\"split\":false,\"ok\":0,\"ng\":0,"
              "\"dropped\":0},"
@@ -689,7 +818,7 @@ static void test_telemetry(void)
              "\"fifo\":{\"level\":0,\"target\":960,\"over\":0,\"under\":0,\"dropped\":0,\"repeated\":0}},"
              "\"channel\":{\"muted\":false,\"level\":null,\"gain\":0.0,\"limited\":false},"
              "\"parrot\":{\"state\":\"idle\",\"recorded\":0.0,\"capacity\":2.0,\"truncated\":false},"
-             "\"link\":null,\"rssi\":null}",
+             "\"clips\":null,\"link\":null,\"rssi\":null}",
              (unsigned long)gen);
     CHECK_STR(g_buf, want);
 
@@ -719,14 +848,14 @@ static void test_telemetry(void)
     s.rssi_dbm = -57;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
     CHECK(json_valid(g_buf));
-    CHECK_HAS(g_buf, "\"hamlib\":0,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false},");
+    CHECK_HAS(g_buf, "\"hamlib\":0,\"kept\":false,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false},");
     CHECK_HAS(g_buf, "\"cat\":{\"freq\":14074000,\"txfreq\":14075000,\"mode\":\"USB\",\"split\":true,"
                      "\"ok\":4000000000,\"ng\":2,\"dropped\":1},");
     CHECK_HAS(g_buf, "\"audio\":{\"tx\":{\"rms\":-12.1,\"peak\":-9.0},\"rx\":{\"rms\":-120.0,\"peak\":-120.0},");
     CHECK_HAS(g_buf, "\"fifo\":{\"level\":1010,\"target\":960,\"over\":3,\"under\":4,\"dropped\":5,\"repeated\":6}},");
     CHECK_HAS(g_buf, "\"channel\":{\"muted\":true,");
     CHECK_HAS(g_buf, "\"parrot\":{\"state\":\"recording\",\"recorded\":0.5,\"capacity\":2.0,\"truncated\":false},");
-    CHECK_HAS(g_buf, "\"link\":null,\"rssi\":-57}");
+    CHECK_HAS(g_buf, "\"clips\":null,\"link\":null,\"rssi\":-57}");
     CHECK(ae_config_gen(&g_engine) != gen);
 
     /* The link: alone, then with a peer and every counter set. */
@@ -794,6 +923,7 @@ int main(void)
     test_same_settings_as_civ();
     test_info();
     test_personality();
+    test_kept_and_clips();
     test_json_string();
     test_meter();
     test_mode_names();

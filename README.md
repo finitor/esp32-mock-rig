@@ -9,7 +9,7 @@ ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks
 - Appear as one USB device: a 48 kHz mono sound card plus a serial port.
 - Emulate the CAT (CI-V protocol) of an Icom IC-705 (Hamlib rig model 3085) or a Xiegu G90 (Hamlib 3088) on the serial port, switchable while it runs.
 - Key from CAT, a serial control line, or VOX.
-- Parrot mode: record transmit audio and play it back as receive audio.
+- Parrot mode: record transmit audio and play it back as receive audio; keep recordings in flash as clips.
 - Simulate a channel: noise at a set SNR, attenuation, turnaround delay.
 - Link two boards (ESP-NOW or wired UART) so two modems can hold an ARQ session over a fake radio path.
 - Offer a web console over Wi-Fi to change settings and watch telemetry while it runs.
@@ -62,6 +62,22 @@ Parrot mode records each transmission and plays it back as receive audio; with a
 
 ```bash
 python3 host/tools/mockctl.py -p <CAT port> route=parrot period=15
+```
+
+A recording can be kept in flash as one of five clips and played back later, after a power cycle too. Keeping one takes seconds and disturbs audio while it lasts:
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> clip-save=1
+```
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> route=parrot clip-play=1
+```
+
+Settings return to their built-in values at power-up unless they are kept. This makes the board start with the VOX on from now on, which Data2G's default PTT mode needs:
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> vox=on keep
 ```
 
 While a modem application holds the CAT port, the same settings are in the web console, which also shows PTT, levels and the audio buffer live. The board joins the Wi-Fi network set in `idf.py menuconfig` or in the console's own Wi-Fi form; with none, it hosts a network named `mockradio-xxxx` (password `mockradio`) and the console is at `http://192.168.4.1/`. On a shared network it is at `http://mockradio-xxxx.local/`. The console has no login, so use it on a network you trust.

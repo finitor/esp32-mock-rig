@@ -941,6 +941,120 @@ static void test_vox(void)
     CHECK(parrot_status(&e).recorded_ms == 500 + 1000 + 100 - 10 + AE_PARROT_TAIL_MS); /* from CAT key-on */
 }
 
+/* The parrot's buffer lent to another task: to read the recording out, and to
+ * put another in. */
+static void test_parrot_lend(void)
+{
+    enum { CAP = 2 * AE_PARROT_FS_HZ, BLK = 480 };
+    static int16_t store[CAP], tx[BLK], out[BLK], clip[6000];
+    ae_t e;
+    ae_config_t cfg;
+    ae_parrot_status_t st;
+    uint32_t len, cap;
+
+    ae_init(&e, 3u);
+    ae_set_parrot_buffer(&e, store, CAP);
+    ae_config_defaults(&cfg);
+    cfg.route = AE_ROUTE_PARROT;
+    cfg.parrot_delay_ms = 60000; /* no replay of its own in this test */
+    cfg.turnaround_ms = 0;
+    ae_configure(&e, &cfg);
+    for (int i = 0; i < BLK; i++) tx[i] = (int16_t)((i / 24) % 2 ? 6000 : -6000); /* 1 kHz */
+
+    /* An audio task that is not running holds nothing: the blocks stand still. */
+    CHECK(ae_blocks(&e) == 0 && !ae_parrot_held(&e));
+    ae_parrot_hold(&e);
+    CHECK(!ae_parrot_held(&e) && ae_blocks(&e) == 0);
+    CHECK(ae_parrot_buffer(&e, &len, &cap) == store && len == 0 && cap == CAP);
+    ae_parrot_release(&e, false, 0, false);
+
+    /* Record half a second, then lend the buffer. */
+    ae_set_ptt(&e, true);
+    for (int i = 0; i < 50; i++) ae_process(&e, tx, out, BLK);
+    CHECK(ae_blocks(&e) == 50);
+    ae_parrot_hold(&e);
+    CHECK(!ae_parrot_held(&e)); /* not until the audio task has seen it */
+    ae_process(&e, tx, out, BLK);
+    CHECK(ae_parrot_held(&e));
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_IDLE && st.recorded_ms == 500);
+    CHECK(ae_parrot_buffer(&e, &len, NULL) == store && len == 6000);
+    memcpy(clip, store, sizeof clip);
+
+    /* While it is lent, a transmission is not recorded and nothing replays. */
+    for (int i = 0; i < 100; i++) ae_process(&e, tx, out, BLK);
+    ae_set_ptt(&e, false);
+    for (int i = 0; i < 20; i++) ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_IDLE && st.recorded_ms == 500);
+    CHECK(!ae_parrot_replay(&e)); /* not while it is lent */
+    CHECK(rms(out, BLK) == 0.0);
+
+    /* Given back untouched: the recording is as it was, and replays on request. */
+    ae_parrot_release(&e, false, 0, false);
+    ae_process(&e, NULL, out, BLK);
+    CHECK(!ae_parrot_held(&e));
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_IDLE && st.recorded_ms == 500);
+    CHECK(ae_parrot_replay(&e));
+    ae_process(&e, NULL, out, BLK);
+    ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_PLAYING && rms(out, BLK) > 3000.0);
+    for (int i = 0; i < 80; i++) ae_process(&e, NULL, out, BLK);
+
+    /* A stored recording put in, and played at once. */
+    ae_parrot_hold(&e);
+    ae_process(&e, NULL, out, BLK);
+    CHECK(ae_parrot_held(&e));
+    memset(store, 0, sizeof store);
+    memcpy(store, clip, 3000 * sizeof(int16_t)); /* the first quarter second of it */
+    ae_parrot_release(&e, true, 3000, true);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.recorded_ms == 250 && !st.truncated); /* true at once, for a display */
+    ae_process(&e, NULL, out, BLK);
+    ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_PLAYING && st.recorded_ms == 250 && rms(out, BLK) > 3000.0);
+    for (int i = 0; i < 30; i++) ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_IDLE && rms(out, BLK) == 0.0);
+
+    /* Put in without playing; too long is cut to the buffer; and loading
+     * while keyed does not play over the transmission. */
+    ae_parrot_hold(&e);
+    ae_process(&e, NULL, out, BLK);
+    ae_parrot_release(&e, true, 10u * CAP, false);
+    ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_IDLE && st.recorded_ms == 2000);
+    ae_parrot_hold(&e);
+    ae_process(&e, NULL, out, BLK);
+    ae_set_ptt(&e, true);
+    ae_parrot_release(&e, true, 3000, true);
+    ae_process(&e, tx, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_RECORDING); /* the transmission wins, and is recorded */
+    ae_set_ptt(&e, false);
+
+    /* In another route the hold is still answered, and nothing plays. */
+    cfg.route = AE_ROUTE_RADIO;
+    ae_configure(&e, &cfg);
+    ae_process(&e, NULL, out, BLK);
+    ae_parrot_hold(&e);
+    ae_process(&e, NULL, out, BLK);
+    CHECK(ae_parrot_held(&e));
+    ae_parrot_release(&e, true, 3000, true);
+    for (int i = 0; i < 4; i++) ae_process(&e, NULL, out, BLK);
+    ae_get_parrot_status(&e, &st);
+    CHECK(!ae_parrot_held(&e) && st.recorded_ms == 250 && rms(out, BLK) == 0.0);
+
+    /* No buffer: nothing to lend. */
+    ae_t bare;
+    ae_init(&bare, 3u);
+    CHECK(ae_parrot_buffer(&bare, &len, &cap) == NULL && len == 0 && cap == 0);
+}
+
 /* ---- the link route, with a stand-in for the other board ----------------------- */
 
 static struct {
@@ -1195,6 +1309,7 @@ int main(void)
     test_parrot_no_delay();
     test_line_ptt();
     test_vox();
+    test_parrot_lend();
     test_link_route();
     test_config_clamping();
     test_reconfigure_mid_stream();

@@ -75,6 +75,12 @@ console_result_t console_settings_apply(mock_ctl_t *m, const char *json, char *e
  * personality. The new radio starts from its power-up state. */
 console_result_t console_rig_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
 
+/* A clip operation: json is {"op":"save","clip":1}, with op one of "save"
+ * (the parrot's recording into the clip), "play" and "erase". It is begun,
+ * not finished, when this returns CONSOLE_OK: the telemetry says when it is
+ * done. CONSOLE_UNAVAILABLE with the reason if it cannot be begun now. */
+console_result_t console_clip_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
+
 /* {"error":"<message>"}, with the message escaped. */
 size_t console_error_json(const char *message, char *buf, size_t cap);
 
@@ -148,7 +154,9 @@ typedef struct {
 /* One snapshot: PTT and its sources, the receive channel's status, the
  * parrot, the link, and everything in the sample. "gen" changes when the settings do,
  * however they were changed, so the page knows to read them again, and
- * "hamlib" is the radio imitated now, for the same reason. */
+ * "hamlib" is the radio imitated now, for the same reason. "kept" says
+ * whether the power-up settings are ones kept in flash, and "clips" lists
+ * the recordings kept there, or is null on a mock without any. */
 size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *buf, size_t cap);
 
 /* The name of a CI-V mode number ("USB", "CW-R"), with "-D" added for data.

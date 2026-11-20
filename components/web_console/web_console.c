@@ -138,6 +138,40 @@ static esp_err_t post_rig(httpd_req_t *req)
     return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
 }
 
+static esp_err_t post_clip(httpd_req_t *req)
+{
+    char err[CONSOLE_ERR_MAX];
+    if (!read_json_body(req)) return ESP_OK;
+
+    /* Only begun here: the firmware's clip task does the work, and the
+     * telemetry says when it is done. */
+    s_cfg.lock(s_cfg.ctx);
+    console_result_t r = console_clip_apply(s_cfg.ctl, s_body, err, sizeof err);
+    s_cfg.unlock(s_cfg.ctx);
+
+    if (r == CONSOLE_OK) return send_json(req, "200 OK", "{}", 2);
+    return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
+}
+
+/* Keep the settings for power-up, or forget the kept ones. */
+static esp_err_t post_keep(httpd_req_t *req)
+{
+    s_cfg.lock(s_cfg.ctx);
+    bool ok = mock_ctl_keep_settings(s_cfg.ctl);
+    s_cfg.unlock(s_cfg.ctx);
+    if (ok) return send_json(req, "200 OK", "{}", 2);
+    return send_error(req, "500 Internal Server Error", "the board could not write its flash");
+}
+
+static esp_err_t post_forget(httpd_req_t *req)
+{
+    s_cfg.lock(s_cfg.ctx);
+    bool ok = mock_ctl_forget_settings(s_cfg.ctl);
+    s_cfg.unlock(s_cfg.ctx);
+    if (ok) return send_json(req, "200 OK", "{}", 2);
+    return send_error(req, "500 Internal Server Error", "the board could not write its flash");
+}
+
 static esp_err_t post_reset(httpd_req_t *req)
 {
     s_cfg.lock(s_cfg.ctx);
@@ -296,6 +330,9 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/settings", .method = HTTP_GET, .handler = get_settings},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = post_settings},
         {.uri = "/api/rig", .method = HTTP_POST, .handler = post_rig},
+        {.uri = "/api/clip", .method = HTTP_POST, .handler = post_clip},
+        {.uri = "/api/keep", .method = HTTP_POST, .handler = post_keep},
+        {.uri = "/api/forget", .method = HTTP_POST, .handler = post_forget},
         {.uri = "/api/reset", .method = HTTP_POST, .handler = post_reset},
         {.uri = "/api/replay", .method = HTTP_POST, .handler = post_replay},
         {.uri = "/api/telemetry", .method = HTTP_GET, .handler = get_telemetry},

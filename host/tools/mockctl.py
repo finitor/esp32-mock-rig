@@ -7,9 +7,18 @@ itself (see components/mock_ctl/include/mock_ctl.h). No radio is involved.
     mockctl.py -p PORT                        show every setting and the status
     mockctl.py -p PORT noise=on snr=-12.5     change settings, then show them
     mockctl.py -p PORT reset                  back to the power-up settings
+    mockctl.py -p PORT vox=on keep            make the settings as they now are
+                                              the power-up settings, in flash
+    mockctl.py -p PORT forget                 power up with the build's settings again
     mockctl.py -p PORT replay                 play the parrot's recording again
 
     mockctl.py -p PORT rig=g90                become a Xiegu G90 (or rig=ic705)
+    mockctl.py -p PORT clip-save=1            keep the parrot's recording as clip 1
+    mockctl.py -p PORT clip-play=1            replay clip 1 as receive audio
+    mockctl.py -p PORT clip-erase=1           empty clip 1
+
+Clips are recordings kept in the board's flash. Saving a long one takes many
+seconds and disturbs audio while it lasts; show says when it is done.
 
 The radio imitated:
     rig=ic705|g90         Icom IC-705 (Hamlib model 3085) or Xiegu G90 (3088).
@@ -60,6 +69,11 @@ CONTROLLER = 0xE0
 OK, NG = 0xFB, 0xFA
 
 CMD_ID, CMD_RESET, CMD_STATUS = 0x00, 0x01, 0x20
+CMD_KEEP, CMD_FORGET, CMD_KEPT = 0x02, 0x03, 0x04
+CMD_CLIP_STATUS = 0x37
+# word before "=": command
+CLIP_COMMANDS = {"clip-play": 0x31, "clip-save": 0x35, "clip-erase": 0x36}
+CLIP_FLAG_BUSY, CLIP_FLAG_FAILED = 0x01, 0x02
 CMD_REPLAY, CMD_PARROT_STATUS, CMD_PTT_STATUS = 0x30, 0x34, 0x54
 CMD_RIG = 0x60
 # name: (Hamlib model, what to call it)
@@ -94,6 +108,11 @@ CHOICES = {
 REFUSALS = {
     "replay": "needs route=parrot, a recording and PTT off",
     "route=parrot": "this mock has no parrot buffer",
+    "keep": "this mock has nowhere to keep settings, or its flash failed",
+    "forget": "this mock has nowhere to keep settings, or its flash failed",
+    "clip-save": "no such clip, nothing recorded, still recording, or another clip operation under way",
+    "clip-play": "no such clip, clip empty, route not parrot, PTT on, or another clip operation under way",
+    "clip-erase": "no such clip, or another clip operation under way",
     "route=link": "this mock was built without the link",
     "rig=ic705": "this mock has no IC-705 personality",
     "rig=g90": "this mock has no G90 personality: is its firmware older than this tool?",
@@ -278,6 +297,25 @@ def show(port):
 
     print("  link        buffer %d ms, frequency match %s" % (values["linkbuffer"], values["match"]))
 
+    clips = ask(port, CMD_CLIP_STATUS)
+    if len(clips) < 2 or len(clips) != 2 + 2 * clips[1]:
+        raise ValueError("unexpected clip status reply")
+    if clips[1]:
+        lengths = [from_bcd(clips[2 + 2 * i:4 + 2 * i]) / 10 for i in range(clips[1])]
+        text = ", ".join("%d: %s" % (i + 1, "%.1f s" % n if n else "empty") for i, n in enumerate(lengths))
+        if clips[0] & CLIP_FLAG_BUSY:
+            text += "; working"
+        elif clips[0] & CLIP_FLAG_FAILED:
+            text += "; the last operation failed"
+    else:
+        text = "none on this mock"
+    print("  clips       %s" % text)
+
+    kept = ask(port, CMD_KEPT)
+    if len(kept) != 1:
+        raise ValueError("unexpected reply about kept settings")
+    print("  power-up    %s" % ("the settings kept in flash" if kept[0] else "the build's settings"))
+
     ptt = ask(port, CMD_PTT_STATUS)
     if len(ptt) != 1:
         raise ValueError("unexpected PTT status reply")
@@ -294,9 +332,20 @@ def apply(port, word):
     if word == "replay":
         ask(port, CMD_REPLAY)
         return
+    if word == "keep":
+        ask(port, CMD_KEEP)
+        return
+    if word == "forget":
+        ask(port, CMD_FORGET)
+        return
     name, sep, value = word.partition("=")
     if not sep:
-        raise ValueError("%r is not name=value, 'show', 'reset' or 'replay'" % word)
+        raise ValueError("%r is not name=value, 'show', 'reset', 'replay', 'keep' or 'forget'" % word)
+    if name in CLIP_COMMANDS:
+        if not value.isdigit() or not 1 <= int(value) <= 99:
+            raise ValueError("%s takes a clip number, like %s=1" % (name, name))
+        ask(port, CLIP_COMMANDS[name], to_bcd(int(value), 1))
+        return
     if name == "rig":
         if value not in RIGS:
             raise ValueError("rig is %s" % " or ".join(RIGS))
@@ -316,7 +365,7 @@ def apply(port, word):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-p", "--port", default=os.environ.get("MOCK_PORT"), help="the mock radio's CAT serial port")
-    parser.add_argument("words", nargs="*", metavar="name=value | show | reset | replay")
+    parser.add_argument("words", nargs="*", metavar="name=value | show | reset | replay | keep | forget")
     args = parser.parse_args()
     if not args.port:
         parser.error("no port: give -p PORT or set MOCK_PORT")
@@ -332,7 +381,8 @@ def main():
             try:
                 apply(port, word)
             except Refused:
-                sys.exit("%s: refused by the mock (%s)" % (word, REFUSALS.get(word, "out of range?")))
+                why = REFUSALS.get(word) or REFUSALS.get(word.partition("=")[0], "out of range?")
+                sys.exit("%s: refused by the mock (%s)" % (word, why))
             except ValueError as e:
                 sys.exit(str(e))
         show(port)

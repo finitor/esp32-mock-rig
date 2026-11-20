@@ -70,6 +70,19 @@ check 0 "link        buffer 30 ms, frequency match on"
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "snr         +10.0 dB in 2500 Hz"
 
+check 0 "clips       1: empty, 2: empty"
+check 0 "power-up    the build's settings"
+check 0 "power-up    the settings kept in flash"      vox=on atten=6 keep
+check 0 "ptt         line off, vox on at"             atten=0 vox=off reset
+check 0 "atten       6.0 dB"
+check 0 "power-up    the build's settings"            forget
+check 0 "atten       6.0 dB"
+check 0 "atten       0.0 dB"                          reset
+check 1 "clip-save=1: refused by the mock (no such clip, nothing recorded" clip-save=1
+check 1 "clip-play=2: refused by the mock (no such clip, clip empty" clip-play=2
+check 1 "clip-erase=3: refused by the mock (no such clip" clip-erase=3
+check 0 "clips       1: empty, 2: empty"              clip-erase=2
+check 1 "clip-save takes a clip number"               clip-save=one
 check 0 "personality: Xiegu G90, Hamlib model 3088" snr=3 rig=g90
 check 0 "snr         +3.0 dB in 2500 Hz"
 check 1 "rig is ic705 or g90"                        rig=ts480

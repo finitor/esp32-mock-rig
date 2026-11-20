@@ -139,13 +139,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        if self.path in ("/api/settings", "/api/rig"):
+        with_body = {"/api/settings": "apply ", "/api/rig": "rig ", "/api/clip": "clip "}
+        if self.path in with_body:
             # As in the firmware: a cross-site form cannot send this type.
             if not (self.headers.get("Content-Type") or "").startswith("application/json"):
                 self.error(415, "send the settings as application/json")
                 return
-            self.reply(*self.ask(("apply " if self.path == "/api/settings" else "rig ") + body))
-        elif self.path in ("/api/reset", "/api/replay"):
+            self.reply(*self.ask(with_body[self.path] + body))
+        elif self.path in ("/api/reset", "/api/replay", "/api/keep", "/api/forget"):
             self.reply(*self.ask(self.path[5:]))
         elif self.path == "/api/wifi":
             self.error(400, "the simulator has no Wi-Fi to set up")
@@ -277,6 +278,46 @@ def check(port, port_b, sim):
     sock.close()
     expect("the WebSocket pushes telemetry", b"101" in head and b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in head
            and data[0] == 0x81 and "ptt" in pushed and "parrot" in pushed)
+
+    # Settings kept for power-up, and the recording kept as a clip and played back.
+    call("POST", "/api/settings", '{"vox":"on","atten":6}')
+    status, body = call("POST", "/api/keep")
+    expect("keep the settings for power-up", status == 200 and json.loads(call("GET", "/api/telemetry")[1])["kept"])
+    call("POST", "/api/settings", '{"vox":"off","atten":0}')
+    reset = json.loads(call("POST", "/api/reset")[1])
+    expect("reset goes back to the kept ones", reset["vox"] == "on" and reset["atten"] == 6.0)
+    status, body = call("POST", "/api/forget")
+    reset = json.loads(call("POST", "/api/reset")[1])
+    expect("forget them again", status == 200 and reset["vox"] == "off" and reset["atten"] == 0.0
+           and not json.loads(call("GET", "/api/telemetry")[1])["kept"])
+
+    call("POST", "/api/settings", '{"route":"parrot","delay":60}')
+    soon("the parrot is idle again", lambda: json.loads(call("GET", "/api/telemetry")[1])["parrot"]["state"] == "idle")
+    recorded = json.loads(call("GET", "/api/telemetry")[1])["parrot"]["recorded"]
+    status, body = call("POST", "/api/clip", '{"op":"save","clip":1}')
+    t = json.loads(call("GET", "/api/telemetry")[1])
+    expect("keep the recording as clip 1", status == 200 and recorded > 0.5
+           and t["clips"]["seconds"] == [recorded, 0.0] and not t["clips"]["failed"])
+    status, body = call("POST", "/api/clip", '{"op":"play","clip":2}')
+    expect("refuse to play an empty clip", status == 409 and "empty" in json.loads(body)["error"])
+    call("GET", "/sim/key?on=1")
+    time.sleep(0.3)
+    call("GET", "/sim/key?on=0")       # a short transmission replaces the recording
+    soon("another recording replaces the first",
+         lambda: 0 < json.loads(call("GET", "/api/telemetry")[1])["parrot"]["recorded"] < recorded)
+    # Not while the new recording is still being finished: ask until it is taken.
+    soon("clip 1 is played on request", lambda: call("POST", "/api/clip", '{"op":"play","clip":1}')[0] == 200)
+
+    def clip_playing():
+        t = json.loads(call("GET", "/api/telemetry")[1])
+        return (t["parrot"]["state"] == "playing" and t["parrot"]["recorded"] == recorded and t["audio"]["rx"]
+                and t["audio"]["rx"]["rms"] > -20)
+
+    soon("and brings the first recording back", clip_playing)
+    status, body = call("POST", "/api/clip", '{"op":"erase","clip":1}')
+    expect("erase clip 1", status == 200
+           and json.loads(call("GET", "/api/telemetry")[1])["clips"]["seconds"] == [0.0, 0.0])
+    call("POST", "/api/reset")
 
     # The radio imitated can be changed, and the page is told.
     status, body = call("POST", "/api/rig", '{"hamlib":3088}')

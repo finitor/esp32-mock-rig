@@ -540,6 +540,54 @@ console_result_t console_rig_apply(mock_ctl_t *m, const char *json, char *err, s
     return CONSOLE_OK;
 }
 
+console_result_t console_clip_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap)
+{
+    static const char malformed[] = "expected a clip operation, like {\"op\":\"save\",\"clip\":1}";
+    static const char *const ops[] = {"save", "play", "erase"}; /* in the order of mock_ctl_clip_op_t */
+    const char *p = json;
+    bool first = true;
+    int op = -1;
+    double clip = 0;
+    jmember_t mem;
+    int r;
+
+    if (err && err_cap) err[0] = '\0';
+    if (!j_open(&p)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+    while ((r = j_next(&p, &first, &mem)) == 1) {
+        if (mem.name_len == 2 && memcmp(mem.name, "op", 2) == 0 && mem.type == J_STRING) {
+            op = -1;
+            for (int i = 0; i < 3; i++) {
+                if (strlen(ops[i]) == mem.text_len && memcmp(ops[i], mem.text, mem.text_len) == 0) op = i;
+            }
+            if (op < 0) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "op: must be one of \"save\", \"play\", \"erase\"");
+        } else if (mem.name_len == 4 && memcmp(mem.name, "clip", 4) == 0 && mem.type == J_NUMBER) {
+            clip = mem.num;
+        } else {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+        }
+    }
+    if (r < 0 || op < 0 || !(clip >= 1.0 && clip <= 99.0) || clip != floor(clip)) {
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+    }
+
+    switch (mock_ctl_clip(m, (mock_ctl_clip_op_t)op, (unsigned)clip)) {
+    case MOCK_CTL_CLIP_OK:
+        return CONSOLE_OK;
+    case MOCK_CTL_CLIP_NONE:
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "there is no clip %d on this board", (int)clip);
+    case MOCK_CTL_CLIP_BUSY:
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "another clip operation is still under way");
+    case MOCK_CTL_CLIP_NOTHING:
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "%s",
+                      op == MOCK_CTL_CLIP_SAVE ? "there is no recording to keep: transmit in the parrot route first"
+                                               : "that clip is empty");
+    default:
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "%s",
+                      op == MOCK_CTL_CLIP_SAVE ? "the parrot is still recording"
+                                               : "a clip plays only in the parrot route, with PTT off");
+    }
+}
+
 size_t console_error_json(const char *message, char *buf, size_t cap)
 {
     out_t o;
@@ -657,8 +705,10 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
 
     out_init(&o, buf, cap);
     const civ_rig_t *rig = mock_ctl_rig(m);
-    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"hamlib\":%d,\"host\":", (unsigned long)s->uptime_ms,
+    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"hamlib\":%d,\"kept\":", (unsigned long)s->uptime_ms,
           (unsigned long)ae_config_gen(m->engine), rig ? rig->hamlib_model : 0);
+    out_bool(&o, mock_ctl_settings_kept(m));
+    out_f(&o, ",\"host\":");
     out_bool(&o, s->host);
 
     out_f(&o, ",\"ptt\":{\"on\":");
@@ -707,7 +757,24 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_f(&o, ",\"truncated\":");
     out_bool(&o, par.truncated);
 
-    out_f(&o, "},\"link\":");
+    out_f(&o, "},\"clips\":");
+    mock_ctl_clips_status_t clips;
+    if (mock_ctl_clips_status(m, &clips)) {
+        out_f(&o, "{\"busy\":");
+        out_bool(&o, clips.busy);
+        out_f(&o, ",\"failed\":");
+        out_bool(&o, clips.failed);
+        out_f(&o, ",\"seconds\":[");
+        for (unsigned i = 0; i < clips.slots; i++) {
+            out_f(&o, "%s", i ? "," : "");
+            out_scaled(&o, (int32_t)((clips.length_ms[i] + 50) / 100), 10);
+        }
+        out_f(&o, "]}");
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"link\":");
     if (s->has_link) {
         static const char *const link_states[] = {"off", "no peer", "idle", "sending", "receiving", "off frequency"};
         const link_status_t *k = &s->link;
