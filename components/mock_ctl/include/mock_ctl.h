@@ -17,8 +17,9 @@
  *
  *   00            identity, read only: <protocol version> <Hamlib model, 2 bytes>
  *   01            put every setting back to its power-up value
- *   10 <00..02>   receive route: 00 monitor, 01 radio, 02 parrot (refused
- *                 if the parrot has no buffer)
+ *   10 <00..03>   receive route: 00 monitor, 01 radio, 02 parrot (refused
+ *                 if the parrot has no buffer), 03 link (refused if the
+ *                 mock was built without one)
  *   11 <00|01>    noise off / on
  *   12 <2> <sign> SNR, tenths of a dB, -60.0 .. +80.0
  *   13 <3>        bandwidth the SNR is quoted in, Hz, 100 .. 24000
@@ -41,6 +42,10 @@
  *                   state: 00 idle, 01 recording, 02 waiting, 03 playing
  *                   flags: 01 the buffer filled, the recording is cut short
  *                   recorded, capacity: tenths of a second
+ *   40 <2>        link: audio held before it is played, ms, 10 .. 200
+ *   41 <00|01>    link: frequency match off / on. On, the other board is
+ *                 heard only when it transmits on this radio's receive
+ *                 frequency
  *   50 <00..02>   control-line PTT: 00 off, 01 RTS keys, 02 DTR keys
  *   51 <00|01>    VOX off / on
  *   52 <2>        VOX threshold, tenths of a dB below full scale, 6.0 .. 80.0
@@ -49,7 +54,7 @@
  *                   01 CAT, 02 control line, 04 VOX; 00 = receiving
  *
  * Reserved for parts that do not exist yet, answered FA: 31 (play a stored
- * clip), 40 (link mode), 60 (personality).
+ * clip), 60 (personality).
  */
 #ifndef MOCK_CTL_H
 #define MOCK_CTL_H
@@ -83,6 +88,8 @@ enum {
     MOCK_CTL_PARROT_DELAY = 0x32,
     MOCK_CTL_PARROT_PERIOD = 0x33,
     MOCK_CTL_PARROT_STATUS = 0x34,
+    MOCK_CTL_LINK_BUFFER = 0x40,
+    MOCK_CTL_LINK_MATCH = 0x41,
     MOCK_CTL_PTT_LINE = 0x50,
     MOCK_CTL_VOX = 0x51,
     MOCK_CTL_VOX_THRESHOLD = 0x52,

@@ -9,15 +9,19 @@
  * host can record. With the default settings that is a plain loopback. CI-V
  * frames to the mock's own address change the settings at run time. The
  * radio transmits while CAT, a selected serial control line or the VOX keys
- * it, and the RGB LED shows what it is doing. A web console over Wi-Fi
- * changes the same settings and shows live telemetry. Before USB starts, a
+ * it, and the RGB LED shows what it is doing. In the link route the transmit
+ * audio goes to a second board and that board's comes back as receive
+ * audio. A web console over Wi-Fi changes the same settings and shows live
+ * telemetry. Before USB starts, a
  * short self-check proves the portable modules run on the target.
  */
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_psram.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -37,6 +41,11 @@
 #ifdef CONFIG_MOCK_WEB_CONSOLE
 #include "console_api.h"
 #include "web_console.h"
+#endif
+#ifndef CONFIG_MOCK_LINK_NONE
+#include "link.h"
+#include "link_transport.h"
+#define HAVE_LINK 1
 #endif
 
 static const char *TAG = "mock-radio";
@@ -107,6 +116,38 @@ static void cat_unlock(void *ctx)
     if (s_cat_lock) xSemaphoreGive(s_cat_lock);
 }
 
+/* ---- the link to a second board ---------------------------------------------
+ *
+ * The engine hands the link transmit audio and takes receive audio from it,
+ * in the audio task. The status task below keeps the link's settings in
+ * step with the engine's and lets it announce the board; the frequencies it
+ * compares come from the CI-V parser whenever CAT bytes arrive.
+ */
+#ifdef HAVE_LINK
+_Static_assert(AE_LINK_BUFFER_MIN_MS == LINK_BUFFER_MIN_MS && AE_LINK_BUFFER_MAX_MS == LINK_BUFFER_MAX_MS,
+               "the engine's range for the link buffer must be the link's");
+
+static link_t s_link;
+
+static void link_tx_op(void *ctx, const int16_t *tx, size_t n, bool keyed)
+{
+    link_tx(ctx, tx, n, keyed);
+}
+
+static bool link_rx_op(void *ctx, int16_t *out, size_t n)
+{
+    return link_rx(ctx, out, n);
+}
+#endif
+
+/* Call with the CAT lock held, or before anything else uses the parser. */
+static void link_follow_radio(void)
+{
+#ifdef HAVE_LINK
+    link_set_radio(&s_link, (uint32_t)civ_rx_freq(&s_civ), (uint32_t)civ_tx_freq(&s_civ));
+#endif
+}
+
 static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
 {
     (void)ctx;
@@ -130,6 +171,7 @@ static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
     cat_lock(NULL);
     civ_set_ptt(&s_civ, ptt.line || ptt.vox);
     civ_feed(&s_civ, bytes, len);
+    link_follow_radio(); /* the frequency may have changed */
     cat_unlock(NULL);
 }
 
@@ -213,7 +255,7 @@ static bool parrot_buffer_start(void)
 
 static const char *route_name(ae_route_t route)
 {
-    return route == AE_ROUTE_PARROT ? "parrot" : route == AE_ROUTE_RADIO ? "radio" : "monitor";
+    return route == AE_ROUTE_LINK ? "link" : route == AE_ROUTE_PARROT ? "parrot" : route == AE_ROUTE_RADIO ? "radio" : "monitor";
 }
 
 /* The engine as configured at build time (menuconfig). These are the
@@ -224,8 +266,21 @@ static void engine_start(void)
     ae_config_t cfg;
     ae_init(&s_engine, esp_random());
     bool have_parrot = parrot_buffer_start();
+#ifdef HAVE_LINK
+    /* The link exists from here on, so the route can be chosen; its
+     * transport starts later, once Wi-Fi is up. */
+    uint8_t mac[6] = {0};
+    char name[LINK_NAME_MAX + 1];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(name, sizeof name, "mockradio-%02x%02x", mac[4], mac[5]); /* as wifi_net names the board */
+    link_init(&s_link, name, link_transport_send, NULL);
+    const ae_link_t link_ops = {.tx = link_tx_op, .rx = link_rx_op, .ctx = &s_link};
+    ae_set_link(&s_engine, &link_ops);
+#endif
     ae_config_defaults(&cfg);
-#if defined(CONFIG_MOCK_ROUTE_PARROT)
+#if defined(CONFIG_MOCK_ROUTE_LINK) && defined(HAVE_LINK)
+    cfg.route = AE_ROUTE_LINK;
+#elif defined(CONFIG_MOCK_ROUTE_PARROT)
     cfg.route = have_parrot ? AE_ROUTE_PARROT : AE_ROUTE_RADIO;
 #elif defined(CONFIG_MOCK_ROUTE_RADIO)
     cfg.route = AE_ROUTE_RADIO;
@@ -234,6 +289,12 @@ static void engine_start(void)
     cfg.turnaround_ms = CONFIG_MOCK_TURNAROUND_MS;
     cfg.parrot_delay_ms = CONFIG_MOCK_PARROT_DELAY_MS;
     cfg.parrot_period_ms = CONFIG_MOCK_PARROT_PERIOD_MS;
+#ifdef HAVE_LINK
+    cfg.link_buffer_ms = CONFIG_MOCK_LINK_BUFFER_MS;
+#ifndef CONFIG_MOCK_LINK_MATCH
+    cfg.link_match = false;
+#endif
+#endif
 #if defined(CONFIG_MOCK_PTT_LINE_RTS)
     cfg.ptt_line = AE_LINE_RTS;
 #elif defined(CONFIG_MOCK_PTT_LINE_DTR)
@@ -299,11 +360,33 @@ static void status_task(void *arg)
         if (ptt.vox != was.vox) ESP_LOGI(TAG, "PTT %s (VOX)", ptt.vox ? "on" : "off");
         was = ptt;
 
+        bool hearing = false;
+#ifdef HAVE_LINK
+        /* The link follows the engine's settings, announces the board and
+         * notices a peer that has gone. */
+        static bool had_peer;
+        ae_config_t cfg;
+        link_status_t link;
+        ae_get_config(&s_engine, &cfg);
+        link_configure(&s_link, cfg.route == AE_ROUTE_LINK, cfg.link_buffer_ms, cfg.link_match);
+        link_tick(&s_link, (uint32_t)(esp_timer_get_time() / 1000));
+        link_get_status(&s_link, &link);
+        hearing = link.state == LINK_RECEIVING;
+        if (link.peer != had_peer) {
+            had_peer = link.peer;
+            if (link.peer) {
+                ESP_LOGI(TAG, "link: joined with %s", link.peer_name);
+            } else {
+                ESP_LOGI(TAG, "link: no other board");
+            }
+        }
+#endif
+
         const ui_led_input_t in = {
             .host = usb_composite_mounted(),
             .transmitting = ptt.cat || ptt.line || ptt.vox || parrot.state == AE_PARROT_RECORDING,
             .replay_waiting = parrot.state == AE_PARROT_WAITING,
-            .replaying = parrot.state == AE_PARROT_PLAYING,
+            .replaying = parrot.state == AE_PARROT_PLAYING || hearing, /* green: audio is coming back */
         };
         int state = (int)ui_led_state(&in);
         if (state != shown) {
@@ -327,7 +410,7 @@ static void status_start(void)
         ESP_LOGW(TAG, "status LED on GPIO%d failed to start: %s", CONFIG_MOCK_LED_GPIO, esp_err_to_name(err));
     }
 #endif
-    if (xTaskCreate(status_task, "status", 3072, NULL, 2, NULL) != pdPASS) {
+    if (xTaskCreate(status_task, "status", 4096, NULL, 2, NULL) != pdPASS) {
         ESP_LOGW(TAG, "status task failed to start: no LED updates, no line or VOX PTT log");
     }
 }
@@ -368,6 +451,10 @@ static void console_sample(void *ctx, console_sample_t *out)
     out->fifo_underruns = s_loop.underruns;
     out->fifo_dropped = s_loop.dropped;
     out->fifo_repeated = s_loop.repeated;
+#ifdef HAVE_LINK
+    out->has_link = true;
+    link_get_status(&s_link, &out->link);
+#endif
 }
 
 static void console_start(void)
@@ -410,6 +497,7 @@ void app_main(void)
 #endif
     civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
+    link_follow_radio();
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
 
@@ -431,6 +519,15 @@ void app_main(void)
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_start();
 #else
-    ESP_LOGI(TAG, "web console is switched off (menuconfig); Wi-Fi stays off");
+    ESP_LOGI(TAG, "web console is switched off (menuconfig)");
+#endif
+
+#ifdef HAVE_LINK
+    err = link_transport_start(&s_link);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "link to a second board ready over %s; it is used in the link route", link_transport_name());
+    } else {
+        ESP_LOGE(TAG, "link over %s failed to start: %s", link_transport_name(), esp_err_to_name(err));
+    }
 #endif
 }

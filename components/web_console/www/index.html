@@ -42,6 +42,7 @@ section { background: var(--surface); border: 1px solid var(--line); border-radi
 .num { font-variant-numeric: tabular-nums; }
 
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+.card[hidden] { display: none; }
 .pill { display: inline-flex; align-items: center; min-width: 190px; padding: 8px 16px; border-radius: 999px;
   font-size: 18px; font-weight: 650; color: #fff; background: var(--idle); }
 .pill.rx { background: var(--rx); } .pill.tx { background: var(--red); }
@@ -53,6 +54,9 @@ section { background: var(--surface); border: 1px solid var(--line); border-radi
 .card h3 { font-size: 13px; margin: 0 0 4px; color: var(--ink2); font-weight: 600; }
 .kv { display: flex; justify-content: space-between; gap: 10px; }
 .kv span:first-child { color: var(--ink2); }
+.kv span:last-child { text-align: right; }
+.card.wide { grid-column: span 2; }
+@media (max-width: 520px) { .card.wide { grid-column: auto; } }
 .warn { color: var(--red); font-weight: 600; }
 
 .meter { display: grid; grid-template-columns: 26px 1fr 150px; align-items: center; gap: 10px; margin: 6px 0; }
@@ -126,6 +130,14 @@ details summary { cursor: pointer; font-weight: 600; }
       <div class="card"><h3>Parrot</h3>
         <div class="kv"><span>State</span><span id="pstate"></span></div>
         <div class="kv"><span>Recorded</span><span class="num" id="prec"></span></div>
+      </div>
+      <div class="card wide" id="linkcard" hidden><h3>Link to the other board</h3>
+        <div class="kv"><span>State</span><span id="lstate"></span></div>
+        <div class="kv"><span>Other board</span><span class="num" id="lpeer"></span></div>
+        <div class="kv"><span>Buffer / target</span><span class="num" id="lbuf"></span></div>
+        <div class="kv"><span>Packets in</span><span class="num" id="lin"></span></div>
+        <div class="kv"><span>Packets out</span><span class="num" id="lout"></span></div>
+        <div class="kv"><span>Ran empty / clock steps</span><span class="num" id="lclock"></span></div>
       </div>
       <div class="card"><h3>Audio buffer</h3>
         <div class="kv"><span>Fill / target</span><span class="num" id="fifo"></span></div>
@@ -296,6 +308,7 @@ function update(t) {
   if (!t.host) { cls = ""; text = "No USB host"; }
   else if (t.ptt.on || p === "recording") { cls = "tx"; text = "Transmitting"; }
   else if (p === "playing") { cls = "play"; text = "Replaying"; }
+  else if (t.link && t.link.state === "receiving") { cls = "play"; text = "Hearing the other board"; }
   else if (p === "waiting") { cls = "wait"; text = "Waiting to replay"; }
   pill.className = "pill " + cls; pill.textContent = text;
   const src = ["cat", "line", "vox"].filter(k => t.ptt[k]).map(k => ({ cat: "CAT", line: "control line", vox: "VOX" })[k]);
@@ -317,6 +330,26 @@ function update(t) {
   pr.textContent = t.parrot.capacity ? t.parrot.recorded.toFixed(1) + " of " + t.parrot.capacity.toFixed(1) + " s" + (t.parrot.truncated ? ", cut short" : "") : "no buffer";
   pr.className = "num" + (t.parrot.truncated ? " warn" : "");
   $("replay").disabled = !(t.parrot.recorded > 0 && !t.ptt.on);
+
+  const k = t.link;
+  $("linkcard").hidden = !k;
+  if (k) {
+    const ls = $("lstate"), offFreq = k.state === "off frequency";
+    ls.textContent = { off: "not in use: route is not link", "no peer": "no other board heard", idle: "linked, quiet",
+      sending: "sending", receiving: "receiving", "off frequency": "not heard: other frequency" }[k.state] || k.state;
+    ls.className = offFreq ? "warn" : "";
+    const lp = $("lpeer");
+    lp.textContent = k.peer ? k.peer + ", TX " + fmtFreq(k.peer_tx) + (k.rssi == null ? "" : ", " + k.rssi + " dBm") : "none";
+    lp.className = "num" + (k.peer && k.peer_tx !== t.cat.freq ? " warn" : "");
+    $("lbuf").textContent = k.buffer + " / " + k.target + " ms";
+    const li = $("lin");
+    li.textContent = k.received + " OK, " + k.lost + " lost, " + k.late + " late" + (k.off_frequency ? ", " + k.off_frequency + " off frequency" : "");
+    li.className = "num" + (k.lost ? " warn" : "");
+    const lo = $("lout");
+    lo.textContent = k.sent + " sent, " + k.send_failed + " failed";
+    lo.className = "num" + (k.send_failed ? " warn" : "");
+    $("lclock").textContent = k.underruns + " / " + (k.dropped + k.repeated) + (k.overruns ? ", overflowed" : "");
+  }
 
   const q = t.audio.fifo, ms = n => (n / 48).toFixed(1);
   $("fifo").textContent = ms(q.level) + " / " + ms(q.target) + " ms";

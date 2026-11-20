@@ -10,11 +10,13 @@ itself (see components/mock_ctl/include/mock_ctl.h). No radio is involved.
     mockctl.py -p PORT replay                 play the parrot's recording again
 
 Settings:
-    route=monitor|radio|parrot
+    route=monitor|radio|parrot|link
                           monitor: loopback, PTT ignored
                           radio: mute while keyed, nothing to hear but noise
                           parrot: like radio, and each transmission is
                           recorded and played back after it
+                          link: like radio, and what a second board
+                          transmits is heard, as this one is there
     noise=on|off          add noise and hold the signal at the SNR
     snr=DB                -60 to 80, in steps of 0.1
     bw=HZ                 bandwidth the SNR is quoted in, 100 to 24000
@@ -24,6 +26,9 @@ Settings:
     delay=S               parrot: seconds from unkeying to the replay, 0 to 60
     period=S              parrot: start the replay a whole number of these
                           after key-on (15 for FT8, 7.5 for FT4); 0 = off
+    linkbuffer=MS         link: audio held before it is played, 10 to 200
+    match=on|off          link: hear the other board only when it transmits
+                          on this radio's receive frequency
     line=off|rts|dtr      the serial control line that keys the radio, if any
     vox=on|off            transmit audio keys the radio
     voxlevel=DBFS         a sample this large opens the VOX, -80 to -6
@@ -62,13 +67,15 @@ NUMBERS = {
     "turnaround": (0x16, 2, False, 1),
     "delay": (0x32, 2, False, 10),    # tenths of a second
     "period": (0x33, 2, False, 10),
+    "linkbuffer": (0x40, 2, False, 1),
     "voxlevel": (0x52, 2, False, -10),  # sent as dB below full scale
     "voxhang": (0x53, 2, False, 1),
 }
 # name: (command, the words for 00, 01, ...)
 CHOICES = {
-    "route": (0x10, ("monitor", "radio", "parrot")),
+    "route": (0x10, ("monitor", "radio", "parrot", "link")),
     "noise": (0x11, ("off", "on")),
+    "match": (0x41, ("off", "on")),
     "line": (0x50, ("off", "rts", "dtr")),
     "vox": (0x51, ("off", "on")),
 }
@@ -76,6 +83,7 @@ CHOICES = {
 REFUSALS = {
     "replay": "needs route=parrot, a recording and PTT off",
     "route=parrot": "this mock has no parrot buffer",
+    "route=link": "this mock was built without the link",
 }
 
 
@@ -251,6 +259,8 @@ def show(port):
     else:
         state = "no buffer"
     print("  parrot      delay %.1f s, period %s; %s" % (values["delay"], period, state))
+
+    print("  link        buffer %d ms, frequency match %s" % (values["linkbuffer"], values["match"]))
 
     ptt = ask(port, CMD_PTT_STATUS)
     if len(ptt) != 1:

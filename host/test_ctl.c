@@ -166,7 +166,8 @@ static void test_switches(void)
     CHECK(config().route == AE_ROUTE_MONITOR); /* one setting does not disturb another */
 
     EXPECT("fe fe f0 e0 10 02 fd", NG); /* parrot, but there is no buffer */
-    EXPECT("fe fe f0 e0 10 03 fd", NG);
+    EXPECT("fe fe f0 e0 10 03 fd", NG); /* link, but there is none */
+    EXPECT("fe fe f0 e0 10 04 fd", NG);
     EXPECT("fe fe f0 e0 11 02 fd", NG);
     EXPECT("fe fe f0 e0 11 00 00 fd", NG);
     CHECK(config().noise_on && config().route == AE_ROUTE_MONITOR);
@@ -357,7 +358,7 @@ static void test_parrot(void)
     EXPECT("fe fe f0 e0 10 02 fd", OK);
     CHECK(config().route == AE_ROUTE_PARROT);
     EXPECT("fe fe f0 e0 10 fd", "fe fe e0 f0 10 02 fd");
-    EXPECT("fe fe f0 e0 10 03 fd", NG);
+    EXPECT("fe fe f0 e0 10 03 fd", NG); /* still no link */
 
     /* Delay and period, in tenths of a second. */
     EXPECT("fe fe f0 e0 32 fd", "fe fe e0 f0 32 00 10 fd"); /* 1.0 s */
@@ -479,13 +480,79 @@ static void test_ptt_sources(void)
     EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
 }
 
+static int g_link_ended;
+
+static void fake_link_tx(void *ctx, const int16_t *tx_audio, size_t n, bool keyed)
+{
+    (void)ctx;
+    (void)tx_audio;
+    (void)keyed;
+    if (n == 0) g_link_ended++;
+}
+
+static bool fake_link_rx(void *ctx, int16_t *out, size_t n)
+{
+    (void)ctx;
+    (void)out;
+    (void)n;
+    return false;
+}
+
+static void test_link_settings(void)
+{
+    static const ae_link_t link = {.tx = fake_link_tx, .rx = fake_link_rx};
+    ae_config_t cfg;
+    int16_t audio[480] = {0};
+
+    /* Without a link the route is refused, but its settings can be set. */
+    fresh();
+    EXPECT("fe fe f0 e0 10 03 fd", NG);
+    EXPECT("fe fe f0 e0 40 fd", "fe fe e0 f0 40 00 30 fd"); /* 30 ms */
+    EXPECT("fe fe f0 e0 41 fd", "fe fe e0 f0 41 01 fd");    /* matching on */
+
+    ae_config_defaults(&cfg);
+    ae_init(&g_engine, 1u);
+    ae_set_link(&g_engine, &link);
+    ae_configure(&g_engine, &cfg);
+    mock_ctl_init(&g_ctl, &g_engine, &cfg);
+    EXPECT("fe fe f0 e0 10 03 fd", OK);
+    CHECK(config().route == AE_ROUTE_LINK);
+    EXPECT("fe fe f0 e0 10 fd", "fe fe e0 f0 10 03 fd");
+    EXPECT("fe fe f0 e0 10 04 fd", NG);
+
+    EXPECT("fe fe f0 e0 40 01 00 fd", OK);
+    CHECK(config().link_buffer_ms == 100);
+    EXPECT("fe fe f0 e0 40 fd", "fe fe e0 f0 40 01 00 fd");
+    EXPECT("fe fe f0 e0 40 00 10 fd", OK);
+    EXPECT("fe fe f0 e0 40 02 00 fd", OK);
+    EXPECT("fe fe f0 e0 40 00 09 fd", NG);
+    EXPECT("fe fe f0 e0 40 02 01 fd", NG);
+    EXPECT("fe fe f0 e0 40 30 fd", NG);
+    CHECK(config().link_buffer_ms == 200);
+
+    EXPECT("fe fe f0 e0 41 00 fd", OK);
+    CHECK(!config().link_match);
+    EXPECT("fe fe f0 e0 41 fd", "fe fe e0 f0 41 00 fd");
+    EXPECT("fe fe f0 e0 41 02 fd", NG);
+    EXPECT("fe fe f0 e0 41 01 fd", OK);
+    CHECK(config().link_match);
+
+    /* Reset leaves the link route, which ends a transmission under way. */
+    ae_process(&g_engine, audio, audio, 480);
+    g_link_ended = 0;
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(config().route == AE_ROUTE_MONITOR && config().link_buffer_ms == 30 && config().link_match);
+    ae_process(&g_engine, audio, audio, 480);
+    CHECK(g_link_ended == 1);
+}
+
 static void test_not_the_radio(void)
 {
     fresh();
     /* Reserved for parts that do not exist yet, and numbers never assigned. */
     EXPECT("fe fe f0 e0 31 fd", NG);
     EXPECT("fe fe f0 e0 31 01 fd", NG);
-    EXPECT("fe fe f0 e0 40 fd", NG);
+    EXPECT("fe fe f0 e0 42 fd", NG);
     EXPECT("fe fe f0 e0 55 fd", NG);
     EXPECT("fe fe f0 e0 60 fd", NG);
     EXPECT("fe fe f0 e0 17 fd", NG);
@@ -518,6 +585,7 @@ int main(void)
     test_status();
     test_parrot();
     test_ptt_sources();
+    test_link_settings();
     test_not_the_radio();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

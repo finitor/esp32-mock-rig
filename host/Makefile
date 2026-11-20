@@ -12,7 +12,7 @@ CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werro
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
 CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/audio_dsp/include \
            -I../components/audio_engine/include -I../components/mock_ctl/include -I../components/ui/include \
-           -I../components/web_console/include
+           -I../components/web_console/include -I../components/link/include
 
 BUILD = build
 CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c
@@ -27,12 +27,14 @@ UI    = ../components/ui/ui_led.c
 UI_H  = ../components/ui/include/ui_led.h
 CON   = ../components/web_console/console_api.c
 CON_H = ../components/web_console/include/console_api.h
+LINK   = ../components/link/link.c
+LINK_H = ../components/link/include/link.h
 # everything the mock's own controls are built from
 CTL_ALL   = $(CORE) $(CTL) $(ENG) $(DSP)
 CTL_ALL_H = $(HDRS) $(CTL_H) $(ENG_H) $(DSP_H)
 
 all: $(BUILD)/civ_pty $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
-     $(BUILD)/test_console $(BUILD)/console_sim
+     $(BUILD)/test_console $(BUILD)/test_link $(BUILD)/console_sim
 
 $(BUILD)/civ_pty: civ_pty.c $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ civ_pty.c $(CTL_ALL) -lm
@@ -52,23 +54,27 @@ $(BUILD)/test_ctl: test_ctl.c $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 $(BUILD)/test_ui: test_ui.c $(UI) $(UI_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_ui.c $(UI)
 
-$(BUILD)/test_console: test_console.c $(CON) $(CON_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
+$(BUILD)/test_console: test_console.c $(CON) $(CON_H) $(LINK_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_console.c $(CON) $(CTL_ALL) -lm
 
-$(BUILD)/console_sim: console_sim.c $(CON) $(CON_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ console_sim.c $(CON) $(CTL_ALL) -lm
+$(BUILD)/test_link: test_link.c $(LINK) $(LINK_H) $(DSP) $(DSP_H) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_link.c $(LINK) $(DSP) -lm
+
+$(BUILD)/console_sim: console_sim.c $(CON) $(CON_H) $(LINK) $(LINK_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ console_sim.c $(CON) $(LINK) $(CTL_ALL) -lm
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
 test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
-      $(BUILD)/test_console
+      $(BUILD)/test_console $(BUILD)/test_link
 	./$(BUILD)/test_civ
 	./$(BUILD)/test_dsp
 	./$(BUILD)/test_engine
 	./$(BUILD)/test_ctl
 	./$(BUILD)/test_ui
 	./$(BUILD)/test_console
+	./$(BUILD)/test_link
 
 rigctl: $(BUILD)/civ_pty
 	./rigctl_check.sh

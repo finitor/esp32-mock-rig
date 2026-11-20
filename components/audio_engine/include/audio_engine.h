@@ -13,6 +13,9 @@
  *   - radio:   nothing, so the host records the noise floor
  *   - parrot:  the last transmission, recorded while keyed and replayed
  *              after unkeying
+ *   - link:    what another board is transmitting; and this board's own
+ *              transmit audio goes to that board. The engine only hands the
+ *              audio over (ae_set_link); how it travels is not its business
  *
  * The radio transmits while any PTT source keys it: CAT (ae_set_ptt), a
  * serial control line if one is selected (ae_set_lines), or VOX if it is on,
@@ -83,6 +86,8 @@ extern "C" {
 #define AE_VOX_MIN_DBFS (-80.0f)
 #define AE_VOX_MAX_DBFS (-6.0f)
 #define AE_VOX_HANG_MAX_MS 5000u
+#define AE_LINK_BUFFER_MIN_MS 10u
+#define AE_LINK_BUFFER_MAX_MS 200u
 
 /* The parrot stores audio at this rate: a quarter of the memory, and the
  * 0..4.5 kHz it keeps is more than any HF modem uses. */
@@ -97,6 +102,7 @@ typedef enum {
     AE_ROUTE_MONITOR = 0, /* receive hears the transmit audio; PTT is ignored */
     AE_ROUTE_RADIO,       /* receive hears nothing; muted while keyed and for the turnaround time after */
     AE_ROUTE_PARROT,      /* like radio, and receive hears the last transmission replayed */
+    AE_ROUTE_LINK,        /* like radio, and receive hears the other board's transmission */
 } ae_route_t;
 
 /* Which serial control line keys the radio. Off by default: hosts raise
@@ -121,12 +127,15 @@ typedef struct {
     bool vox_on;               /* transmit audio keys the radio */
     float vox_threshold_dbfs;  /* a transmit sample this large opens the VOX (0 dBFS = full scale) */
     uint32_t vox_hang_ms;      /* the VOX stays open this long after the last such sample */
+    uint32_t link_buffer_ms;   /* link: audio held before it is played, to ride out uneven arrival */
+    bool link_match;           /* link: hear the other board only on this radio's receive frequency */
 } ae_config_t;
 
 /* Monitor route, noise off, no attenuation: audio passes unchanged.
  * SNR 10 dB in 2500 Hz, floor -40 dBFS and 30 ms turnaround once enabled;
  * the parrot replays 1 s after unkeying, with no period. CAT is the only
- * PTT source: no control line, VOX off (-40 dBFS and 100 ms once enabled). */
+ * PTT source: no control line, VOX off (-40 dBFS and 100 ms once enabled).
+ * The link holds 30 ms of audio and matches frequencies. */
 void ae_config_defaults(ae_config_t *cfg);
 
 typedef struct {
@@ -157,6 +166,19 @@ typedef struct {
     bool truncated;       /* the buffer filled; the end of the transmission is missing */
 } ae_parrot_status_t;
 
+/* The link route's other end. Both functions are called from the audio task,
+ * in every block while the route is link.
+ *   tx  n samples of transmit audio (NULL for silence) and whether the radio
+ *       is transmitting. Called once with n == 0 when the route changes
+ *       away from link, to end a transmission under way.
+ *   rx  fill out with n samples of what the other board is sending and
+ *       return true, or return false if there is nothing to hear. */
+typedef struct {
+    void (*tx)(void *ctx, const int16_t *tx, size_t n, bool keyed);
+    bool (*rx)(void *ctx, int16_t *out, size_t n);
+    void *ctx;
+} ae_link_t;
+
 typedef struct {
     /* settings and PTT: written by any task, read by the audio task */
     _Atomic uint32_t cfg_gen;
@@ -173,6 +195,8 @@ typedef struct {
     _Atomic int32_t cfg_vox_on;
     _Atomic int32_t cfg_vox_cdb;
     _Atomic uint32_t cfg_vox_hang_ms;
+    _Atomic uint32_t cfg_link_buffer_ms;
+    _Atomic int32_t cfg_link_match;
     _Atomic bool ptt; /* CAT */
     _Atomic bool dtr;
     _Atomic bool rts;
@@ -191,6 +215,8 @@ typedef struct {
     /* set once, before the audio task starts */
     int16_t *par_buf;
     uint32_t par_cap; /* samples at 12 kHz */
+    ae_link_t link;
+    bool has_link;
 
     /* everything below belongs to the audio task */
     uint32_t seen_gen;
@@ -268,6 +294,12 @@ void ae_get_status(ae_t *e, ae_status_t *st);
 void ae_set_parrot_buffer(ae_t *e, int16_t *storage, uint32_t samples);
 
 void ae_get_parrot_status(ae_t *e, ae_parrot_status_t *st);
+
+/* Give the link route its other end. Call after ae_init() and before the
+ * audio task starts. Without one the link route behaves like the radio
+ * route. */
+void ae_set_link(ae_t *e, const ae_link_t *link);
+bool ae_has_link(ae_t *e);
 
 /* Play the recording again, from its start, at the next block. Returns false
  * and does nothing unless the route is parrot, there is a recording and the

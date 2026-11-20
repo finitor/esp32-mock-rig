@@ -1,4 +1,4 @@
-menu "Mock radio: web console and Wi-Fi"
+menu "Mock radio: web console"
 
     config MOCK_WEB_CONSOLE
         bool "Web console over Wi-Fi"
@@ -6,47 +6,8 @@ menu "Mock radio: web console and Wi-Fi"
         help
             A page to change the mock's settings and watch what it is doing,
             reached over Wi-Fi while a modem application holds the CAT port.
-            It uses no USB endpoint. Switch it off to keep the 2.4 GHz radio
-            silent, for example while judging USB audio on its own.
-
-    config MOCK_WIFI_SSID
-        string "Wi-Fi network to join (SSID)"
-        default ""
-        depends on MOCK_WEB_CONSOLE
-        help
-            The network the board joins at start-up. Empty: it hosts its own
-            network. A network saved from the console's Wi-Fi form is used
-            instead of this one. This value ends up in sdkconfig, which is
-            not committed; do not put it in sdkconfig.defaults.
-
-    config MOCK_WIFI_PASSWORD
-        string "Wi-Fi password"
-        default ""
-        depends on MOCK_WEB_CONSOLE
-
-    config MOCK_WIFI_JOIN_TIMEOUT_S
-        int "Seconds to wait for the network before hosting one"
-        range 5 120
-        default 20
-        depends on MOCK_WEB_CONSOLE
-        help
-            If the board has not joined its network in this time after
-            start-up, it hosts its own until the next restart.
-
-    config MOCK_WIFI_AP_PASSWORD
-        string "Password of the board's own network"
-        default "mockradio"
-        depends on MOCK_WEB_CONSOLE
-        help
-            WPA2, 8 to 63 characters. Empty, or shorter than 8, makes the
-            network open. The network is named after the board:
-            mockradio-xxxx, from its MAC address. The console is at
-            http://192.168.4.1/ on it.
-
-    config MOCK_WIFI_AP_CHANNEL
-        int "Channel of the board's own network"
-        range 1 11
-        default 1
-        depends on MOCK_WEB_CONSOLE
+            It uses no USB endpoint. With this off and the two-board link
+            not on ESP-NOW, the 2.4 GHz radio stays silent, for example while
+            judging USB audio on its own.
 
 endmenu

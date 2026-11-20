@@ -15,11 +15,11 @@ Last updated: Nov 19, 2026.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
 - The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 950 KB image, of which Wi-Fi and the web console are about 670 KB) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 966 KB image with the web console and the ESP-NOW link; 318 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board.
-- The radio plan for the link is decided: ESP-NOW carries the audio between two boards, and Wi-Fi on the same radio carries control (the web console). The link is not written.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two.
+- The two-board link (Milestone 4, steps 21 to 25) is written. Its core (`link`: packets, jitter buffer, loss and clock-drift handling, peer discovery, frequency matching, framing for a wire) is portable C with host unit tests that join two boards by a simulated path with loss, jitter, reordering and clocks that differ. It is a fourth receive route in `audio_engine`, with two settings on both control paths and its statistics in the web console. Two simulated boards have been watched hearing each other in a browser. The ESP-NOW and UART transports have only been compiled: no packet has crossed between two boards.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -84,7 +84,7 @@ Avoid single-USB boards whose only jack goes through a CH343 USB-serial chip: th
                                 +------------------------------------------+
 ```
 
-The host sees one USB device; inside, CAT state keys the audio engine, and the link layer decides where transmit audio goes: back to the same host (loopback/parrot) or to a second board. The web console sits beside all of it: it reads and changes the same settings over Wi-Fi and never touches USB.
+The host sees one USB device; inside, CAT state keys the audio engine, and the receive route decides what the receiver hears: the same host's transmit audio (monitor, or the parrot's replay) or, through the link, a second board's. The web console sits beside all of it: it reads and changes the same settings over Wi-Fi and never touches USB.
 
 Firmware modules:
 
@@ -92,15 +92,16 @@ Firmware modules:
 - `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
 - `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
 - `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
-- `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. The link will join as a further route. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
-- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, PTT sources and status now; link mode and personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
-- `link`: one interface with loopback, ESP-NOW and UART backends; jitter buffer and drift correction
+- `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. In the link route the receiver hears a second board and the transmit audio goes to it; the engine only hands the audio over, through two functions the firmware supplies. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
+- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, the link's settings, PTT sources and status now; personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
+- `link`: the path between two boards: 12 kHz audio in 10 ms packets, a jitter buffer with loss and clock-drift handling, peer discovery and frequency matching, all portable; and one of two transports that carry the packets, ESP-NOW or a UART, chosen at build time. See [Two-board link](#two-board-link)
+- `wifi_net`: Wi-Fi bring-up, shared by the web console and the ESP-NOW transport: joining or hosting a network, the board's name
 - `web_console`: the settings and telemetry as JSON (`console_api`, portable), and around it Wi-Fi, a small HTTP server, the control page and a WebSocket for live telemetry; see [Web control and telemetry console](#web-control-and-telemetry-console)
 - `ui`: which colour the RGB LED shows for the radio's state; the firmware drives the LED
 
-`cat_civ`, the personalities, `audio_dsp`, `audio_engine`, `mock_ctl`, `ui` and the `console_api` part of `web_console` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
+`cat_civ`, the personalities, `audio_dsp`, `audio_engine`, `mock_ctl`, `ui`, the `console_api` part of `web_console` and the core of `link` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
 
-Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB, the audio engine and the link layer each get a task; `cat_civ` is passive and runs in whichever task delivers serial bytes. The web console's HTTP server has a task of its own at a lower priority than the USB and audio tasks. Because it changes the same settings as the CI-V controls, one mutex in `main/` is held around the CI-V parser and around each settings change from the console.
+Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB and the two directions of USB audio each get a task, and the audio engine runs in the capture one; `cat_civ` is passive and runs in whichever task delivers serial bytes. The web console's HTTP server has a task of its own at a lower priority than the USB and audio tasks. Because it changes the same settings as the CI-V controls, one mutex in `main/` is held around the CI-V parser and around each settings change from the console. The link is spread over three tasks without a lock: the audio task sends and plays, the transport's task (Wi-Fi's, or a UART reader) puts arriving packets into the jitter buffer, and the status task announces the board every 250 ms and copies the engine's link settings across.
 
 Repository layout:
 
@@ -112,11 +113,13 @@ Repository layout:
 | `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/ui/` | LED policy: the state to show and its colour |
-| `components/web_console/` | Web console: `console_api.c` (settings and telemetry as JSON, portable), `web_console.c` (HTTP and WebSocket server), `wifi_net.c` (joining or hosting a network, the board's name), `www/index.html` (the page, embedded in the firmware), `Kconfig` (the console switch and the Wi-Fi settings) |
+| `components/web_console/` | Web console: `console_api.c` (settings and telemetry as JSON, portable), `web_console.c` (HTTP and WebSocket server), `www/index.html` (the page, embedded in the firmware), `Kconfig` (the console switch) |
+| `components/wifi_net/` | Wi-Fi: joining or hosting a network, the board's name, and its `Kconfig` settings |
+| `components/link/` | Two-board link: `link.c` (portable core), `link_espnow.c` and `link_uart.c` (the transports; one is compiled), `Kconfig` (which one, and the UART's pins) |
 | `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
 | `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui` and `test_console` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with a simulated radio, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console` and `test_link` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -249,7 +252,7 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | --- | --- | --- |
 | `00` | Identity, read only | Protocol version (`01`), then the personality's Hamlib model in 2 bytes (`30 85`) |
 | `01` | Put every setting back to its power-up value | None |
-| `10` | Receive route | `00` monitor, `01` radio, `02` parrot (refused if the parrot has no buffer) |
+| `10` | Receive route | `00` monitor, `01` radio, `02` parrot (refused if the parrot has no buffer), `03` link (refused if the mock was built without one) |
 | `11` | Noise | `00` off, `01` on |
 | `12` | SNR | Tenths of a dB, 2 bytes plus sign: −60.0 to +80.0 |
 | `13` | Bandwidth the SNR is quoted in | Hz, 3 bytes: 100 to 24000 |
@@ -261,12 +264,14 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `32` | Parrot delay, from unkeying to the replay | Tenths of a second, 2 bytes: 0 to 60.0 |
 | `33` | Parrot period: the replay starts a whole number of periods after key-on | Tenths of a second, 2 bytes: 0 (off) to 300.0 |
 | `34` | Parrot status, read only | State (`00` idle, `01` recording, `02` waiting, `03` playing); flags (`01` the buffer filled and the recording is cut short); length recorded and buffer capacity, each in tenths of a second, 2 bytes |
+| `40` | Link buffer: audio held before it is played | ms, 2 bytes: 10 to 200 |
+| `41` | Link frequency match | `00` off, `01` on: the other board is heard only when it transmits on this radio's receive frequency |
 | `50` | Control-line PTT | `00` off, `01` RTS keys, `02` DTR keys |
 | `51` | VOX | `00` off, `01` on |
 | `52` | VOX threshold | Tenths of a dB below full scale, 2 bytes: 6.0 to 80.0 |
 | `53` | VOX hang time | ms, 2 bytes: 0 to 5000 |
 | `54` | PTT status, read only | The sources keying the radio now: `01` CAT, `02` control line, `04` VOX, added together; `00` is receiving |
-| `31`, `40`, `60` | Reserved: play stored clip N, link mode, personality | Refused until those parts exist |
+| `31`, `60` | Reserved: play stored clip N, personality | Refused until those parts exist |
 
 Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
 
@@ -280,6 +285,7 @@ mockctl.py -p PORT route=parrot period=15   parrot route, replay one FT8 slot la
 mockctl.py -p PORT replay                   play the parrot's recording again
 mockctl.py -p PORT vox=on voxlevel=-40      key from transmit audio (Data2G's default PTT mode)
 mockctl.py -p PORT line=rts                 key from the RTS line
+mockctl.py -p PORT route=link linkbuffer=50 hear a second board, with 50 ms of buffer
 ```
 
 Limits, as built:
@@ -320,7 +326,7 @@ As built (host-tested, not yet run on a board):
 | Dim blue | Receiving |
 | Red | Transmitting; in the parrot route this is the recording, including its 50 ms tail |
 | Amber | The parrot has a recording and is waiting to replay it |
-| Green | The parrot is replaying |
+| Green | The parrot is replaying, or the other board is being heard over the link |
 
 A task checks every 20 ms and writes the LED only when the state changes. The same task logs the control line and the VOX keying and unkeying on the UART jack.
 
@@ -398,6 +404,57 @@ Behavior:
 - Keep buffering to tens of ms so ARQ turnaround timing looks like a real radio.
 - Clock drift: each S3 has its own crystal, so the two 48 kHz rates differ by a few ppm. Handle it by occasionally dropping or repeating a sample (or resampling) to keep buffers from slowly filling or draining.
 
+### As built
+
+Steps 21 to 25. The core is host-tested; the two transports have only been compiled, and no packet has crossed between two boards.
+
+**A fourth route.** `route=link` joins monitor, radio and parrot. In it the engine hands each block of transmit audio to the link, with whether the radio is keyed, and takes its receive source from the link; the receive channel (mute while keyed, turnaround, noise at the set SNR, attenuation) then applies as in any route. Each board's SNR setting is therefore the SNR of the path into that board, and the two directions can differ. Any PTT source keys the link, the VOX included. The monitor and parrot routes are unchanged; they were not moved behind the link, as step 21 once said, because a single selector already says what the receiver hears.
+
+**Packets.** Little-endian, at most 249 bytes, so one fits an ESP-NOW frame of 250:
+
+```
+hello:  4D 11 <flags> <rx Hz, 4> <tx Hz, 4> <name, 16>          flags: 01 transmitting
+audio:  4D 12 <flags> <seq, 2> <tx Hz, 4> <samples, 2 each>     flags: 01 first of a transmission, 02 last
+```
+
+`4D` marks a link packet, and the next byte is the format version (1) and the type. An audio packet holds up to 120 samples: 10 ms at 12 kHz.
+
+**Sending.** While keyed, and for 50 ms after (transmit audio is still on its way through the host and USB when PTT drops), transmit audio is resampled to 12 kHz and sent 120 samples at a time. Each packet carries a sequence number and the frequency it was transmitted on. The last one is marked, and carries whatever part of 10 ms is left.
+
+**Receiving.** Packets go into a jitter buffer, and playing starts when it holds the set time, 30 ms by default (`linkbuffer`, 10 to 200). A transmission shorter than that plays when its last packet arrives, or after 100 ms of nothing if that packet is lost. What goes wrong on the way is handled so that the audio after it is still on time, which OFDM modems care about more than a short gap:
+
+- A lost packet is replaced by silence of the same length when the next one shows that it is missing, for up to 10 packets in a row.
+- If the buffer runs empty before that, the silence played meanwhile counts towards the gap.
+- A packet that arrives late or twice is dropped.
+- A gap longer than 10 packets, or 100 ms of nothing, ends the reception; the next packet starts a new one.
+
+**Clock drift.** The two boards' sample clocks differ by tens of parts per million. Over a transmission the buffer absorbs it: 40 ppm for two minutes moves the fill by 5 ms. If the fill, averaged over about a second, drifts further than 15 ms from the target, one sample per 5 ms block is dropped or repeated until it is back. The average keeps a lost packet, which moves the fill for a moment, from being taken for drift.
+
+**Frequency.** A packet is only played if its transmit frequency equals the receiver's receive frequency, to the hertz, so split works and two radios on different bands do not hear each other. `match=off` removes the test. Mode is not compared.
+
+**Peer.** A board in the link route announces itself four times a second with its name, its frequencies and whether it is transmitting. A board links to the first one it hears and stays with it until it has been silent for 3 s. Audio goes to the peer's own address and is taken only from the peer, so a third board in range is ignored by a linked pair. A board outside the link route announces nothing and ignores what arrives.
+
+**Transports.** One is compiled in, chosen in menuconfig; both boards need the same.
+
+| Transport | How |
+| --- | --- |
+| ESP-NOW (default) | Announcements are broadcast; audio is sent to the peer's address, which the radio acknowledges and retries. It sends on the channel Wi-Fi is on and through the interface Wi-Fi is using, so both boards must be on one channel: joined to the same network, or one joined to the network the other hosts. Wi-Fi is started for it even if the web console is off. Not encrypted. |
+| UART | UART1, TX on GPIO17 and RX on GPIO18 by default, 921600 bit/s, crossed between the boards with a ground wire. Each packet is framed (SLIP) and checked (CRC-16), since a wire has no packets of its own. |
+
+**Latency.** On a path with no delay the receiver starts playing 27 ms after the sender's audio begins (host test): the 30 ms buffer fills with the third 10 ms packet. On boards, the transport and the USB buffering on both sides come on top; that total has not been measured.
+
+**Telemetry.** The web console shows the link's state, the other board's name, frequency and signal strength, the buffer's fill, and counts of packets received, lost, late and off frequency, packets sent and not acknowledged, times the buffer ran empty, and samples dropped or repeated for drift. The LED is green while the other board is being heard.
+
+**On the host.** `make -C host console-sim` runs two simulated boards joined by the link, one page each (ports 8080 and 8081); `--link` starts both in the link route and `--loss N` loses packets on the way.
+
+**Limits.**
+
+- Two boards. A third in the link route pairs with whichever it hears first and is ignored by the other two; there is no way yet to choose a peer.
+- The transport is a build-time choice, not a setting.
+- Only frequency is matched: a USB signal is heard by a radio in LSB or FM as if the modes agreed.
+- Each 10 ms audio packet is close to ESP-NOW's largest frame, and the rate ESP-NOW sends at has been left at its default; whether that leaves enough air time beside Wi-Fi is not known.
+- Not verified on hardware, including whether ESP-NOW passes between a board hosting a network and a board joined to it, and whether it survives a board's change from joining to hosting.
+
 ## Web control and telemetry console
 
 A browser on a laptop or phone reaches each board over Wi-Fi to change its settings and watch what it is doing while it runs. It exists because the other control path, the mock-only CI-V controls, shares the CAT serial port: a modem application holding that port (always on a phone, and WSJT-X on a PC) leaves no way to send them. The two-board acceptance test needs exactly that, stepping the SNR down while two phones hold a session.
@@ -422,7 +479,7 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 
 **Settings.** The names and units are the ones `mockctl.py` uses (`snr=-12.5` there, `"snr":-12.5` here). `console_api` holds only the names: for each it names the `mock_ctl` command that carries the setting, and it reads, range-checks and writes the value through `mock_ctl`'s own functions. So there is one table of ranges and one set of power-up values, a change made on either path shows on the other, and values keep the CI-V controls' steps (tenths of a dB and of a second). A value out of range is refused, not clamped, and a request with one refused value changes nothing.
 
-**Telemetry.** A snapshot holds: PTT and which sources key it; the CAT frequency, mode and split, and the CI-V frame counts; the level (RMS and peak over 0.1 s) of the audio the host plays and of the audio it records, each absent when the host is not streaming that way; the audio FIFO's fill, target and its overrun, underrun and drift-steering counts; the receive channel's measured source level, gain and mute; the parrot's state and recording length; the Wi-Fi signal strength; and a number that changes when the settings do, however they were changed, so the page knows to read them again. The link's statistics will join it.
+**Telemetry.** A snapshot holds: PTT and which sources key it; the CAT frequency, mode and split, and the CI-V frame counts; the level (RMS and peak over 0.1 s) of the audio the host plays and of the audio it records, each absent when the host is not streaming that way; the audio FIFO's fill, target and its overrun, underrun and drift-steering counts; the receive channel's measured source level, gain and mute; the parrot's state and recording length; the Wi-Fi signal strength; and a number that changes when the settings do, however they were changed, so the page knows to read them again. With the link built in, the link's state and statistics are in it too (see [Two-board link](#two-board-link)).
 
 **Page.** One file of about 22 KB, embedded in the firmware, with nothing loaded from anywhere else, because the board may be on a network with no internet. It builds its settings form from `/api/info`, so a setting added in `console_api.c` appears without an edit to the page. A status line shows the same states as the LED; a strip chart shows the last 60 seconds of both levels and of PTT, kept in the browser only.
 
@@ -531,11 +588,11 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 
 **Milestone 4: two-board link**
 
-21. Link interface (send frame, receive frame, exchange frequency and PTT); loopback moved behind it.
-22. ESP-NOW backend on the channel Wi-Fi is using: 12 kHz 16-bit frames with sequence numbers, board pairing.
-23. Jitter buffer and drift correction; link statistics added to the console's telemetry.
-24. Frequency matching.
-25. UART backend.
+21. Written: the link's core in `link` (packets, sending, receiving, announcing frequency and PTT), behind a send function and a receive call, with host tests; a fourth route in `audio_engine`. The monitor and parrot routes stayed where they were.
+22. Written, compiled only: ESP-NOW transport on the channel Wi-Fi is using: 12 kHz 16-bit audio in 10 ms packets with sequence numbers; boards pair with the first other board they hear.
+23. Written, host-tested: jitter buffer, silence in place of lost packets, and drift correction; link statistics in the console's telemetry and on its page.
+24. Written, host-tested: frequency matching, with a setting to switch it off.
+25. Written, compiled only: UART transport with framing and a check, as a build-time alternative.
 26. Acceptance: two PCs running fldigi or VARA first, then two Android phones running Data2G in ARQ mode, stepping the SNR down from the web console to watch speed adaptation.
 
 **Milestone 5: G90 personality (later pass)**
@@ -590,6 +647,14 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | One mutex in `main/` is held around the CI-V parser and around each settings change from the console. | Both paths read, change and write back the settings; without it two changes at the same moment could lose one. It also lets the console read the parser's frequency and mode whole. |
 | Nov 19, 2026 | The firmware uses the partition table with a 1.5 MB application partition. | With Wi-Fi the image no longer fits the default 1 MB. The flash has 16 MB. |
 | Nov 19, 2026 | The web console is on by default, with a menuconfig switch that keeps Wi-Fi off. | It is how the board is meant to be used, and its telemetry (FIFO counts, levels, whether the host is recording) helps the first bring-up; the switch is there for when Wi-Fi must be ruled out. |
+| Nov 19, 2026 | The link is a fourth receive route in `audio_engine`, reached through two functions the firmware supplies; monitor and parrot were not moved behind a link interface. | One selector already says what the receiver hears, and the VOX and the channel work in the link route for free. Moving two tested routes behind an interface would have changed working code for no gain. |
+| Nov 19, 2026 | Link audio is 10 ms packets of 120 samples, each carrying a sequence number and the frequency it was transmitted on. | 240 bytes of audio and 9 of header fit ESP-NOW's 250-byte frame. A packet that describes itself needs no second message to arrive first. |
+| Nov 19, 2026 | A lost packet is replaced by silence of its own length, counting silence already played while the buffer was empty. | Modems resynchronise after a gap more easily than after a shift in time. |
+| Nov 19, 2026 | Clock drift is absorbed by the jitter buffer and corrected, one sample at a time, only when the fill averaged over a second is more than 15 ms off. | Transmissions are short against the drift of two crystals, so correction is rarely needed; judging by the average keeps loss and jitter from being taken for drift. |
+| Nov 19, 2026 | Frequency matching is exact, sender's transmit against receiver's receive, with a setting to switch it off. Mode is not compared. | Modem software sets the same dial frequency at both ends; an exact test is simple and handles split. The switch is for bring-up. |
+| Nov 19, 2026 | A board pairs with the first other board it hears announcing itself, and audio goes to that board's address only. | Two boards need no set-up, and addressed ESP-NOW frames are acknowledged and retried by the radio where broadcast ones are not. |
+| Nov 19, 2026 | The link's transport (ESP-NOW or UART) is chosen at build time; the link's buffer and frequency matching are run-time settings in the engine's settings. | The UART needs pins and wires, so it is a property of the build; the two settings get the CI-V control, the console form and reset for free by living with the others. |
+| Nov 19, 2026 | Wi-Fi bring-up moved to its own component, `wifi_net`, used by the web console and by the ESP-NOW transport. | Both need the radio on one channel, and the link must work with the console switched off. |
 | Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
@@ -604,7 +669,13 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Do hosts keep capturing while they transmit (WSJT-X, fldigi, VARA, FT8CN and FT8AF, Data2G on Android)? The parrot records on the capture side and gets nothing from one that does not. If one is found, recording moves to the USB playback side. (after step 9)
 - [ ] FT8 self-decode with the parrot's period at 15 s: when does WSJT-X key relative to the slot start, and how far from zero is the DT it reports for its own replay? (step 15)
 - [x] How to change the mock's settings while a modem application holds the CAT port (always the case on a phone, and with WSJT-X on a PC). The web console over Wi-Fi (Milestone 3), decided Nov 19, 2026. Until it exists, set them before the application opens the port, or at build time. A line console on the UART jack remains a simpler fallback.
-- [ ] Does ESP-NOW link audio keep its timing while the same radio serves the web console over Wi-Fi? If not, the wired UART link takes over. (step 23)
+- [ ] Does ESP-NOW link audio keep its timing while the same radio serves the web console over Wi-Fi? If not, the wired UART link takes over. (step 26)
+- [ ] Does ESP-NOW pass between a board hosting a network and a board joined to it, and does it come back after a board changes from joining to hosting? Compiled only. (step 26)
+- [ ] Is ESP-NOW's default sending rate enough for 100 packets of 249 bytes a second in each direction of a session, or does the rate need raising? (step 26)
+- [ ] What is the link's delay end to end on boards, host audio in to host audio out, and is 30 ms of buffer the right default for Data2G's ARQ turnaround? 27 ms on a path with no delay in the host test. (step 26)
+- [ ] Should a board be able to choose its peer, for more than two boards in range? Today the first one heard is taken.
+- [ ] Should the link compare mode as well as frequency?
+- [ ] Are GPIO17 and GPIO18 free for the UART link on the boards that arrive? (step 26)
 - [x] How does a board get its Wi-Fi settings, and which board hosts the access point when there is no router? Both ways: the console's Wi-Fi form (stored in flash) or menuconfig. A board that cannot join a network hosts its own, so with no router one board is left to host and the other is pointed at its network through the form. Decided Nov 19, 2026; not tried.
 - [ ] Does the web console work on a board: joining a network, falling back to its own, the `.local` name, the WebSocket push, and the page on an Android phone's browser? Compiled only. (step 20)
 - [ ] Is the default password of the board's own network (`mockradio`) acceptable, or should each board get its own?

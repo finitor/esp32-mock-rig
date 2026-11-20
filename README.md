@@ -2,7 +2,7 @@
 
 ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
 
-**Status:** early. The CAT protocol core, the IC-705 personality, the audio DSP, parrot mode, the channel simulation, PTT from CAT, a control line or VOX, their run-time controls and the web console's settings and telemetry are written and tested on a desktop, and the CAT side passes real Hamlib. The firmware, including the USB sound card, the serial port and the web console over Wi-Fi, builds but has not yet been run on a board.
+**Status:** early. The CAT protocol core, the IC-705 personality, the audio DSP, parrot mode, the channel simulation, PTT from CAT, a control line or VOX, their run-time controls, the web console's settings and telemetry and the two-board link are written and tested on a desktop, and the CAT side passes real Hamlib. The firmware, including the USB sound card, the serial port, the web console over Wi-Fi and the link over ESP-NOW or a UART, builds but has not yet been run on a board.
 
 ## What it will do
 
@@ -60,7 +60,13 @@ python3 host/tools/mockctl.py -p <CAT port> route=parrot period=15
 
 While a modem application holds the CAT port, the same settings are in the web console, which also shows PTT, levels and the audio buffer live. The board joins the Wi-Fi network set in `idf.py menuconfig` or in the console's own Wi-Fi form; with none, it hosts a network named `mockradio-xxxx` (password `mockradio`) and the console is at `http://192.168.4.1/`. On a shared network it is at `http://mockradio-xxxx.local/`. The console has no login, so use it on a network you trust.
 
-To see the console without a board, with a simulated radio behind it, at `http://localhost:8080`:
+Two boards hear each other in the link route: what one host transmits, the other receives, when both radios are on the same frequency. The audio travels over ESP-NOW, with both boards on the same Wi-Fi channel (joined to the same network, or one joined to the network the other hosts), or over three wires between their UARTs if the firmware is built for that. Set it on each board, here or in its web console:
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> route=link
+```
+
+To see the console without a board, with two simulated radios joined by the link, at `http://localhost:8080` and `http://localhost:8081`:
 
 ```bash
 make -C host console-sim

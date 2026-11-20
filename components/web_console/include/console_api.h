@@ -31,6 +31,7 @@
 #include <stdint.h>
 
 #include "audio_dsp.h"
+#include "link.h"
 #include "mock_ctl.h"
 
 #ifdef __cplusplus
@@ -132,12 +133,15 @@ typedef struct {
     uint32_t fifo_level, fifo_target;
     uint32_t fifo_overruns, fifo_underruns, fifo_dropped, fifo_repeated;
 
+    bool has_link; /* the board was built with the two-board link */
+    link_status_t link;
+
     bool has_rssi; /* joined to a Wi-Fi network */
     int rssi_dbm;
 } console_sample_t;
 
 /* One snapshot: PTT and its sources, the receive channel's status, the
- * parrot, and everything in the sample. "gen" changes when the settings do,
+ * parrot, the link, and everything in the sample. "gen" changes when the settings do,
  * however they were changed, so the page knows to read them again. */
 size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *buf, size_t cap);
 

@@ -1,0 +1,53 @@
+menu "Mock radio: two-board link"
+
+    choice MOCK_LINK
+        prompt "How audio travels between two boards"
+        default MOCK_LINK_ESPNOW
+        help
+            The link route makes two mock radios hear each other: what one
+            host transmits, the other receives. This chooses what carries
+            the audio between the boards. It is a build-time choice, and
+            both boards need the same one.
+
+        config MOCK_LINK_ESPNOW
+            bool "ESP-NOW (no wires; shares the 2.4 GHz radio with Wi-Fi)"
+            help
+                Both boards must be on the same Wi-Fi channel: joined to the
+                same network, or one joined to the network the other hosts.
+                Wi-Fi is switched on for this even if the web console is off.
+
+        config MOCK_LINK_UART
+            bool "UART (three wires between the boards)"
+            help
+                Board A's TX pin to board B's RX pin, B's TX to A's RX, and
+                ground to ground. The most even in timing, and it leaves the
+                radio to the web console.
+
+        config MOCK_LINK_NONE
+            bool "None (the link route is not available)"
+    endchoice
+
+    config MOCK_LINK_UART_TX_GPIO
+        int "UART link: TX pin (GPIO)"
+        range 0 48
+        default 17
+        depends on MOCK_LINK_UART
+        help
+            Not 19/20 (USB), 35-37 (octal PSRAM), 43/44 (the console UART)
+            or the LED's pin.
+
+    config MOCK_LINK_UART_RX_GPIO
+        int "UART link: RX pin (GPIO)"
+        range 0 48
+        default 18
+        depends on MOCK_LINK_UART
+
+    config MOCK_LINK_UART_BAUD
+        int "UART link: bits per second"
+        range 460800 3000000
+        default 921600
+        depends on MOCK_LINK_UART
+        help
+            The audio needs about 250 000. The same on both boards.
+
+endmenu

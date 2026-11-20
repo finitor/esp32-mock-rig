@@ -1,15 +1,15 @@
-# console_api.c is portable and is also built by host/Makefile. The Wi-Fi and
-# HTTP parts are ESP-IDF only and are left out when the console is switched
-# off in menuconfig.
+# console_api.c is portable and is also built by host/Makefile. The HTTP
+# server is ESP-IDF only and is left out when the console is switched off in
+# menuconfig. Wi-Fi itself is the wifi_net component.
 set(srcs "console_api.c")
 set(embed "")
 if(CONFIG_MOCK_WEB_CONSOLE)
-    list(APPEND srcs "web_console.c" "wifi_net.c")
+    list(APPEND srcs "web_console.c")
     set(embed "www/index.html")
 endif()
 
 idf_component_register(SRCS ${srcs}
                        INCLUDE_DIRS "include"
-                       REQUIRES mock_ctl audio_engine audio_dsp cat_civ
-                       PRIV_REQUIRES esp_http_server esp_wifi esp_netif esp_event nvs_flash
+                       REQUIRES mock_ctl audio_engine audio_dsp cat_civ link
+                       PRIV_REQUIRES esp_http_server wifi_net
                        EMBED_TXTFILES ${embed})

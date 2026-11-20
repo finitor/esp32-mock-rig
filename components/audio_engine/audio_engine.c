@@ -63,6 +63,8 @@ void ae_config_defaults(ae_config_t *cfg)
     cfg->vox_on = false;
     cfg->vox_threshold_dbfs = -40.0f;
     cfg->vox_hang_ms = 100;
+    cfg->link_buffer_ms = 30;
+    cfg->link_match = true;
 }
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
@@ -72,7 +74,7 @@ static uint32_t min_u32(uint32_t a, uint32_t b)
 
 void ae_configure(ae_t *e, const ae_config_t *cfg)
 {
-    bool known = cfg->route == AE_ROUTE_RADIO || cfg->route == AE_ROUTE_PARROT;
+    bool known = cfg->route == AE_ROUTE_RADIO || cfg->route == AE_ROUTE_PARROT || cfg->route == AE_ROUTE_LINK;
     atomic_store(&e->cfg_route, known ? (int32_t)cfg->route : (int32_t)AE_ROUTE_MONITOR);
     atomic_store(&e->cfg_noise_on, cfg->noise_on ? 1 : 0);
     atomic_store(&e->cfg_snr_cdb, to_cdb(cfg->snr_db, AE_SNR_MIN_DB, AE_SNR_MAX_DB));
@@ -87,6 +89,9 @@ void ae_configure(ae_t *e, const ae_config_t *cfg)
     atomic_store(&e->cfg_vox_on, cfg->vox_on ? 1 : 0);
     atomic_store(&e->cfg_vox_cdb, to_cdb(cfg->vox_threshold_dbfs, AE_VOX_MIN_DBFS, AE_VOX_MAX_DBFS));
     atomic_store(&e->cfg_vox_hang_ms, min_u32(cfg->vox_hang_ms, AE_VOX_HANG_MAX_MS));
+    uint32_t buffer_ms = min_u32(cfg->link_buffer_ms, AE_LINK_BUFFER_MAX_MS);
+    atomic_store(&e->cfg_link_buffer_ms, buffer_ms < AE_LINK_BUFFER_MIN_MS ? AE_LINK_BUFFER_MIN_MS : buffer_ms);
+    atomic_store(&e->cfg_link_match, cfg->link_match ? 1 : 0);
     atomic_fetch_add(&e->cfg_gen, 1u);
 }
 
@@ -110,6 +115,8 @@ void ae_get_config(ae_t *e, ae_config_t *cfg)
     cfg->vox_on = atomic_load(&e->cfg_vox_on) != 0;
     cfg->vox_threshold_dbfs = from_cdb(atomic_load(&e->cfg_vox_cdb));
     cfg->vox_hang_ms = atomic_load(&e->cfg_vox_hang_ms);
+    cfg->link_buffer_ms = atomic_load(&e->cfg_link_buffer_ms);
+    cfg->link_match = atomic_load(&e->cfg_link_match) != 0;
 }
 
 void ae_init(ae_t *e, uint32_t seed)
@@ -158,6 +165,17 @@ void ae_set_parrot_buffer(ae_t *e, int16_t *storage, uint32_t samples)
     e->par_cap = storage ? samples : 0;
 }
 
+void ae_set_link(ae_t *e, const ae_link_t *link)
+{
+    e->has_link = link && link->tx && link->rx;
+    if (e->has_link) e->link = *link;
+}
+
+bool ae_has_link(ae_t *e)
+{
+    return e->has_link;
+}
+
 void ae_get_parrot_status(ae_t *e, ae_parrot_status_t *st)
 {
     st->state = (ae_parrot_state_t)atomic_load(&e->st_parrot_state);
@@ -181,6 +199,9 @@ static void load_config(ae_t *e)
     ae_config_t cfg;
     ae_get_config(e, &cfg);
 
+    /* Leaving the link route: a transmission under way ends here for the
+     * other board too. */
+    if (e->route == AE_ROUTE_LINK && cfg.route != AE_ROUTE_LINK && e->has_link) e->link.tx(e->link.ctx, NULL, 0, false);
     e->route = cfg.route;
     e->noise_on = cfg.noise_on;
     e->atten_lin = db_to_lin(-cfg.atten_db);
@@ -491,6 +512,10 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
         atomic_store(&e->st_parrot_state, (int32_t)e->par_state);
         atomic_store(&e->st_parrot_len, e->par_len);
         atomic_store(&e->st_parrot_truncated, e->par_truncated);
+    } else if (e->route == AE_ROUTE_LINK && e->has_link) {
+        /* Transmit audio first: tx and out may be the same buffer. */
+        e->link.tx(e->link.ctx, tx, n, keyed);
+        if (e->link.rx(e->link.ctx, out, n)) src = out;
     }
     rx_block(e, keyed, src, out, n);
     e->now += n;

@@ -41,6 +41,17 @@ static char s_ip[16];
 static EventGroupHandle_t s_events;
 static volatile bool s_hosting;
 static volatile bool s_connected;
+static void (*volatile s_on_restart)(void);
+
+bool wifi_net_hosting(void)
+{
+    return s_hosting;
+}
+
+void wifi_net_on_restart(void (*fn)(void))
+{
+    s_on_restart = fn;
+}
 
 const char *wifi_net_name(void)
 {
@@ -143,6 +154,9 @@ static void fallback_task(void *arg)
         esp_wifi_stop();
         esp_err_t err = host_network();
         if (err != ESP_OK) ESP_LOGE(TAG, "could not host a network either: %s", esp_err_to_name(err));
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        void (*fn)(void) = s_on_restart;
+        if (err == ESP_OK && fn) fn();
     }
     vTaskDelete(NULL);
 }
@@ -156,7 +170,20 @@ static void start_mdns(void)
     if (err != ESP_OK) ESP_LOGW(TAG, "no %s.local name: %s", s_name, esp_err_to_name(err));
 }
 
+static esp_err_t start(void);
+
 esp_err_t wifi_net_start(void)
+{
+    static bool started;
+    static esp_err_t result;
+    if (!started) {
+        started = true; /* both callers are on the main task, at start-up */
+        result = start();
+    }
+    return result;
+}
+
+static esp_err_t start(void)
 {
     uint8_t mac[6];
     esp_err_t err = nvs_flash_init();

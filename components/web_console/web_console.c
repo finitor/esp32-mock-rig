@@ -35,7 +35,7 @@ static web_console_config_t s_cfg;
 static httpd_handle_t s_server;
 static char s_json[CONSOLE_JSON_MAX];
 static char s_body[BODY_MAX];
-static char s_telemetry[1024];
+static char s_telemetry[2048];
 static size_t s_telemetry_len;
 static atomic_bool s_push_queued;
 

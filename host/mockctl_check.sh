@@ -46,7 +46,7 @@ check 0 "floor       -55.5 dBFS"                     floor=-55.5 atten=6
 check 0 "atten       6.0 dB"
 check 1 "snr=99: refused"                            snr=99
 check 1 "floor=40 has the wrong sign"                floor=40
-check 1 "route is monitor, radio or parrot"           route=sideways
+check 1 "route is monitor, radio, parrot or link"     route=sideways
 check 1 "noise is off or on"                         noise=maybe
 check 1 "no setting called 'volume'"                 volume=3
 check 0 "snr         -12.5 dB in 3000 Hz"
@@ -56,12 +56,17 @@ check 0 "parrot      delay 2.5 s, period 15.0 s; idle"
 check 0 "period 7.5 s"                               period=7.5
 check 1 "delay=61: refused by the mock (out of range?)" delay=61
 check 1 "replay: refused by the mock (needs route=parrot, a recording and PTT off)" replay
+check 0 "link        buffer 30 ms, frequency match on"
+check 0 "link        buffer 80 ms, frequency match off" linkbuffer=80 match=off
+check 1 "linkbuffer=5: refused by the mock (out of range?)" linkbuffer=5
+check 1 "route=link: refused by the mock (this mock was built without the link)" route=link
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "ptt         line rts, vox on at -35.5 dBFS with 250 ms hang; receiving" line=rts vox=on voxlevel=-35.5 voxhang=250
 check 1 "line is off, rts or dtr"                    line=cts
 check 1 "voxlevel=-3: refused by the mock (out of range?)" voxlevel=-3
 check 0 "route       monitor"                        reset
 check 0 "parrot      delay 1.0 s, period off"
+check 0 "link        buffer 30 ms, frequency match on"
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "snr         +10.0 dB in 2500 Hz"
 

@@ -1,0 +1,51 @@
+# Wi-Fi is on when something in the build needs it.
+config MOCK_WIFI
+    bool
+    default y if MOCK_WEB_CONSOLE || MOCK_LINK_ESPNOW
+    default n
+
+menu "Mock radio: Wi-Fi"
+    depends on MOCK_WIFI
+
+    comment "Used by the web console and by the ESP-NOW link, which share the one radio."
+
+    config MOCK_WIFI_SSID
+        string "Wi-Fi network to join (SSID)"
+        default ""
+        help
+            The network the board joins at start-up. Empty: it hosts its own
+            network. A network saved from the console's Wi-Fi form is used
+            instead of this one. This value ends up in sdkconfig, which is
+            not committed; do not put it in sdkconfig.defaults.
+
+    config MOCK_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config MOCK_WIFI_JOIN_TIMEOUT_S
+        int "Seconds to wait for the network before hosting one"
+        range 5 120
+        default 20
+        help
+            If the board has not joined its network in this time after
+            start-up, it hosts its own until the next restart.
+
+    config MOCK_WIFI_AP_PASSWORD
+        string "Password of the board's own network"
+        default "mockradio"
+        help
+            WPA2, 8 to 63 characters. Empty, or shorter than 8, makes the
+            network open. The network is named after the board:
+            mockradio-xxxx, from its MAC address. The console is at
+            http://192.168.4.1/ on it.
+
+    config MOCK_WIFI_AP_CHANNEL
+        int "Channel of the board's own network"
+        range 1 11
+        default 1
+        help
+            The ESP-NOW link uses whatever channel Wi-Fi is on, and two
+            linked boards must be on the same one: both joined to the same
+            network, or one joined to the network the other hosts.
+
+endmenu

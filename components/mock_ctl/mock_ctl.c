@@ -16,7 +16,7 @@ typedef struct {
 } setting_t;
 
 static const setting_t settings[] = {
-    {MOCK_CTL_ROUTE, 0, false, 0, AE_ROUTE_PARROT},
+    {MOCK_CTL_ROUTE, 0, false, 0, AE_ROUTE_LINK},
     {MOCK_CTL_NOISE, 0, false, 0, 1},
     {MOCK_CTL_SNR, 2, true, (int32_t)(AE_SNR_MIN_DB * 10), (int32_t)(AE_SNR_MAX_DB * 10)},
     {MOCK_CTL_REF_BW, 3, false, (int32_t)AE_REF_BW_MIN_HZ, (int32_t)AE_REF_BW_MAX_HZ},
@@ -25,6 +25,8 @@ static const setting_t settings[] = {
     {MOCK_CTL_TURNAROUND, 2, false, 0, (int32_t)AE_TURNAROUND_MAX_MS},
     {MOCK_CTL_PARROT_DELAY, 2, false, 0, (int32_t)(AE_PARROT_DELAY_MAX_MS / 100)},
     {MOCK_CTL_PARROT_PERIOD, 2, false, 0, (int32_t)(AE_PARROT_PERIOD_MAX_MS / 100)},
+    {MOCK_CTL_LINK_BUFFER, 2, false, (int32_t)AE_LINK_BUFFER_MIN_MS, (int32_t)AE_LINK_BUFFER_MAX_MS},
+    {MOCK_CTL_LINK_MATCH, 0, false, 0, 1},
     {MOCK_CTL_PTT_LINE, 0, false, 0, AE_LINE_DTR},
     {MOCK_CTL_VOX, 0, false, 0, 1},
     {MOCK_CTL_VOX_THRESHOLD, 2, false, (int32_t)(-AE_VOX_MAX_DBFS * 10), (int32_t)(-AE_VOX_MIN_DBFS * 10)},
@@ -80,6 +82,10 @@ int32_t mock_ctl_setting_get(const ae_config_t *cfg, uint8_t cmd)
         return tenths_of_s(cfg->parrot_delay_ms);
     case MOCK_CTL_PARROT_PERIOD:
         return tenths_of_s(cfg->parrot_period_ms);
+    case MOCK_CTL_LINK_BUFFER:
+        return (int32_t)cfg->link_buffer_ms;
+    case MOCK_CTL_LINK_MATCH:
+        return cfg->link_match ? 1 : 0;
     case MOCK_CTL_PTT_LINE:
         return (int32_t)cfg->ptt_line;
     case MOCK_CTL_VOX:
@@ -104,6 +110,7 @@ mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd
         ae_parrot_status_t par;
         ae_get_parrot_status(m->engine, &par);
         if (w == AE_ROUTE_PARROT && par.capacity_ms == 0) return MOCK_CTL_SET_UNAVAILABLE; /* nowhere to record */
+        if (w == AE_ROUTE_LINK && !ae_has_link(m->engine)) return MOCK_CTL_SET_UNAVAILABLE;   /* nothing to link through */
         cfg->route = (ae_route_t)w;
         break;
     }
@@ -130,6 +137,12 @@ mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd
         break;
     case MOCK_CTL_PARROT_PERIOD:
         cfg->parrot_period_ms = (uint32_t)w * 100u;
+        break;
+    case MOCK_CTL_LINK_BUFFER:
+        cfg->link_buffer_ms = (uint32_t)w;
+        break;
+    case MOCK_CTL_LINK_MATCH:
+        cfg->link_match = w == 1;
         break;
     case MOCK_CTL_PTT_LINE:
         cfg->ptt_line = (ae_line_t)w;

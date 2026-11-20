@@ -18,6 +18,9 @@ menu "Mock radio: receive route and channel at power-up"
             bool "Radio (mute while keyed, no signal)"
         config MOCK_ROUTE_PARROT
             bool "Parrot (record while keyed, replay after)"
+        config MOCK_ROUTE_LINK
+            bool "Link (hear a second board, and be heard by it)"
+            depends on !MOCK_LINK_NONE
     endchoice
 
     config MOCK_NOISE_ON
@@ -82,6 +85,20 @@ menu "Mock radio: receive route and channel at power-up"
             for FT8, 7500 for FT4. A program that transmits in every other
             slot then hears itself in the slot between.
 
+    config MOCK_LINK_BUFFER_MS
+        int "Link: audio held before it is played, ms"
+        range 10 200
+        default 30
+        depends on !MOCK_LINK_NONE
+        help
+            More rides out uneven arrival from the other board; less makes
+            the path quicker, which ARQ turnarounds like.
+
+    config MOCK_LINK_MATCH
+        bool "Link: hear the other board only on the same frequency"
+        default y
+        depends on !MOCK_LINK_NONE
+
 endmenu
 
 menu "Mock radio: PTT sources at power-up"
@@ -133,7 +150,8 @@ menu "Mock radio: status LED"
         help
             Dim white: no USB host. Dim blue: receiving. Red: transmitting
             (recording, in the parrot route). Amber: the parrot is waiting
-            to replay. Green: the parrot is replaying.
+            to replay. Green: the parrot is replaying, or the other board
+            is being heard over the link.
 
     config MOCK_LED_GPIO
         int "GPIO of the RGB LED"

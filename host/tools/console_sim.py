@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Serve the mock radio's web console with a simulated radio behind it.
+"""Serve the mock radio's web console with two simulated radios behind it.
 
-    console_sim.py            serve on http://localhost:8080 until stopped
+    console_sim.py            board A on http://localhost:8080, board B on 8081
+    console_sim.py --link     the same, with both boards in the link route
     console_sim.py --check    start, check the interface over HTTP, and stop
 
-No ESP32 is involved. The page is components/web_console/www/index.html, read
+No ESP32 is involved. The two boards are joined by the two-board link, over a
+path that delivers at once and, with --loss N, loses N percent of packets. The page is components/web_console/www/index.html, read
 from disk on each request, so an edit shows on reload. The settings and the
 telemetry come from host/build/console_sim, which is the firmware's own
 console code and audio engine (build it with "make -C host"). This script is
 only the HTTP and WebSocket layer, standing in for the firmware's
 web_console.c with the same paths, so it does not test that file.
 
-The simulated host keys the radio by CAT and plays a tone for 6 s out of
-every 15, like an FT8 station, unless --quiet is given. /sim/play and
-/sim/key (with ?on=1 or ?on=0) do the same by hand.
+Each simulated host keys its radio by CAT and plays a tone, board A for 6 s
+out of every 15 and board B for 4 s in the gap, unless --quiet is given.
+/sim/play and /sim/key (with ?on=1 or ?on=0) do the same by hand, on the
+board whose port they are sent to.
 
 Needs Python 3 only.
 """
@@ -68,27 +71,33 @@ class Sim:
 
 
 def clock(sim, stop, demo):
-    """Run the radio in real time, and the pretend host with it."""
+    """Run the radios in real time, and the pretend hosts with them."""
     start = time.monotonic()
     done_ms = 0
-    keyed = False
+    keyed = {"a": False, "b": False}
+    slots = {"a": (2000, 8000), "b": (9500, 13500)}
     while not stop.is_set():
         now_ms = int((time.monotonic() - start) * 1000)
-        if demo:
-            want = 2000 <= now_ms % 15000 < 8000
-            if want != keyed:
-                keyed = want
-                sim.ask("civ " + (KEY_ON if keyed else KEY_OFF))
-                sim.ask("play " + ("on" if keyed else "off"))
-        if now_ms > done_ms:
-            sim.ask("tick %d" % min(now_ms - done_ms, 1000))
-            done_ms = now_ms
+        for board in ("a", "b") if demo else ():
+            want = slots[board][0] <= now_ms % 15000 < slots[board][1]
+            if want != keyed[board]:
+                keyed[board] = want
+                sim.ask("%s civ %s" % (board, KEY_ON if want else KEY_OFF))
+                sim.ask("%s play %s" % (board, "on" if want else "off"))
+        step = min(now_ms - done_ms, 1000) // 5 * 5  # the simulator runs in 5 ms blocks
+        if step:
+            sim.ask("tick %d" % step)
+            done_ms += step
         stop.wait(0.02)
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     sim = None
+    board = "a"  # each board's server has its own subclass
+
+    def ask(self, command):
+        return self.sim.ask(self.board + " " + command)
 
     def log_message(self, fmt, *args):
         pass
@@ -111,16 +120,16 @@ class Handler(BaseHTTPRequestHandler):
             with open(PAGE, "rb") as f:
                 self.reply(200, f.read(), "text/html; charset=utf-8")
         elif path in ("/api/info", "/api/settings", "/api/telemetry"):
-            self.reply(*self.sim.ask(path[5:]))
+            self.reply(*self.ask(path[5:]))
         elif path == "/api/wifi":
-            self.reply(200, json.dumps({"name": "mockradio-sim", "mode": "simulator, no Wi-Fi", "ssid": "", "ip": "",
-                                        "join": ""}))
+            self.reply(200, json.dumps({"name": "mockradio-sim" + self.board, "mode": "simulator, no Wi-Fi",
+                                        "ssid": "", "ip": "", "join": ""}))
         elif path in ("/sim/play", "/sim/key"):
             on = query == "on=1"
             if path == "/sim/key":
-                self.sim.ask("civ " + (KEY_ON if on else KEY_OFF))
+                self.ask("civ " + (KEY_ON if on else KEY_OFF))
             else:
-                self.sim.ask("play " + ("on" if on else "off"))
+                self.ask("play " + ("on" if on else "off"))
             self.reply(200, "{}")
         elif path == "/ws":
             self.websocket()
@@ -135,9 +144,9 @@ class Handler(BaseHTTPRequestHandler):
             if not (self.headers.get("Content-Type") or "").startswith("application/json"):
                 self.error(415, "send the settings as application/json")
                 return
-            self.reply(*self.sim.ask("apply " + body))
+            self.reply(*self.ask("apply " + body))
         elif self.path in ("/api/reset", "/api/replay"):
-            self.reply(*self.sim.ask(self.path[5:]))
+            self.reply(*self.ask(self.path[5:]))
         elif self.path == "/api/wifi":
             self.error(400, "the simulator has no Wi-Fi to set up")
         else:
@@ -158,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(PUSH_S)
         try:
             while True:
-                data = self.sim.ask("telemetry")[1].encode()
+                data = self.ask("telemetry")[1].encode()
                 head = bytes([0x81, len(data)]) if len(data) < 126 else b"\x81\x7e" + struct.pack(">H", len(data))
                 self.connection.sendall(head + data)
                 try:
@@ -173,13 +182,14 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-def check(port):
+def check(port, port_b, sim):
     """Exercise the interface the page uses. Returns the number of failures."""
     base = "http://127.0.0.1:%d" % port
     failures = 0
 
-    def call(method, path, body=None, ctype="application/json"):
-        req = urllib.request.Request(base + path, method=method, data=None if body is None else body.encode())
+    def call(method, path, body=None, ctype="application/json", board_base=None):
+        req = urllib.request.Request((board_base or base) + path, method=method,
+                                     data=None if body is None else body.encode())
         if body is not None:
             req.add_header("Content-Type", ctype)
         try:
@@ -257,12 +267,56 @@ def check(port):
     sock.close()
     expect("the WebSocket pushes telemetry", b"101" in head and b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in head
            and data[0] == 0x81 and "ptt" in pushed and "parrot" in pushed)
+
+    # Two boards in the link route: what one transmits, the other hears.
+    base_b = "http://127.0.0.1:%d" % port_b
+
+    def both(method, path, body=None):
+        return [call(method, path, body, board_base=b) for b in (base, base_b)]
+
+    def telemetry_b():
+        return json.loads(call("GET", "/api/telemetry", board_base=base_b)[1])
+
+    status = [r[0] for r in both("POST", "/api/settings", '{"route":"link"}')]
+    expect("both boards take the link route", status == [200, 200])
+    time.sleep(0.8)
+    t = telemetry_b()
+    expect("the boards find each other", t["link"]["state"] == "idle" and t["link"]["peer"] == "mockradio-sima")
+    call("GET", "/sim/key?on=1")
+    call("GET", "/sim/play?on=1")
+    time.sleep(1.0)
+    t = telemetry_b()
+    expect("board B hears board A", t["link"]["state"] == "receiving" and t["link"]["peer_keyed"]
+           and t["link"]["received"] > 50 and t["link"]["lost"] == 0 and t["audio"]["rx"]["rms"] > -20)
+    t = json.loads(call("GET", "/api/telemetry")[1])
+    expect("board A is sending and hears nothing", t["link"]["state"] == "sending" and t["link"]["sent"] > 50
+           and t["channel"]["muted"])
+    # Board B tunes away (CI-V 05, 7.074 MHz): on another frequency it hears nothing.
+    sim.ask("b civ fe fe a4 e0 05 00 40 07 07 00 fd")
+    time.sleep(0.7)
+    t = telemetry_b()
+    expect("not heard on another frequency", t["link"]["state"] == "off frequency" and t["link"]["off_frequency"] > 20
+           and t["audio"]["rx"]["rms"] < -60)
+    status, body = call("POST", "/api/settings", '{"match":"off"}', board_base=base_b)
+    time.sleep(0.7)
+    expect("heard again with matching off", status == 200 and telemetry_b()["link"]["state"] == "receiving")
+    sim.ask("loss 20")
+    time.sleep(1.5)
+    t = telemetry_b()
+    expect("lost packets are counted", t["link"]["lost"] > 5)
+    sim.ask("loss 0")
+    call("GET", "/sim/key?on=0")
+    call("GET", "/sim/play?on=0")
+    time.sleep(0.7)
+    expect("idle again after the transmission", telemetry_b()["link"]["state"] == "idle")
     return failures
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--port", type=int, default=8080, help="board A's port; board B takes the next one")
+    ap.add_argument("--link", action="store_true", help="start with both boards in the link route")
+    ap.add_argument("--loss", type=int, default=0, metavar="N", help="percent of link packets the path loses")
     ap.add_argument("--quiet", action="store_true", help="no pretend transmissions")
     ap.add_argument("--check", action="store_true", help="check the interface and stop")
     args = ap.parse_args()
@@ -271,27 +325,38 @@ def main():
         sys.exit("build the simulator first: make -C host")
     sim = Sim(BINARY)
     Handler.sim = sim
-    server = ThreadingHTTPServer(("127.0.0.1", 0 if args.check else args.port), Handler)
-    server.daemon_threads = True
+    servers = []
+    for i, board in enumerate("ab"):
+        handler = type("Handler" + board.upper(), (Handler,), {"board": board})
+        server = ThreadingHTTPServer(("127.0.0.1", 0 if args.check else args.port + i), handler)
+        server.daemon_threads = True
+        servers.append(server)
+    if args.link:
+        for board in "ab":
+            sim.ask(board + ' apply {"route":"link","noise":"on","snr":10}')
+    sim.ask("loss %d" % args.loss)
     stop = threading.Event()
     threading.Thread(target=clock, args=(sim, stop, not (args.quiet or args.check)), daemon=True).start()
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
 
     status = 0
     try:
         if args.check:
-            failures = check(server.server_address[1])
+            failures = check(servers[0].server_address[1], servers[1].server_address[1], sim)
             print("console check: %s" % ("PASS" if not failures else "%d FAILED" % failures))
             status = 1 if failures else 0
         else:
-            print("web console with a simulated radio: http://localhost:%d  (Ctrl-C stops it)" % args.port)
+            print("web console with two simulated radios: board A http://localhost:%d, board B http://localhost:%d"
+                  "  (Ctrl-C stops it)" % (args.port, args.port + 1))
             while True:
                 time.sleep(3600)
     except KeyboardInterrupt:
         pass
     finally:
         stop.set()
-        server.shutdown()
+        for server in servers:
+            server.shutdown()
         sim.close()
     sys.exit(status)
 

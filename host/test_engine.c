@@ -941,6 +941,143 @@ static void test_vox(void)
     CHECK(parrot_status(&e).recorded_ms == 500 + 1000 + 100 - 10 + AE_PARROT_TAIL_MS); /* from CAT key-on */
 }
 
+/* ---- the link route, with a stand-in for the other board ----------------------- */
+
+static struct {
+    int tx_calls, ends;
+    size_t tx_samples;
+    bool last_keyed;
+    int32_t tx_first; /* the first transmit sample of the last block, or -1 for silence */
+    bool has_signal;
+    int16_t level;    /* what the other board sends: a square wave of this size */
+} g_peer;
+
+static void peer_tx(void *ctx, const int16_t *tx, size_t n, bool keyed)
+{
+    (void)ctx;
+    if (n == 0) {
+        g_peer.ends++;
+        return;
+    }
+    g_peer.tx_calls++;
+    g_peer.tx_samples += n;
+    g_peer.last_keyed = keyed;
+    g_peer.tx_first = tx ? tx[0] : -1;
+}
+
+static bool peer_rx(void *ctx, int16_t *out, size_t n)
+{
+    (void)ctx;
+    if (!g_peer.has_signal) return false;
+    for (size_t i = 0; i < n; i++) out[i] = (i / 24) % 2 ? g_peer.level : (int16_t)-g_peer.level;
+    return true;
+}
+
+static void test_link_route(void)
+{
+    static const ae_link_t link = {.tx = peer_tx, .rx = peer_rx};
+    enum { LN = 480 };
+    static int16_t tx[LN], out[LN];
+    ae_t e;
+    ae_config_t cfg;
+
+    memset(&g_peer, 0, sizeof g_peer);
+    ae_init(&e, 5u);
+    CHECK(!ae_has_link(&e));
+    ae_set_link(&e, &link);
+    CHECK(ae_has_link(&e));
+    ae_config_defaults(&cfg);
+    CHECK(cfg.link_buffer_ms == 30 && cfg.link_match);
+    cfg.route = AE_ROUTE_LINK;
+    cfg.turnaround_ms = 0;
+    ae_configure(&e, &cfg);
+
+    /* Receiving: what the other board sends is what the host records, and
+     * the transmit audio is handed over in every block, unkeyed. */
+    g_peer.has_signal = true;
+    g_peer.level = 5000;
+    for (size_t i = 0; i < LN; i++) tx[i] = 1234;
+    ae_process(&e, tx, out, LN);
+    CHECK(g_peer.tx_calls == 1 && g_peer.tx_samples == LN && !g_peer.last_keyed && g_peer.tx_first == 1234);
+    CHECK(out[0] == -5000 && out[24] == 5000 && out[LN - 1] == 5000);
+
+    /* Nothing from the other board: silence, not this board's own audio. */
+    g_peer.has_signal = false;
+    ae_process(&e, tx, out, LN);
+    CHECK(rms(out, LN) == 0.0);
+
+    /* Keyed: the link is told so, and receive is muted though audio arrives. */
+    g_peer.has_signal = true;
+    ae_set_ptt(&e, true);
+    ae_process(&e, tx, out, LN);
+    CHECK(g_peer.last_keyed && rms(out, LN) == 0.0);
+    ae_process(&e, NULL, out, LN); /* the host stopped playing: silence goes over */
+    CHECK(g_peer.last_keyed && g_peer.tx_first == -1 && g_peer.tx_calls == 4);
+    ae_set_ptt(&e, false);
+    ae_process(&e, tx, out, LN);
+    CHECK(!g_peer.last_keyed && out[0] == -5000);
+
+    /* In place, as the firmware calls it: the transmit audio is taken
+     * before the receive audio overwrites it. */
+    for (size_t i = 0; i < LN; i++) out[i] = 4321;
+    ae_process(&e, out, out, LN);
+    CHECK(g_peer.tx_first == 4321 && out[0] == -5000);
+
+    /* The VOX keys the link too. */
+    cfg.vox_on = true;
+    ae_configure(&e, &cfg);
+    for (size_t i = 0; i < LN; i++) tx[i] = (int16_t)(i % 2 ? 8000 : -8000);
+    ae_process(&e, tx, out, LN);
+    CHECK(g_peer.last_keyed && rms(out, LN) == 0.0);
+    cfg.vox_on = false;
+    ae_configure(&e, &cfg);
+    ae_process(&e, NULL, out, LN);
+    CHECK(!g_peer.last_keyed);
+
+    /* The channel applies to what the other board sends: attenuation here. */
+    cfg.atten_db = 20.0f;
+    ae_configure(&e, &cfg);
+    ae_process(&e, NULL, out, LN);
+    CHECK(abs(out[LN - 1]) >= 495 && abs(out[LN - 1]) <= 505);
+
+    /* Leaving the route ends a transmission once, and the link is left alone
+     * after that. */
+    int calls = g_peer.tx_calls;
+    CHECK(g_peer.ends == 0);
+    cfg.route = AE_ROUTE_RADIO;
+    ae_configure(&e, &cfg);
+    ae_process(&e, tx, out, LN);
+    ae_process(&e, tx, out, LN);
+    CHECK(g_peer.ends == 1 && g_peer.tx_calls == calls);
+    cfg.atten_db = 0.0f;
+    ae_configure(&e, &cfg); /* another change, still not link: no second end */
+    ae_process(&e, tx, out, LN);
+    CHECK(g_peer.ends == 1);
+
+    /* Without a link the route is the radio route: no signal, mute while keyed. */
+    ae_t bare;
+    ae_init(&bare, 5u);
+    ae_set_link(&bare, NULL);
+    CHECK(!ae_has_link(&bare));
+    cfg.route = AE_ROUTE_LINK;
+    ae_configure(&bare, &cfg);
+    ae_get_config(&bare, &cfg);
+    CHECK(cfg.route == AE_ROUTE_LINK);
+    ae_process(&bare, tx, out, LN);
+    CHECK(rms(out, LN) == 0.0);
+
+    /* The link's settings are clamped like the others. */
+    cfg.link_buffer_ms = 1;
+    cfg.link_match = false;
+    ae_configure(&bare, &cfg);
+    ae_get_config(&bare, &cfg);
+    CHECK(cfg.link_buffer_ms == AE_LINK_BUFFER_MIN_MS && !cfg.link_match);
+    cfg.link_buffer_ms = 100000;
+    ae_configure(&bare, &cfg);
+    ae_get_config(&bare, &cfg);
+    CHECK(cfg.link_buffer_ms == AE_LINK_BUFFER_MAX_MS);
+}
+
 static void test_config_clamping(void)
 {
     /* The generation moves with every ae_configure() and with nothing else. */
@@ -1058,6 +1195,7 @@ int main(void)
     test_parrot_no_delay();
     test_line_ptt();
     test_vox();
+    test_link_route();
     test_config_clamping();
     test_reconfigure_mid_stream();
     test_determinism();

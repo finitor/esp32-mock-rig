@@ -204,8 +204,8 @@ static void tone(int16_t *out, size_t n, float amplitude)
 
 #define DEFAULTS                                                                                                  \
     "{\"route\":\"monitor\",\"noise\":\"off\",\"snr\":10.0,\"bw\":2500,\"floor\":-40.0,\"atten\":0.0,"           \
-    "\"turnaround\":30,\"delay\":1.0,\"period\":0.0,\"line\":\"off\",\"vox\":\"off\",\"voxlevel\":-40.0,"       \
-    "\"voxhang\":100}"
+    "\"turnaround\":30,\"delay\":1.0,\"period\":0.0,\"linkbuffer\":30,\"match\":\"on\",\"line\":\"off\","    \
+    "\"vox\":\"off\",\"voxlevel\":-40.0,\"voxhang\":100}"
 
 /* ---- tests ------------------------------------------------------------------- */
 
@@ -235,21 +235,22 @@ static void test_settings_apply(void)
     /* Every setting, with white space, in another order. */
     CHECK(apply(" {\n \"voxhang\" : 250 , \"voxlevel\":-30.5,\"vox\":\"on\",\"line\":\"dtr\",\"period\":7.5,"
                 "\"delay\":0,\"turnaround\":0,\"atten\":120,\"floor\":-90,\"bw\":3000,\"snr\":80,"
-                "\"noise\":\"off\",\"route\":\"parrot\" }\r\n") == CONSOLE_OK);
+                "\"match\":\"off\",\"linkbuffer\":200,\"noise\":\"off\",\"route\":\"parrot\" }\r\n") == CONSOLE_OK);
     CHECK_STR(settings(),
               "{\"route\":\"parrot\",\"noise\":\"off\",\"snr\":80.0,\"bw\":3000,\"floor\":-90.0,\"atten\":120.0,"
-              "\"turnaround\":0,\"delay\":0.0,\"period\":7.5,\"line\":\"dtr\",\"vox\":\"on\",\"voxlevel\":-30.5,"
-              "\"voxhang\":250}");
+              "\"turnaround\":0,\"delay\":0.0,\"period\":7.5,\"linkbuffer\":200,\"match\":\"off\",\"line\":\"dtr\","
+              "\"vox\":\"on\",\"voxlevel\":-30.5,\"voxhang\":250}");
     ae_config_t cfg = config();
     CHECK(cfg.route == AE_ROUTE_PARROT && cfg.ptt_line == AE_LINE_DTR && cfg.vox_on);
     CHECK(cfg.parrot_period_ms == 7500 && cfg.parrot_delay_ms == 0 && cfg.vox_hang_ms == 250);
+    CHECK(cfg.link_buffer_ms == 200 && !cfg.link_match);
     CHECK(near(cfg.vox_threshold_dbfs, -30.5f) && near(cfg.noise_floor_dbfs, -90.0f) && near(cfg.ref_bw_hz, 3000.0f));
 
     /* The other end of each range. */
     CHECK(apply("{\"snr\":-60,\"bw\":100,\"floor\":-12,\"atten\":0,\"turnaround\":5000,\"delay\":60,"
-                "\"period\":300,\"voxlevel\":-6,\"voxhang\":5000,\"bw\":24000}") == CONSOLE_OK);
+                "\"period\":300,\"voxlevel\":-6,\"voxhang\":5000,\"bw\":24000,\"linkbuffer\":10}") == CONSOLE_OK);
     CHECK_HAS(settings(), "\"snr\":-60.0,\"bw\":24000,\"floor\":-12.0,");
-    CHECK_HAS(settings(), "\"delay\":60.0,\"period\":300.0,");
+    CHECK_HAS(settings(), "\"delay\":60.0,\"period\":300.0,\"linkbuffer\":10,");
     CHECK_HAS(settings(), "\"voxlevel\":-6.0,\"voxhang\":5000}");
 
     /* Values are kept in the steps the CI-V controls use: tenths. */
@@ -292,13 +293,17 @@ static void test_settings_refused(void)
     CHECK_STR(g_err, "voxlevel: must be between -80.0 and -6.0 dBFS");
     CHECK(apply("{\"voxlevel\":-80.1}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"voxhang\":5001}") == CONSOLE_BAD_REQUEST);
+    CHECK(apply("{\"linkbuffer\":9}") == CONSOLE_BAD_REQUEST);
+    CHECK_STR(g_err, "linkbuffer: must be between 10 and 200 ms");
+    CHECK(apply("{\"linkbuffer\":201}") == CONSOLE_BAD_REQUEST);
+    CHECK(apply("{\"match\":\"yes\"}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"snr\":1e30}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"snr\":-1e300}") == CONSOLE_BAD_REQUEST);
     CHECK_STR(settings(), DEFAULTS);
 
     /* Choices. */
     CHECK(apply("{\"route\":\"loop\"}") == CONSOLE_BAD_REQUEST);
-    CHECK_STR(g_err, "route: must be one of \"monitor\", \"radio\", \"parrot\"");
+    CHECK_STR(g_err, "route: must be one of \"monitor\", \"radio\", \"parrot\", \"link\"");
     CHECK(apply("{\"route\":1}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"noise\":true}") == CONSOLE_BAD_REQUEST);
     CHECK_STR(g_err, "noise: must be one of \"off\", \"on\"");
@@ -382,6 +387,22 @@ static void test_settings_refused(void)
     CHECK(console_settings_apply(&g_ctl, "nope", NULL, 0) == CONSOLE_BAD_REQUEST);
 }
 
+static void no_link_tx(void *ctx, const int16_t *tx, size_t n, bool keyed)
+{
+    (void)ctx;
+    (void)tx;
+    (void)n;
+    (void)keyed;
+}
+
+static bool no_link_rx(void *ctx, int16_t *out, size_t n)
+{
+    (void)ctx;
+    (void)out;
+    (void)n;
+    return false;
+}
+
 static void test_parrot_needs_buffer(void)
 {
     fresh_with(false);
@@ -393,6 +414,16 @@ static void test_parrot_needs_buffer(void)
     fresh();
     CHECK(apply("{\"route\":\"parrot\"}") == CONSOLE_OK);
     CHECK(config().route == AE_ROUTE_PARROT);
+
+    /* The link route needs a link in the same way. */
+    CHECK(apply("{\"route\":\"link\"}") == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "route: \"link\" is not available, this board was built without the link");
+    CHECK(config().route == AE_ROUTE_PARROT);
+    static const ae_link_t link = {.tx = no_link_tx, .rx = no_link_rx};
+    ae_set_link(&g_engine, &link);
+    CHECK(apply("{\"route\":\"link\",\"linkbuffer\":50}") == CONSOLE_OK);
+    CHECK(config().route == AE_ROUTE_LINK && config().link_buffer_ms == 50);
+    CHECK_HAS(settings(), "{\"route\":\"link\",");
 }
 
 /* The console and the CI-V controls are two views of the same settings. */
@@ -422,7 +453,7 @@ static void test_same_settings_as_civ(void)
     /* The ranges in the list of settings are mock_ctl's own. */
     int32_t lo, hi;
     CHECK(mock_ctl_setting_range(MOCK_CTL_SNR, &lo, &hi) && lo == -600 && hi == 800);
-    CHECK(mock_ctl_setting_range(MOCK_CTL_ROUTE, &lo, &hi) && lo == 0 && hi == 2);
+    CHECK(mock_ctl_setting_range(MOCK_CTL_ROUTE, &lo, &hi) && lo == 0 && hi == 3);
     CHECK(!mock_ctl_setting_range(MOCK_CTL_STATUS, &lo, &hi));
     ae_config_t cfg = config();
     CHECK(mock_ctl_setting_put(&g_ctl, &cfg, MOCK_CTL_STATUS, 0) == MOCK_CTL_SET_UNKNOWN);
@@ -441,7 +472,9 @@ static void test_info(void)
     CHECK(json_valid(g_buf));
     CHECK_HAS(g_buf, "{\"api\":1,\"name\":\"mockradio-1a2b\",\"rig\":\"IC-705\",\"hamlib\":3085,\"parrot_capacity\":2.0,");
     CHECK_HAS(g_buf, "{\"name\":\"route\",\"label\":\"Receive route\",\"group\":\"Receive\",");
-    CHECK_HAS(g_buf, "\"choices\":[\"monitor\",\"radio\",\"parrot\"]}");
+    CHECK_HAS(g_buf, "\"choices\":[\"monitor\",\"radio\",\"parrot\",\"link\"]}");
+    CHECK_HAS(g_buf, "{\"name\":\"linkbuffer\",\"label\":\"Buffer\",\"group\":\"Link\",");
+    CHECK_HAS(g_buf, "\"unit\":\"ms\",\"min\":10,\"max\":200,\"step\":1}");
     CHECK_HAS(g_buf, "{\"name\":\"snr\",\"label\":\"SNR\",\"group\":\"Receive\",\"unit\":\"dB\",\"min\":-60.0,"
                      "\"max\":80.0,\"step\":0.1}");
     CHECK_HAS(g_buf, "\"unit\":\"Hz\",\"min\":100,\"max\":24000,\"step\":1}");
@@ -452,8 +485,8 @@ static void test_info(void)
     CHECK_HAS(g_buf, "{\"name\":\"voxhang\",\"label\":\"VOX hang\",\"group\":\"PTT\",\"unit\":\"ms\",\"min\":0,"
                      "\"max\":5000,\"step\":1}]}");
     /* Every setting the settings object has is in the list, and no other. */
-    static const char *const names[] = {"route", "noise", "snr",  "bw",  "floor",    "atten",  "turnaround",
-                                        "delay", "period", "line", "vox", "voxlevel", "voxhang"};
+    static const char *const names[] = {"route",  "noise",      "snr",   "bw",   "floor", "atten",    "turnaround", "delay",
+                                        "period", "linkbuffer", "match", "line", "vox",   "voxlevel", "voxhang"};
     size_t listed = 0;
     for (const char *p = g_buf; (p = strstr(p, "{\"name\":\"")) != NULL; p++) listed++;
     CHECK(listed == sizeof names / sizeof names[0]);
@@ -605,7 +638,7 @@ static void test_telemetry(void)
              "\"fifo\":{\"level\":0,\"target\":960,\"over\":0,\"under\":0,\"dropped\":0,\"repeated\":0}},"
              "\"channel\":{\"muted\":false,\"level\":null,\"gain\":0.0,\"limited\":false},"
              "\"parrot\":{\"state\":\"idle\",\"recorded\":0.0,\"capacity\":2.0,\"truncated\":false},"
-             "\"rssi\":null}",
+             "\"link\":null,\"rssi\":null}",
              (unsigned long)gen);
     CHECK_STR(g_buf, want);
 
@@ -642,8 +675,34 @@ static void test_telemetry(void)
     CHECK_HAS(g_buf, "\"fifo\":{\"level\":1010,\"target\":960,\"over\":3,\"under\":4,\"dropped\":5,\"repeated\":6}},");
     CHECK_HAS(g_buf, "\"channel\":{\"muted\":true,");
     CHECK_HAS(g_buf, "\"parrot\":{\"state\":\"recording\",\"recorded\":0.5,\"capacity\":2.0,\"truncated\":false},");
-    CHECK_HAS(g_buf, "\"rssi\":-57}");
+    CHECK_HAS(g_buf, "\"link\":null,\"rssi\":-57}");
     CHECK(ae_config_gen(&g_engine) != gen);
+
+    /* The link: alone, then with a peer and every counter set. */
+    s.has_link = true;
+    s.link.state = LINK_NO_PEER;
+    s.link.target_ms = 30;
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK(json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"link\":{\"state\":\"no peer\",\"peer\":null,\"peer_rx\":null,\"peer_tx\":null,"
+                     "\"peer_keyed\":false,\"rssi\":null,\"buffer\":0,\"target\":30,\"sent\":0,");
+    s.link = (link_status_t){
+        .state = LINK_RECEIVING, .peer = true, .peer_name = "mock\"radio-0002", .peer_rx_hz = 7074000,
+        .peer_tx_hz = 7076000, .peer_keyed = true, .has_rssi = true, .rssi_dbm = -61, .buffer_ms = 35,
+        .target_ms = 30, .sent = 1, .send_failed = 2, .received = 3, .lost = 4, .late = 5, .off_frequency = 6,
+        .underruns = 7, .overruns = 8, .dropped = 9, .repeated = 10,
+    };
+    size_t full = console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf);
+    CHECK(full > 0 && json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"link\":{\"state\":\"receiving\",\"peer\":\"mock\\\"radio-0002\",\"peer_rx\":7074000,"
+                     "\"peer_tx\":7076000,\"peer_keyed\":true,\"rssi\":-61,\"buffer\":35,\"target\":30,\"sent\":1,"
+                     "\"send_failed\":2,\"received\":3,\"lost\":4,\"late\":5,\"off_frequency\":6,\"underruns\":7,"
+                     "\"overruns\":8,\"dropped\":9,\"repeated\":10},\"rssi\":-57}");
+    s.link.state = LINK_OFF_FREQUENCY;
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, "\"state\":\"off frequency\"");
+    CHECK(full < CONSOLE_JSON_MAX / 2 - 512); /* the firmware keeps 2048 for a snapshot */
+    s.has_link = false;
 
     /* Keyed past the end of the 2 s buffer, then unkeyed: waiting to replay. */
     for (int i = 0; i < 20; i++) ae_process(&g_engine, audio, audio, 4800), tone(audio, 4800, 8000.0f);
@@ -672,7 +731,7 @@ static void test_telemetry(void)
     /* Too small a buffer gives nothing. */
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, 200) == 0);
     CHECK(g_buf[0] == '\0');
-    CHECK(n < CONSOLE_JSON_MAX / 4);
+    CHECK(n < CONSOLE_JSON_MAX / 2);
 }
 
 int main(void)

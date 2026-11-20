@@ -110,17 +110,20 @@ typedef struct {
     uint8_t n_words;
 } cset_t;
 
-static const char *const w_route[] = {"monitor", "radio", "parrot"};
+static const char *const w_route[] = {"monitor", "radio", "parrot", "link"};
 static const char *const w_onoff[] = {"off", "on"};
 static const char *const w_line[] = {"off", "rts", "dtr"};
 
 #define G_RX "Receive"
 #define G_PARROT "Parrot"
+#define G_LINK "Link"
 #define G_PTT "PTT"
 
 static const cset_t csets[] = {
     {"route", MOCK_CTL_ROUTE, 0, "Receive route", G_RX, NULL,
-     "monitor: loopback, PTT ignored. radio: mute while keyed. parrot: record while keyed, replay after.", w_route, 3},
+     "monitor: loopback, PTT ignored. radio: mute while keyed. parrot: record while keyed, replay after. "
+     "link: hear the other board.",
+     w_route, 4},
     {"noise", MOCK_CTL_NOISE, 0, "Noise", G_RX, NULL, "Add noise and hold the signal at the SNR.", w_onoff, 2},
     {"snr", MOCK_CTL_SNR, 10, "SNR", G_RX, "dB", NULL, NULL, 0},
     {"bw", MOCK_CTL_REF_BW, 1, "SNR bandwidth", G_RX, "Hz", "2500 for WSJT-X and Data2G, 3000 for VARA.", NULL, 0},
@@ -131,6 +134,10 @@ static const cset_t csets[] = {
     {"delay", MOCK_CTL_PARROT_DELAY, 10, "Replay delay", G_PARROT, "s", "From unkeying to the replay.", NULL, 0},
     {"period", MOCK_CTL_PARROT_PERIOD, 10, "Slot period", G_PARROT, "s", "15 for FT8, 7.5 for FT4, 0 for off.", NULL,
      0},
+    {"linkbuffer", MOCK_CTL_LINK_BUFFER, 1, "Buffer", G_LINK, "ms",
+     "Audio held before it is played: more rides out uneven arrival, less answers sooner.", NULL, 0},
+    {"match", MOCK_CTL_LINK_MATCH, 0, "Frequency match", G_LINK, NULL,
+     "On: the other board is heard only when it transmits on this radio's receive frequency.", w_onoff, 2},
     {"line", MOCK_CTL_PTT_LINE, 0, "Control-line PTT", G_PTT, NULL, "CAT keying always works; these add to it.",
      w_line, 3},
     {"vox", MOCK_CTL_VOX, 0, "VOX", G_PTT, NULL, "Transmit audio keys the radio.", w_onoff, 2},
@@ -486,8 +493,8 @@ console_result_t console_settings_apply(mock_ctl_t *m, const char *json, char *e
             changed++;
             break;
         case MOCK_CTL_SET_UNAVAILABLE:
-            return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "%s: \"%s\" is not available, this board has no parrot buffer",
-                          s->name, s->words[wire]);
+            return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "%s: \"%s\" is not available, this board %s", s->name,
+                          s->words[wire], wire == AE_ROUTE_LINK ? "was built without the link" : "has no parrot buffer");
         default:
             return s->scale == 0 ? refuse_choice(s, err, err_cap) : refuse_range(s, err, err_cap);
         }
@@ -664,7 +671,37 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_f(&o, ",\"truncated\":");
     out_bool(&o, par.truncated);
 
-    out_f(&o, "},\"rssi\":");
+    out_f(&o, "},\"link\":");
+    if (s->has_link) {
+        static const char *const link_states[] = {"off", "no peer", "idle", "sending", "receiving", "off frequency"};
+        const link_status_t *k = &s->link;
+        out_f(&o, "{\"state\":\"%s\",\"peer\":", (size_t)k->state < ARRAY_LEN(link_states) ? link_states[k->state] : "off");
+        if (k->peer) {
+            out_str(&o, k->peer_name);
+            out_f(&o, ",\"peer_rx\":%lu,\"peer_tx\":%lu,\"peer_keyed\":", (unsigned long)k->peer_rx_hz,
+                  (unsigned long)k->peer_tx_hz);
+            out_bool(&o, k->peer_keyed);
+        } else {
+            out_f(&o, "null,\"peer_rx\":null,\"peer_tx\":null,\"peer_keyed\":false");
+        }
+        out_f(&o, ",\"rssi\":");
+        if (k->peer && k->has_rssi) {
+            out_f(&o, "%d", k->rssi_dbm);
+        } else {
+            out_f(&o, "null");
+        }
+        out_f(&o,
+              ",\"buffer\":%lu,\"target\":%lu,\"sent\":%lu,\"send_failed\":%lu,\"received\":%lu,\"lost\":%lu,"
+              "\"late\":%lu,\"off_frequency\":%lu,\"underruns\":%lu,\"overruns\":%lu,\"dropped\":%lu,\"repeated\":%lu}",
+              (unsigned long)k->buffer_ms, (unsigned long)k->target_ms, (unsigned long)k->sent,
+              (unsigned long)k->send_failed, (unsigned long)k->received, (unsigned long)k->lost, (unsigned long)k->late,
+              (unsigned long)k->off_frequency, (unsigned long)k->underruns, (unsigned long)k->overruns,
+              (unsigned long)k->dropped, (unsigned long)k->repeated);
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"rssi\":");
     if (s->has_rssi) {
         out_f(&o, "%d", s->rssi_dbm);
     } else {
