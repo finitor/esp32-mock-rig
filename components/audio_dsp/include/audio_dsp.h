@@ -121,6 +121,75 @@ void dsp_vox_init(dsp_vox_t *v, float threshold_dbfs, uint32_t hang_ms, uint32_t
 /* Feed a block; returns whether the VOX is open at the end of it. */
 bool dsp_vox_process(dsp_vox_t *v, const int16_t *in, size_t n);
 
+/* ---- fading -----------------------------------------------------------------
+ *
+ * What an HF path does to a signal, after the Watterson model as ITU-R
+ * F.1487 uses it: two paths of equal mean power, the second delayed, each
+ * multiplied by a complex gain that wanders as a Rayleigh process with a
+ * Gaussian Doppler spectrum. The Doppler spread is two standard deviations
+ * of that spectrum. The gains have unit power on average, not in any one
+ * stretch: a transmission that lands in a fade comes out weak. A frequency
+ * offset can be applied as well, or alone.
+ *
+ * Audio is 12 kHz. It is made complex by a Hilbert transformer that is good
+ * (image 60 dB down) from 200 Hz to 5.8 kHz, and comes out DSP_FADE_DELAY
+ * samples late.
+ *
+ * The gains are a function of a seed and of time, not of what was processed
+ * before: dsp_fade_seek() puts the stage anywhere in its fading, and two
+ * stages given the same seed, settings and time fade alike, sample for
+ * sample. That is how two boards share one path.
+ *
+ * Regenerate the two filters with host/tools/gen_hilbert_fir.py --table.
+ */
+#define DSP_FADE_FS_HZ 12000
+#define DSP_HILBERT_TAPS 127
+#define DSP_HILBERT_PAIRS 32      /* taps that are not zero, on one side of the middle */
+#define DSP_FADE_DELAY 63         /* samples: (DSP_HILBERT_TAPS - 1) / 2 */
+#define DSP_FADE_PATH_MAX 128     /* the second path's delay is below this many samples: 10.6 ms */
+#define DSP_FADE_GAIN_TAPS 59
+#define DSP_FADE_GAIN_RATE 32     /* gain samples per hertz of spread */
+#define DSP_FADE_SPREAD_MAX_CHZ 3000 /* hundredths of a hertz: 30 Hz */
+
+typedef struct {
+    int16_t hist[2 * DSP_HILBERT_TAPS];
+    uint32_t pos;
+
+    float path_re[DSP_FADE_PATH_MAX]; /* the complex signal, for the second path */
+    float path_im[DSP_FADE_PATH_MAX];
+    uint32_t path_pos;
+    uint32_t path_delay;
+
+    uint32_t seed;
+    uint32_t spread_chz; /* 0: no fading */
+    uint64_t t;          /* the place in the fading, in samples */
+    uint32_t inc;        /* gain samples per audio sample, times 2^32 */
+    uint64_t k;          /* the gain sample at or before t ... */
+    uint32_t frac;       /* ... and how far t is towards the next, times 2^32 */
+    float noise[4][DSP_FADE_GAIN_TAPS + 1]; /* for gain samples k and k + 1: two paths, real and imaginary */
+    float g0[4], g1[4];  /* the gains at k and at k + 1 */
+
+    bool shift; /* a frequency offset is applied */
+    float rot_re, rot_im, step_re, step_im;
+    uint32_t rot_n;
+} dsp_fade_t;
+
+void dsp_fade_init(dsp_fade_t *f, uint32_t seed);
+
+/* spread_chz: Doppler spread in hundredths of a hertz, 0 for no fading (one
+ * path, unchanged). path_delay: the second path's, in samples, clamped.
+ * offset_dhz: frequency offset in tenths of a hertz, either sign. Changing
+ * the spread changes the fading at once; time and seed stay. */
+void dsp_fade_set(dsp_fade_t *f, uint32_t spread_chz, uint32_t path_delay, int32_t offset_dhz);
+
+/* Go to sample t of the fading that seed gives. */
+void dsp_fade_seek(dsp_fade_t *f, uint32_t seed, uint64_t t);
+uint64_t dsp_fade_time(const dsp_fade_t *f);
+
+/* n samples through the stage; time advances by n. in and out may be the
+ * same buffer. */
+void dsp_fade_process(dsp_fade_t *f, const int16_t *in, int16_t *out, size_t n);
+
 /* ---- FIFO with drift steering ------------------------------------------
  *
  * Lock-free for one writer task and one reader task. The reader can steer

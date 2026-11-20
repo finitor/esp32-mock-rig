@@ -142,6 +142,7 @@ details summary { cursor: pointer; font-weight: 600; }
       <div class="card wide" id="linkcard" hidden><h3>Link to the other board</h3>
         <div class="kv"><span>State</span><span id="lstate"></span></div>
         <div class="kv"><span>Other board</span><span class="num" id="lpeer"></span></div>
+        <div class="kv"><span>Channel</span><span id="lshare"></span></div>
         <div class="kv"><span>Buffer / target</span><span class="num" id="lbuf"></span></div>
         <div class="kv"><span>Packets in</span><span class="num" id="lin"></span></div>
         <div class="kv"><span>Packets out</span><span class="num" id="lout"></span></div>
@@ -236,7 +237,15 @@ function buildSettings() {
     err.setAttribute("role", "alert");
     const id = "s-" + s.name;
     let set;
-    if (s.choices) {
+    if (s.choices && s.choices.length > 4) {
+      /* too many for a row of buttons: a list */
+      const lab = el("label", null, s.label); lab.htmlFor = id; row.appendChild(lab);
+      const sel = el("select"); sel.id = id;
+      for (const c of s.choices) { const o = el("option", null, c); o.value = c; sel.appendChild(o); }
+      sel.addEventListener("change", () => change(s.name, sel.value));
+      ctl.appendChild(sel);
+      set = (v, force) => { if (force || document.activeElement !== sel) sel.value = v; };
+    } else if (s.choices) {
       row.appendChild(el("span", "name", s.label));
       const seg = el("div", "seg"); seg.setAttribute("role", "radiogroup"); seg.setAttribute("aria-label", s.label);
       const radios = s.choices.map(c => {
@@ -399,6 +408,8 @@ function update(t) {
     const lp = $("lpeer");
     lp.textContent = k.peer ? k.peer + ", TX " + fmtFreq(k.peer_tx) + (k.rssi == null ? "" : ", " + k.rssi + " dBm") : "none";
     lp.className = "num" + (k.peer && k.peer_tx !== t.cat.freq ? " warn" : "");
+    $("lshare").textContent = !k.shared ? "this board's own" :
+      "shared with the other board; " + (k.leads ? "it fades by this board's clock" : "this board fades by its clock");
     $("lbuf").textContent = k.buffer + " / " + k.target + " ms";
     const li = $("lin");
     li.textContent = k.received + " OK, " + k.lost + " lost, " + k.late + " late" + (k.off_frequency ? ", " + k.off_frequency + " off frequency" : "");

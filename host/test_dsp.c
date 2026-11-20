@@ -429,6 +429,251 @@ static void test_fifo_steer_content(void)
     CHECK(out[3] == 40 && out[4] == 0 && f.underruns == 4 && f.repeated == 1);
 }
 
+/* ---- fading ---------------------------------------------------------------- */
+
+#define FADE_FS 12000.0
+
+/* Nothing asked of it: the audio comes out as it went in, 63 samples late. */
+static void test_fade_passthrough(void)
+{
+    enum { LEN = 4000 };
+    static int16_t in[LEN], out[LEN];
+    dsp_fade_t f;
+
+    dsp_fade_init(&f, 1u);
+    for (int i = 0; i < LEN; i++) in[i] = (int16_t)((i * 7919) % 60001 - 30000);
+    dsp_fade_process(&f, in, out, LEN);
+    int wrong = 0;
+    for (int i = DSP_FADE_DELAY; i < LEN; i++) wrong += out[i] != in[i - DSP_FADE_DELAY];
+    for (int i = 0; i < DSP_FADE_DELAY; i++) wrong += out[i] != 0;
+    CHECK(wrong == 0);
+    CHECK(dsp_fade_time(&f) == LEN);
+
+    /* In place, and in pieces of any size. */
+    dsp_fade_t g;
+    static int16_t buf[LEN];
+    dsp_fade_init(&g, 1u);
+    memcpy(buf, in, sizeof buf);
+    for (int at = 0, k = 1; at < LEN; at += k, k = k % 97 + 1) {
+        int len = at + k <= LEN ? k : LEN - at;
+        dsp_fade_process(&g, buf + at, buf + at, (size_t)len);
+    }
+    CHECK(memcmp(buf, out, sizeof buf) == 0);
+}
+
+/* A frequency offset moves a tone by that much, the right way, and leaves
+ * almost nothing where the other sideband would be. */
+static void test_fade_shift(void)
+{
+    enum { LEN = 24000, SKIP = 2000 };
+    static int16_t in[LEN], out[LEN];
+    static const double tones[] = {200.0, 300.0, 1000.0, 2700.0, 4500.0};
+    dsp_fade_t f;
+
+    for (size_t t = 0; t < sizeof tones / sizeof tones[0]; t++) {
+        double tone = tones[t];
+        sine(in, LEN, tone, FADE_FS, 10000.0);
+        dsp_fade_init(&f, 1u);
+        dsp_fade_set(&f, 0, 0, 1000); /* +100.0 Hz */
+        dsp_fade_process(&f, in, out, LEN);
+        CHECK_RANGE(db(tone_amp(out + SKIP, LEN - SKIP, tone + 100.0, FADE_FS) / 10000.0), -0.05, 0.05);
+        CHECK(db(tone_amp(out + SKIP, LEN - SKIP, fabs(100.0 - tone), FADE_FS) / 10000.0) < -55.0);
+        CHECK(db(tone_amp(out + SKIP, LEN - SKIP, tone, FADE_FS) / 10000.0) < -55.0);
+
+        dsp_fade_init(&f, 1u);
+        dsp_fade_set(&f, 0, 0, -505); /* -50.5 Hz */
+        dsp_fade_process(&f, in, out, LEN);
+        CHECK_RANGE(db(tone_amp(out + SKIP, LEN - SKIP, tone - 50.5, FADE_FS) / 10000.0), -0.05, 0.05);
+    }
+
+    /* Over a long run the level does not creep: the rotating phase stays a
+     * unit vector. */
+    dsp_fade_init(&f, 1u);
+    dsp_fade_set(&f, 0, 0, 37);
+    sine(in, LEN, 1500.0, FADE_FS, 10000.0);
+    for (int i = 0; i < 100; i++) dsp_fade_process(&f, in, out, LEN); /* 200 s */
+    CHECK_RANGE(db(rms(out, LEN) * sqrt(2.0) / 10000.0), -0.02, 0.02);
+}
+
+/* The complex envelope of a faded tone, one value per 10 ms: what the two
+ * gains did to it. tone must make whole cycles in 120 samples. */
+#define ENV_BLOCK 120
+
+static size_t fade_envelope(uint32_t seed, uint32_t spread_chz, uint32_t delay, double tone, size_t blocks,
+                            double *env_re, double *env_im)
+{
+    enum { AMP_IN = 8000 };
+    static int16_t in[ENV_BLOCK], out[ENV_BLOCK];
+    static double ref_c[ENV_BLOCK], ref_s[ENV_BLOCK];
+    dsp_fade_t f;
+
+    sine(in, ENV_BLOCK, tone, FADE_FS, AMP_IN); /* whole cycles: the block repeats seamlessly */
+    for (int i = 0; i < ENV_BLOCK; i++) {
+        ref_c[i] = cos(2 * M_PI * tone * i / FADE_FS);
+        ref_s[i] = sin(2 * M_PI * tone * i / FADE_FS);
+    }
+    dsp_fade_init(&f, seed);
+    dsp_fade_set(&f, spread_chz, delay, 0);
+    for (size_t b = 0; b < blocks; b++) {
+        dsp_fade_process(&f, in, out, ENV_BLOCK);
+        double re = 0, im = 0;
+        for (int i = 0; i < ENV_BLOCK; i++) {
+            re += out[i] * ref_s[i]; /* the tone is a sine: in phase with it is "real" */
+            im += out[i] * ref_c[i];
+        }
+        env_re[b] = re * 2.0 / ENV_BLOCK / AMP_IN;
+        env_im[b] = im * 2.0 / ENV_BLOCK / AMP_IN;
+    }
+    return blocks;
+}
+
+/* How alike two envelopes are: 1 the same but for a constant factor, 0 unrelated. */
+static double env_correlation(const double *a_re, const double *a_im, const double *b_re, const double *b_im, size_t n,
+                              size_t lag)
+{
+    double c_re = 0, c_im = 0, pa = 0, pb = 0;
+    for (size_t i = 0; i + lag < n; i++) {
+        size_t j = i + lag;
+        c_re += a_re[i] * b_re[j] + a_im[i] * b_im[j];
+        c_im += a_im[i] * b_re[j] - a_re[i] * b_im[j];
+        pa += a_re[i] * a_re[i] + a_im[i] * a_im[i];
+        pb += b_re[j] * b_re[j] + b_im[j] * b_im[j];
+    }
+    return sqrt(c_re * c_re + c_im * c_im) / sqrt(pa * pb);
+}
+
+enum { ENV_MAX = 40000 }; /* 400 s */
+static double g_e1r[ENV_MAX], g_e1i[ENV_MAX], g_e2r[ENV_MAX], g_e2i[ENV_MAX];
+
+/* Rayleigh fading with a Gaussian Doppler spectrum of the spread asked for,
+ * and unit power on average. */
+static void test_fade_statistics(void)
+{
+    /* 4 Hz of spread for 400 s: some thousands of fades. One path only would
+     * do; with no delay the two add up to the same thing. */
+    size_t n = fade_envelope(11u, 400, 0, 1500.0, ENV_MAX, g_e1r, g_e1i);
+    double mean = 0;
+    size_t below_10 = 0, below_20 = 0, above_3 = 0;
+    for (size_t i = 0; i < n; i++) {
+        double p = g_e1r[i] * g_e1r[i] + g_e1i[i] * g_e1i[i];
+        mean += p;
+        below_10 += p < 0.1;
+        below_20 += p < 0.01;
+        above_3 += p > 2.0;
+    }
+    mean /= (double)n;
+    CHECK_RANGE(10 * log10(mean), -0.4, 0.4);                    /* unit power */
+    CHECK_RANGE((double)below_10 / (double)n, 0.080, 0.110);     /* 1 - exp(-0.1) = 0.095: 10 dB down */
+    CHECK_RANGE((double)below_20 / (double)n, 0.006, 0.014);     /* 1 - exp(-0.01) = 0.010: 20 dB down */
+    CHECK_RANGE((double)above_3 / (double)n, 0.115, 0.155);      /* exp(-2) = 0.135: 3 dB up */
+
+    /* A Gaussian spectrum with standard deviation s has the correlation
+     * exp(-2 pi^2 s^2 tau^2). s is half the spread: 2 Hz. */
+    CHECK_RANGE(env_correlation(g_e1r, g_e1i, g_e1r, g_e1i, n, 4), 0.85, 0.91);   /* 0.04 s: 0.881 */
+    CHECK_RANGE(env_correlation(g_e1r, g_e1i, g_e1r, g_e1i, n, 8), 0.56, 0.65);   /* 0.08 s: 0.603 */
+    CHECK_RANGE(env_correlation(g_e1r, g_e1i, g_e1r, g_e1i, n, 16), 0.08, 0.19);  /* 0.16 s: 0.133 */
+    CHECK(env_correlation(g_e1r, g_e1i, g_e1r, g_e1i, n, 40) < 0.05);
+
+    /* A tenth of the spread fades ten times as slowly. */
+    n = fade_envelope(11u, 40, 0, 1500.0, ENV_MAX, g_e2r, g_e2i);
+    CHECK_RANGE(env_correlation(g_e2r, g_e2i, g_e2r, g_e2i, n, 80), 0.50, 0.70);  /* 0.8 s: 0.603 */
+
+    /* Another seed is another path. */
+    n = fade_envelope(12u, 400, 0, 1500.0, ENV_MAX, g_e2r, g_e2i);
+    CHECK(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0) < 0.05);
+    /* The same seed is the same path, at another audio frequency too when
+     * there is no delay between the paths: flat fading. */
+    n = fade_envelope(11u, 400, 0, 2000.0, ENV_MAX, g_e2r, g_e2i);
+    CHECK(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0) > 0.999);
+}
+
+/* A delayed second path makes the fading differ across the audio band: two
+ * tones fade together or apart according to how many cycles of difference
+ * the delay holds. */
+static void test_fade_delay(void)
+{
+    enum { DELAY = 24 }; /* 2 ms */
+    size_t n = fade_envelope(21u, 400, DELAY, 1000.0, ENV_MAX / 2, g_e1r, g_e1i);
+
+    fade_envelope(21u, 400, DELAY, 1500.0, n, g_e2r, g_e2i); /* 500 Hz apart: one whole cycle in 2 ms */
+    CHECK(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0) > 0.99);
+    fade_envelope(21u, 400, DELAY, 1100.0, n, g_e2r, g_e2i); /* 100 Hz: cos(pi * 100 * 0.002) = 0.81 */
+    CHECK_RANGE(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0), 0.76, 0.86);
+
+    /* With 5 ms between the paths, 100 Hz is half a cycle: unrelated. And
+     * 200 Hz a whole one again. (The tones are whole hundreds of hertz so
+     * that the test's 10 ms blocks hold whole cycles.) */
+    fade_envelope(21u, 400, 60, 1000.0, n, g_e1r, g_e1i);
+    fade_envelope(21u, 400, 60, 1100.0, n, g_e2r, g_e2i);
+    CHECK(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0) < 0.08);
+    fade_envelope(21u, 400, 60, 1200.0, n, g_e2r, g_e2i);
+    CHECK(env_correlation(g_e1r, g_e1i, g_e2r, g_e2i, n, 0) > 0.99);
+
+    /* Still unit power. */
+    double mean = 0;
+    for (size_t i = 0; i < n; i++) mean += g_e1r[i] * g_e1r[i] + g_e1i[i] * g_e1i[i];
+    CHECK_RANGE(10 * log10(mean / (double)n), -0.5, 0.5);
+}
+
+/* The fading is a function of seed and time: a stage put anywhere in it
+ * agrees, sample for sample, with one that ran there. */
+static void test_fade_seek(void)
+{
+    enum { LEN = 60000, WARM = 400 };
+    static int16_t in[LEN], a[LEN], b[LEN];
+    dsp_fade_t fa, fb;
+
+    sine(in, LEN, 1500.0, FADE_FS, 9000.0);
+    dsp_fade_init(&fa, 5u);
+    dsp_fade_set(&fa, 1000, 48, 0); /* 10 Hz, 4 ms */
+    dsp_fade_process(&fa, in, a, LEN);
+
+    /* Joining late: the same audio from 50000 - WARM on, placed in time. */
+    dsp_fade_init(&fb, 99u);
+    dsp_fade_set(&fb, 1000, 48, 0);
+    dsp_fade_seek(&fb, 5u, 50000 - WARM);
+    dsp_fade_process(&fb, in + 50000 - WARM, b, WARM + 10000);
+    CHECK(memcmp(a + 50000, b + WARM, 10000 * sizeof(int16_t)) == 0);
+    CHECK(dsp_fade_time(&fb) == 60000);
+
+    /* A second apart in time is another stretch of the fading. */
+    dsp_fade_seek(&fb, 5u, 50000 - WARM + 12000);
+    dsp_fade_process(&fb, in + 50000 - WARM, b, WARM + 10000);
+    CHECK(memcmp(a + 50000, b + WARM, 10000 * sizeof(int16_t)) != 0);
+
+    /* Stepping sample by sample and jumping arrive at the same place: at
+     * every spread, far into the fading, and across 2^32 samples. */
+    static const uint32_t spreads[] = {1, 10, 137, 400, 3000};
+    static const uint64_t times[] = {0, 1, 12345, 0xFFFFFFF0ull, 0x100000010ull, 0xFFFFFFFFF0ull};
+    int differ = 0;
+    for (size_t sp = 0; sp < sizeof spreads / sizeof spreads[0]; sp++) {
+        for (size_t ti = 0; ti < sizeof times / sizeof times[0]; ti++) {
+            dsp_fade_init(&fa, 7u);
+            dsp_fade_init(&fb, 7u);
+            dsp_fade_set(&fa, spreads[sp], 0, 0);
+            dsp_fade_set(&fb, spreads[sp], 0, 0);
+            dsp_fade_seek(&fa, 7u, times[ti]);
+            dsp_fade_process(&fa, in, a, 3000);
+            dsp_fade_seek(&fb, 7u, times[ti] + 3000);
+            differ += fa.k != fb.k || fa.frac != fb.frac || dsp_fade_time(&fa) != dsp_fade_time(&fb);
+            differ += memcmp(fa.g0, fb.g0, sizeof fa.g0) != 0 || memcmp(fa.g1, fb.g1, sizeof fa.g1) != 0;
+            differ += memcmp(fa.noise, fb.noise, sizeof fa.noise) != 0;
+        }
+    }
+    CHECK(differ == 0);
+
+    /* Out-of-range settings are clamped. */
+    dsp_fade_set(&fa, 99999, 5000, 0);
+    CHECK(fa.spread_chz == DSP_FADE_SPREAD_MAX_CHZ && fa.path_delay == DSP_FADE_PATH_MAX - 1);
+    /* The fastest fading keeps its level too, and does not overflow on a
+     * loud signal: it saturates. */
+    sine(in, LEN, 1500.0, FADE_FS, 32000.0);
+    dsp_fade_process(&fa, in, a, LEN);
+    int peak = 0;
+    for (int i = 0; i < LEN; i++) peak = abs(a[i]) > peak ? abs(a[i]) : peak;
+    CHECK(peak == 32767 || peak == 32768);
+}
+
 int main(void)
 {
     test_decimator_response();
@@ -443,6 +688,11 @@ int main(void)
     test_fifo_basic();
     test_fifo_drift();
     test_fifo_steer_content();
+    test_fade_passthrough();
+    test_fade_shift();
+    test_fade_statistics();
+    test_fade_delay();
+    test_fade_seek();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

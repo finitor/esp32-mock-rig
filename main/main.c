@@ -47,6 +47,7 @@
 #include "web_console.h"
 #endif
 #ifndef CONFIG_MOCK_LINK_NONE
+#include "coord.h"
 #include "link.h"
 #include "link_transport.h"
 #define HAVE_LINK 1
@@ -126,12 +127,25 @@ static void cat_unlock(void *ctx)
  * in the audio task. The status task below keeps the link's settings in
  * step with the engine's and lets it announce the board; the frequencies it
  * compares come from the CI-V parser whenever CAT bytes arrive.
+ *
+ * Two linked boards share one channel (coord): the path's settings, and the
+ * seed and clock their fading runs by, so that the path fades alike both
+ * ways. The status task does the agreeing; the audio task only asks what
+ * the fading's time is.
  */
 #ifdef HAVE_LINK
 _Static_assert(AE_LINK_BUFFER_MIN_MS == LINK_BUFFER_MIN_MS && AE_LINK_BUFFER_MAX_MS == LINK_BUFFER_MAX_MS,
                "the engine's range for the link buffer must be the link's");
 
 static link_t s_link;
+static coord_t s_coord;
+
+/* The board's own millisecond clock, for the link to stamp packets with. */
+static uint32_t ms_clock(void *ctx)
+{
+    (void)ctx;
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 static void link_tx_op(void *ctx, const int16_t *tx, size_t n, bool keyed)
 {
@@ -291,6 +305,13 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
         }
         have_audio = true;
     }
+#ifdef HAVE_LINK
+    /* Where the fading is: this board's own, or the pair's when two boards
+     * share a channel. Without a link the fading runs on by itself. */
+    uint32_t fade_seed, fade_clock;
+    coord_fade_clock(&s_coord, ms_clock(NULL), &fade_seed, &fade_clock);
+    ae_fade_clock(&s_engine, fade_seed, fade_clock);
+#endif
     ae_process(&s_engine, have_audio ? samples : NULL, samples, n);
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_meter_add(&s_rx_meter, samples, n);
@@ -334,6 +355,7 @@ static void engine_start(void)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(name, sizeof name, "mockradio-%02x%02x", mac[4], mac[5]); /* as wifi_net names the board */
     link_init(&s_link, name, link_transport_send, NULL);
+    link_set_clock(&s_link, ms_clock, NULL);
     const ae_link_t link_ops = {.tx = link_tx_op, .rx = link_rx_op, .ctx = &s_link};
     ae_set_link(&s_engine, &link_ops);
 #endif
@@ -354,7 +376,11 @@ static void engine_start(void)
 #ifndef CONFIG_MOCK_LINK_MATCH
     cfg.link_match = false;
 #endif
+#ifndef CONFIG_MOCK_LINK_SHARE
+    cfg.link_coord = false;
 #endif
+#endif
+    cfg.fade = (ae_fade_t)CONFIG_MOCK_FADE; /* 0 off, 1 to 8 the named conditions */
 #if defined(CONFIG_MOCK_PTT_LINE_RTS)
     cfg.ptt_line = AE_LINE_RTS;
 #elif defined(CONFIG_MOCK_PTT_LINE_DTR)
@@ -374,6 +400,9 @@ static void engine_start(void)
     cfg.atten_db = (float)CONFIG_MOCK_ATTEN_DB;
     ae_configure(&s_engine, &cfg);
     mock_ctl_init(&s_ctl, &s_engine, &cfg);
+#ifdef HAVE_LINK
+    coord_init(&s_coord, &s_ctl, &s_link, esp_random());
+#endif
 
     /* Settings kept in flash replace the build's, above, as the power-up
      * settings. mock_ctl checks them: what it cannot use it leaves alone. */
@@ -453,7 +482,12 @@ static void status_task(void *arg)
         link_status_t link;
         ae_get_config(&s_engine, &cfg);
         link_configure(&s_link, cfg.route == AE_ROUTE_LINK, cfg.link_buffer_ms, cfg.link_match);
-        link_tick(&s_link, (uint32_t)(esp_timer_get_time() / 1000));
+        /* Agreeing with the other board may change settings, as a command
+         * over CAT or from the web console does: one at a time. */
+        cat_lock(NULL);
+        coord_tick(&s_coord, ms_clock(NULL));
+        cat_unlock(NULL);
+        link_tick(&s_link, ms_clock(NULL));
         link_get_status(&s_link, &link);
         hearing = link.state == LINK_RECEIVING;
         if (link.peer != had_peer) {
@@ -538,6 +572,10 @@ static void console_sample(void *ctx, console_sample_t *out)
 #ifdef HAVE_LINK
     out->has_link = true;
     link_get_status(&s_link, &out->link);
+    coord_status_t shared;
+    coord_get_status(&s_coord, &shared);
+    out->link_shared = shared.sharing;
+    out->link_leads = shared.leads;
 #endif
 }
 

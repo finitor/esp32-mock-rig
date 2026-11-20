@@ -941,6 +941,243 @@ static void test_vox(void)
     CHECK(parrot_status(&e).recorded_ms == 500 + 1000 + 100 - 10 + AE_PARROT_TAIL_MS); /* from CAT key-on */
 }
 
+/* ---- fading in the receive channel ------------------------------------------- */
+
+enum { FADE_BLOCK = 240, FADE_SECS = 60, FADE_LEN = FADE_SECS * FS };
+static int16_t g_fade_out[FADE_LEN], g_fade_out2[FADE_LEN];
+
+/* A steady tone through an engine for a minute, in blocks, with an optional
+ * clock: ms of clock per second of audio, 0 for none. */
+static void fade_run(ae_t *e, int16_t *out, double tone, double amp, uint32_t seed, int clock_ms_per_s, size_t block)
+{
+    static int16_t in[FS]; /* a whole second: whole cycles of any whole frequency */
+    sine(in, FS, tone, amp);
+    for (size_t at = 0; at < FADE_LEN; at += block) {
+        size_t m = FADE_LEN - at < block ? FADE_LEN - at : block;
+        if (clock_ms_per_s) ae_fade_clock(e, seed, (uint32_t)((uint64_t)at * (uint64_t)clock_ms_per_s / FS));
+        /* monitor route: what goes in as transmit audio is the receive source */
+        if (at % FS + m <= FS) {
+            ae_process(e, in + at % FS, out + at, m);
+        } else {
+            int16_t tmp[4096];
+            for (size_t i = 0; i < m; i++) tmp[i] = in[(at + i) % FS];
+            ae_process(e, tmp, out + at, m);
+        }
+    }
+}
+
+static void fade_engine(ae_t *e, uint32_t seed, ae_fade_t fade, float doppler_hz, float delay_ms)
+{
+    ae_config_t cfg;
+    ae_init(e, seed);
+    ae_config_defaults(&cfg);
+    cfg.fade = fade;
+    cfg.fade_doppler_hz = doppler_hz;
+    cfg.fade_delay_ms = delay_ms;
+    ae_configure(e, &cfg);
+}
+
+static void test_fading(void)
+{
+    static ae_t e, e2;
+    ae_config_t cfg;
+    ae_status_t st;
+    float doppler, delay;
+
+    /* The named conditions, in Data2G's numbers. */
+    ae_fade_preset(AE_FADE_MPG, &doppler, &delay);
+    CHECK(doppler == 0.1f && delay == 0.5f);
+    ae_fade_preset(AE_FADE_MPP, &doppler, &delay);
+    CHECK(doppler == 1.0f && delay == 2.0f);
+    ae_fade_preset(AE_FADE_MPD, &doppler, &delay);
+    CHECK(doppler == 2.0f && delay == 4.0f);
+    ae_fade_preset(AE_FADE_MPS, &doppler, &delay);
+    CHECK(doppler == 0.15f && delay == 2.0f);
+    ae_fade_preset(AE_FADE_NVIS_D, &doppler, &delay);
+    CHECK(doppler == 1.0f && delay == 7.0f);
+    ae_fade_preset(AE_FADE_LOWLAT_D, &doppler, &delay);
+    CHECK(doppler == 10.0f && delay == 6.0f);
+    ae_fade_preset(AE_FADE_HILAT_M, &doppler, &delay);
+    CHECK(doppler == 10.0f && delay == 3.0f);
+    ae_fade_preset(AE_FADE_HILAT_D, &doppler, &delay);
+    CHECK(doppler == 30.0f && delay == 7.0f);
+    ae_fade_preset(AE_FADE_OFF, &doppler, &delay);
+    CHECK(doppler == 0.0f && delay == 0.0f);
+    ae_fade_preset(AE_FADE_CUSTOM, &doppler, &delay);
+    CHECK(doppler == 0.0f);
+    ae_fade_preset((ae_fade_t)77, &doppler, &delay);
+    CHECK(doppler == 0.0f);
+
+    /* A tone through a fast-fading path for a minute, no noise: the power
+     * is the tone's on average, with deep fades and peaks above it. */
+    fade_engine(&e, 3u, AE_FADE_CUSTOM, 5.0f, 2.0f);
+    fade_run(&e, g_fade_out, 1500.0, 6000.0, 0, 0, FADE_BLOCK);
+    const double tone_rms = 6000.0 / sqrt(2.0);
+    CHECK_RANGE(20 * log10(rms(g_fade_out + FS, FADE_LEN - FS) / tone_rms), -1.5, 1.5);
+    double low = 1e9, high = 0;
+    for (size_t at = FS; at + 480 <= FADE_LEN; at += 480) {
+        double r = rms(g_fade_out + at, 480);
+        if (r < low) low = r;
+        if (r > high) high = r;
+    }
+    CHECK(20 * log10(low / tone_rms) < -20.0);
+    CHECK(20 * log10(high / tone_rms) > 3.0);
+
+    /* Any block size gives the same audio. */
+    fade_engine(&e2, 3u, AE_FADE_CUSTOM, 5.0f, 2.0f);
+    fade_run(&e2, g_fade_out2, 1500.0, 6000.0, 0, 0, 441);
+    CHECK(memcmp(g_fade_out, g_fade_out2, sizeof g_fade_out) == 0);
+    fade_engine(&e2, 3u, AE_FADE_CUSTOM, 5.0f, 2.0f);
+    fade_run(&e2, g_fade_out2, 1500.0, 6000.0, 0, 0, 1);
+    CHECK(memcmp(g_fade_out, g_fade_out2, sizeof g_fade_out) == 0);
+    /* Another seed is another path. */
+    fade_engine(&e2, 4u, AE_FADE_CUSTOM, 5.0f, 2.0f);
+    fade_run(&e2, g_fade_out2, 1500.0, 6000.0, 0, 0, FADE_BLOCK);
+    CHECK(memcmp(g_fade_out, g_fade_out2, sizeof g_fade_out) != 0);
+
+    /* With noise, the SNR is the average: the gain is set from the level
+     * the tone was sent at and does not chase the fades. Slow fading, where
+     * it would matter most. */
+    fade_engine(&e, 3u, AE_FADE_CUSTOM, 0.2f, 2.0f);
+    ae_get_config(&e, &cfg);
+    cfg.noise_on = true;
+    cfg.snr_db = 20.0f;
+    ae_configure(&e, &cfg);
+    static int16_t in[FS], out[FS];
+    sine(in, FS, 1500.0, 6000.0);
+    double gain_low = 1e9, gain_high = -1e9, loudest = 0, quietest = 1e9;
+    for (int sec = 0; sec < 40; sec++) {
+        for (size_t at = 0; at < FS; at += FADE_BLOCK) ae_process(&e, in + at, out + at, FADE_BLOCK);
+        ae_get_status(&e, &st);
+        if (sec < 2) continue;
+        if (st.gain_db < gain_low) gain_low = st.gain_db;
+        if (st.gain_db > gain_high) gain_high = st.gain_db;
+        double level = tone_amp(out, FS, 1500.0);
+        if (level > loudest) loudest = level;
+        if (level < quietest) quietest = level;
+    }
+    CHECK(gain_high - gain_low < 0.2);
+    CHECK(20 * log10(loudest / quietest) > 10.0); /* and the tone does fade */
+
+    /* The signal is kept 6 dB lower than without fading, for the peaks:
+     * asked for more SNR than the floor allows, it stops at -18 dBFS. */
+    fade_engine(&e, 3u, AE_FADE_CUSTOM, 5.0f, 0.0f);
+    ae_get_config(&e, &cfg);
+    cfg.noise_on = true;
+    cfg.snr_db = 80.0f;
+    ae_configure(&e, &cfg);
+    fade_run(&e, g_fade_out, 1500.0, 6000.0, 0, 0, FADE_BLOCK);
+    CHECK_RANGE(dbfs(rms(g_fade_out + 2 * FS, FADE_LEN - 2 * FS)), -19.5, -16.5);
+
+    /* Two boards on one clock, with different seeds of their own: given the
+     * same fading seed and the same time, they fade alike to the sample. */
+    fade_engine(&e, 100u, AE_FADE_MPD, 0, 0);
+    fade_engine(&e2, 200u, AE_FADE_MPD, 0, 0);
+    fade_run(&e, g_fade_out, 1500.0, 6000.0, 777u, 1000, FADE_BLOCK);
+    fade_run(&e2, g_fade_out2, 1500.0, 6000.0, 777u, 1000, FADE_BLOCK);
+    CHECK(memcmp(g_fade_out + FS, g_fade_out2 + FS, sizeof g_fade_out - FS * sizeof(int16_t)) == 0);
+    /* Left to themselves they do not. */
+    fade_engine(&e2, 200u, AE_FADE_MPD, 0, 0);
+    fade_run(&e2, g_fade_out2, 1500.0, 6000.0, 0, 0, FADE_BLOCK);
+    CHECK(memcmp(g_fade_out + FS, g_fade_out2 + FS, FS * sizeof(int16_t)) != 0);
+
+    /* A clock that runs a little differently from the audio (0.1 % here,
+     * far more than two crystals differ) is followed a sample at a time. */
+    fade_engine(&e, 100u, AE_FADE_MPD, 0, 0);
+    fade_run(&e, g_fade_out, 1500.0, 6000.0, 777u, 1001, FADE_BLOCK);
+    int64_t behind = (int64_t)((uint64_t)FADE_SECS * 1001u * 12u) - (int64_t)dsp_fade_time(&e.fade);
+    CHECK(behind > -60 && behind < 60); /* within 5 ms of the clock after a minute */
+    /* A clock that jumps (the board joined another's time) is followed at once. */
+    ae_fade_clock(&e, 777u, 5000000u);
+    ae_process(&e, in, out, FADE_BLOCK);
+    behind = (int64_t)(5000000ull * 12u) - (int64_t)dsp_fade_time(&e.fade);
+    CHECK(behind > -200 && behind < 200);
+    ae_fade_clock(&e, 778u, 5000000u);
+    ae_process(&e, in, out, FADE_BLOCK);
+    CHECK(e.fade.seed == 778u);
+
+    /* A frequency offset alone moves the audio and keeps its level. */
+    ae_init(&e, 1u);
+    ae_config_defaults(&cfg);
+    cfg.freq_offset_hz = 50.0f;
+    ae_configure(&e, &cfg);
+    for (int sec = 0; sec < 3; sec++) {
+        for (size_t at = 0; at < FS; at += FADE_BLOCK) ae_process(&e, in + at, out + at, FADE_BLOCK);
+    }
+    CHECK_RANGE(20 * log10(tone_amp(out, FS, 1550.0) / 6000.0), -0.1, 0.1);
+    CHECK(tone_amp(out, FS, 1500.0) < 20.0);
+    cfg.freq_offset_hz = -100.5f;
+    ae_configure(&e, &cfg);
+    for (int sec = 0; sec < 3; sec++) {
+        for (size_t at = 0; at < FS; at += FADE_BLOCK) ae_process(&e, in + at, out + at, FADE_BLOCK);
+    }
+    CHECK_RANGE(20 * log10(rms(out, FS) * sqrt(2.0) / 6000.0), -0.1, 0.1);
+    CHECK(tone_amp(out, FS, 1500.0) < 20.0);
+
+    /* Switched off again, the audio is the plain loopback it was. */
+    cfg.freq_offset_hz = 0.0f;
+    ae_configure(&e, &cfg);
+    ae_process(&e, in, out, FADE_BLOCK);
+    CHECK(memcmp(in, out, FADE_BLOCK * sizeof(int16_t)) == 0);
+
+    /* Settings out of range are clamped; an unknown condition is off. */
+    cfg.fade = (ae_fade_t)55;
+    cfg.fade_doppler_hz = 99.0f;
+    cfg.fade_delay_ms = 99.0f;
+    cfg.freq_offset_hz = -999.0f;
+    cfg.link_coord = false;
+    ae_configure(&e, &cfg);
+    ae_get_config(&e, &cfg);
+    CHECK(cfg.fade == AE_FADE_OFF && cfg.fade_doppler_hz == AE_DOPPLER_MAX_HZ && cfg.fade_delay_ms == AE_FADE_DELAY_MAX_MS);
+    CHECK(cfg.freq_offset_hz == -AE_OFFSET_MAX_HZ && !cfg.link_coord);
+    cfg.fade_doppler_hz = 0.0f;
+    ae_configure(&e, &cfg);
+    ae_get_config(&e, &cfg);
+    CHECK(fabsf(cfg.fade_doppler_hz - AE_DOPPLER_MIN_HZ) < 1e-6f);
+    ae_config_defaults(&cfg);
+    CHECK(cfg.fade == AE_FADE_OFF && cfg.fade_doppler_hz == 1.0f && cfg.fade_delay_ms == 2.0f && cfg.link_coord);
+}
+
+/* The parrot's replay comes out when it is due, with the fading stage's delay
+ * allowed for. */
+static void test_fading_parrot_timing(void)
+{
+    enum { CAP = 3 * AE_PARROT_FS_HZ, BLK = 480 };
+    static int16_t store[CAP], tx[BLK], out[BLK];
+    long onset[2] = {-1, -1};
+
+    for (int with = 0; with < 2; with++) {
+        ae_t e;
+        ae_config_t cfg;
+        ae_init(&e, 9u);
+        ae_set_parrot_buffer(&e, store, CAP);
+        ae_config_defaults(&cfg);
+        cfg.route = AE_ROUTE_PARROT;
+        cfg.parrot_delay_ms = 500;
+        cfg.turnaround_ms = 0;
+        cfg.freq_offset_hz = with ? 1.0f : 0.0f; /* the stage in use, the audio hardly changed */
+        ae_configure(&e, &cfg);
+
+        ae_set_ptt(&e, true);
+        for (int b = 0; b < 30; b++) {
+            for (int i = 0; i < BLK; i++) tx[i] = (int16_t)(8000.0 * sin(2 * M_PI * 1500.0 * (b * BLK + i) / FS));
+            ae_process(&e, tx, out, BLK);
+        }
+        ae_set_ptt(&e, false);
+        for (int b = 0; b < 100 && onset[with] < 0; b++) {
+            ae_process(&e, NULL, out, BLK);
+            for (int i = 0; i < BLK; i++) {
+                if (abs(out[i]) > 2000) {
+                    onset[with] = (long)b * BLK + i;
+                    break;
+                }
+            }
+        }
+    }
+    CHECK(onset[0] > 0 && onset[1] > 0);
+    CHECK(labs(onset[1] - onset[0]) <= 24); /* half a millisecond */
+}
+
 /* The parrot's buffer lent to another task: to read the recording out, and to
  * put another in. */
 static void test_parrot_lend(void)
@@ -1309,6 +1546,8 @@ int main(void)
     test_parrot_no_delay();
     test_line_ptt();
     test_vox();
+    test_fading();
+    test_fading_parrot_timing();
     test_parrot_lend();
     test_link_route();
     test_config_clamping();

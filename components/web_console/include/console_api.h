@@ -146,6 +146,8 @@ typedef struct {
 
     bool has_link; /* the board was built with the two-board link */
     link_status_t link;
+    bool link_shared; /* the linked board shares its channel with this one */
+    bool link_leads;  /* and the pair fades by this board's clock */
 
     bool has_rssi; /* joined to a Wi-Fi network */
     int rssi_dbm;

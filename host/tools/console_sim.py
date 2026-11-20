@@ -371,6 +371,26 @@ def check(port, port_b, sim):
     call("GET", "/sim/key?on=0")
     call("GET", "/sim/play?on=0")
     soon("idle again after the transmission", lambda: telemetry_b()["link"]["state"] == "idle")
+
+    # The two boards share one channel: a setting of the path's made on one
+    # reaches the other, and a setting of the board's own does not.
+    soon("the boards share their channel", lambda: telemetry_b()["link"]["shared"]
+         and json.loads(call("GET", "/api/telemetry")[1])["link"]["shared"])
+    call("POST", "/api/settings", '{"fade":"mpp","snr":-3.5,"noise":"on","turnaround":250}')
+
+    def followed():
+        b = json.loads(call("GET", "/api/settings", board_base=base_b)[1])
+        return b["fade"] == "mpp" and b["snr"] == -3.5 and b["noise"] == "on" and b["turnaround"] == 30
+
+    soon("board B takes board A's path settings, and keeps its own turnaround", followed)
+    call("POST", "/api/settings", '{"fade":"hilat-d"}', board_base=base_b)
+    soon("and board A takes board B's", lambda: json.loads(call("GET", "/api/settings")[1])["fade"] == "hilat-d")
+    t_a = json.loads(call("GET", "/api/telemetry")[1])
+    expect("one of the two keeps time", t_a["link"]["leads"] != telemetry_b()["link"]["leads"])
+    call("POST", "/api/settings", '{"share":"off"}', board_base=base_b)
+    call("POST", "/api/settings", '{"fade":"off"}')
+    time.sleep(1.0)
+    expect("not shared, each keeps its own", json.loads(call("GET", "/api/settings", board_base=base_b)[1])["fade"] == "hilat-d")
     return failures
 
 

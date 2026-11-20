@@ -72,6 +72,18 @@ menu "Mock radio: receive route and channel at power-up"
         range 0 120
         default 0
 
+    config MOCK_FADE
+        int "Fading: 0 off, 1 mpg, 2 mpp, 3 mpd, 4 mps, 5 nvis-d, 6 lowlat-d, 7 hilat-m, 8 hilat-d"
+        range 0 8
+        default 0
+        help
+            What an HF path does to the signal: two paths that fade apart.
+            mpg is a good path (0.1 Hz of Doppler spread, 0.5 ms between the
+            paths), mpp a poor one (1 Hz, 2 ms), mpd a disturbed one (2 Hz,
+            4 ms), mps slow and selective (0.15 Hz, 2 ms). The last four are
+            severe conditions from ITU-R F.1487. The names are the Data2G
+            project's. Other numbers can be set at run time (fade=custom).
+
     config MOCK_TURNAROUND_MS
         int "Receive mute after unkeying, ms"
         range 0 5000
@@ -118,6 +130,16 @@ menu "Mock radio: receive route and channel at power-up"
         bool "Link: hear the other board only on the same frequency"
         default y
         depends on !MOCK_LINK_NONE
+
+    config MOCK_LINK_SHARE
+        bool "Link: the two boards share one channel"
+        default y
+        depends on !MOCK_LINK_NONE
+        help
+            Noise, SNR, attenuation and fading are then the pair's: set on
+            either board, they apply to both, and the two directions fade
+            alike. Off, each board has its own, and the path can differ
+            between the two directions.
 
 endmenu
 

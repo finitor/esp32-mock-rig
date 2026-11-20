@@ -26,9 +26,19 @@
  *
  *   - receive mute while keyed, and for a turnaround time after unkeying
  *     (every route but monitor)
+ *   - fading, as an HF path does it: two paths that fade independently,
+ *     the second delayed, by one of the named conditions or by numbers; and
+ *     a frequency offset
  *   - a noise floor at a fixed level, with the signal scaled so that it sits
- *     at the configured SNR whatever level the sender drove it at
+ *     at the configured SNR whatever level the sender drove it at. With
+ *     fading that is the SNR on average: the level is measured before the
+ *     fading, so a fade is a real drop in SNR
  *   - extra attenuation on top
+ *
+ * Fading and the frequency offset work on the audio at 12 kHz, so with either
+ * on the receive audio is limited to 0..4.5 kHz and comes AE_FADE_LATENCY
+ * samples later. The fading is a function of a seed and a clock
+ * (ae_fade_clock): two boards given the same ones fade alike.
  *
  * The parrot stores audio at 12 kHz in a buffer the caller provides (PSRAM
  * on the board). It records from key-on until AE_PARROT_TAIL_MS after
@@ -94,6 +104,19 @@ extern "C" {
 #define AE_VOX_HANG_MAX_MS 5000u
 #define AE_LINK_BUFFER_MIN_MS 10u
 #define AE_LINK_BUFFER_MAX_MS 200u
+#define AE_DOPPLER_MIN_HZ 0.01f
+#define AE_DOPPLER_MAX_HZ 30.0f
+#define AE_FADE_DELAY_MAX_MS 10.0f
+#define AE_OFFSET_MAX_HZ 200.0f
+
+/* With fading on, the signal's average is kept this low, to leave room for
+ * the times the two paths add up. */
+#define AE_SIGNAL_MAX_FADING_DBFS (-18.0f)
+
+/* How much later receive audio comes with fading or a frequency offset on,
+ * in samples at 48 kHz: down to 12 kHz and back (92), the Hilbert
+ * transformer (63 at 12 kHz) and one sample of slack. 7.25 ms. */
+#define AE_FADE_LATENCY (92u + 4u * DSP_FADE_DELAY + 4u)
 
 /* The parrot stores audio at this rate: a quarter of the memory, and the
  * 0..4.5 kHz it keeps is more than any HF modem uses. */
@@ -119,6 +142,25 @@ typedef enum {
     AE_LINE_DTR,
 } ae_line_t;
 
+/* Path conditions. The first three are the customary good, poor and
+ * disturbed mid-latitude paths; "mps" is slow but selective, as measured on
+ * a long path by the Data2G project; the next four are severe conditions
+ * from ITU-R F.1487. The names and numbers are Data2G's, so a figure quoted
+ * there means the same here. */
+typedef enum {
+    AE_FADE_OFF = 0,
+    AE_FADE_MPG,      /* 0.1 Hz, 0.5 ms */
+    AE_FADE_MPP,      /* 1 Hz, 2 ms */
+    AE_FADE_MPD,      /* 2 Hz, 4 ms */
+    AE_FADE_MPS,      /* 0.15 Hz, 2 ms */
+    AE_FADE_NVIS_D,   /* 1 Hz, 7 ms: mid-latitude disturbed NVIS */
+    AE_FADE_LOWLAT_D, /* 10 Hz, 6 ms: low latitude disturbed */
+    AE_FADE_HILAT_M,  /* 10 Hz, 3 ms: high latitude moderate */
+    AE_FADE_HILAT_D,  /* 30 Hz, 7 ms: high latitude disturbed */
+    AE_FADE_CUSTOM,   /* fade_doppler_hz and fade_delay_ms */
+    AE_FADE_COUNT,
+} ae_fade_t;
+
 typedef struct {
     ae_route_t route;
     bool noise_on;          /* off: the signal passes with atten_db only */
@@ -135,13 +177,19 @@ typedef struct {
     uint32_t vox_hang_ms;      /* the VOX stays open this long after the last such sample */
     uint32_t link_buffer_ms;   /* link: audio held before it is played, to ride out uneven arrival */
     bool link_match;           /* link: hear the other board only on this radio's receive frequency */
+    bool link_coord;           /* link: the two boards share one channel; the engine only keeps the setting */
+    ae_fade_t fade;            /* path condition */
+    float fade_doppler_hz;     /* AE_FADE_CUSTOM: Doppler spread, two standard deviations */
+    float fade_delay_ms;       /* AE_FADE_CUSTOM: delay of the second path */
+    float freq_offset_hz;      /* receive audio moved up (or, negative, down) by this much */
 } ae_config_t;
 
 /* Monitor route, noise off, no attenuation: audio passes unchanged.
  * SNR 10 dB in 2500 Hz, floor -40 dBFS and 30 ms turnaround once enabled;
  * the parrot replays 1 s after unkeying, with no period. CAT is the only
  * PTT source: no control line, VOX off (-40 dBFS and 100 ms once enabled).
- * The link holds 30 ms of audio and matches frequencies. */
+ * The link holds 30 ms of audio, matches frequencies and shares its
+ * channel. No fading (1 Hz and 2 ms once "custom" is chosen), no offset. */
 void ae_config_defaults(ae_config_t *cfg);
 
 typedef struct {
@@ -203,6 +251,14 @@ typedef struct {
     _Atomic uint32_t cfg_vox_hang_ms;
     _Atomic uint32_t cfg_link_buffer_ms;
     _Atomic int32_t cfg_link_match;
+    _Atomic int32_t cfg_link_coord;
+    _Atomic int32_t cfg_fade;
+    _Atomic int32_t cfg_doppler_chz;   /* hundredths of a hertz */
+    _Atomic int32_t cfg_fade_delay_dms; /* tenths of a millisecond */
+    _Atomic int32_t cfg_offset_dhz;    /* tenths of a hertz */
+    _Atomic bool fc_set;               /* ae_fade_clock() has been called */
+    _Atomic uint32_t fc_seed;
+    _Atomic uint32_t fc_ms;
     _Atomic bool ptt; /* CAT */
     _Atomic bool dtr;
     _Atomic bool rts;
@@ -258,6 +314,14 @@ typedef struct {
 
     dsp_chan_t chan;
 
+    bool fade_on;      /* fading or a frequency offset: the 12 kHz stage is in use */
+    bool fading;       /* fading itself, which lowers the signal's ceiling */
+    dsp_fade_t fade;
+    dsp_decim4_t fd_down;
+    dsp_interp4_t fd_up;
+    int16_t fd_pend[8]; /* samples the stage has made and the block had no room for */
+    uint32_t fd_pend_n;
+
     uint64_t now; /* samples ae_process() has produced */
     bool par_lent; /* the buffer is with another task */
     ae_parrot_state_t par_state;
@@ -286,6 +350,18 @@ void ae_get_config(ae_t *e, ae_config_t *cfg);
 /* A number that changes each time ae_configure() is called, so a display
  * can tell that the settings may have changed without comparing them. */
 uint32_t ae_config_gen(ae_t *e);
+
+/* What a path condition means: its Doppler spread and the delay of its
+ * second path. Zeros for off, for custom and for anything else. */
+void ae_fade_preset(ae_fade_t fade, float *doppler_hz, float *delay_ms);
+
+/* Where the fading is: which fading (seed) and how far into it (clock_ms, a
+ * millisecond clock that may wrap). Call it before each ae_process(), from
+ * the audio task, with a clock that two boards agree on, and both fade
+ * alike. Never called, the fading runs on from the seed given to ae_init()
+ * at the pace of the audio. A small disagreement with the audio's own pace
+ * is taken up a sample at a time; a large one, or another seed, at once. */
+void ae_fade_clock(ae_t *e, uint32_t seed, uint32_t clock_ms);
 
 /* PTT as commanded over CAT. The transmit state is sampled once per block,
  * so the turnaround time can run long by up to one block. */

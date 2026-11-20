@@ -32,6 +32,13 @@
  *   14 <2>        noise floor, tenths of a dB below full scale, 12.0 .. 90.0
  *   15 <2>        attenuation, tenths of a dB, 0 .. 120.0
  *   16 <2>        turnaround time, ms, 0 .. 5000
+ *   17 <00..09>   fading: 00 off, 01 mpg, 02 mpp, 03 mpd, 04 mps, 05 nvis-d,
+ *                 06 lowlat-d, 07 hilat-m, 08 hilat-d, 09 custom (18 and 19)
+ *   18 <2>        custom fading: Doppler spread, hundredths of a hertz,
+ *                 0.01 .. 30.00
+ *   19 <2>        custom fading: delay of the second path, tenths of a
+ *                 millisecond, 0 .. 10.0
+ *   1A <2> <sign> frequency offset, tenths of a hertz, -200.0 .. +200.0
  *   20            status, read only: <flags> <level, 2> <gain, 2> <sign>
  *                   flags: 01 receive muted, 02 gain limited
  *                   level: the receive source, tenths of a dB below full
@@ -63,6 +70,9 @@
  *   41 <00|01>    link: frequency match off / on. On, the other board is
  *                 heard only when it transmits on this radio's receive
  *                 frequency
+ *   42 <00|01>    link: shared channel off / on. On, two linked boards keep
+ *                 one set of channel settings (11 to 15 and 17 to 19) and
+ *                 fade alike: a change on either goes to both
  *   50 <00..02>   control-line PTT: 00 off, 01 RTS keys, 02 DTR keys
  *   51 <00|01>    VOX off / on
  *   52 <2>        VOX threshold, tenths of a dB below full scale, 6.0 .. 80.0
@@ -107,6 +117,10 @@ enum {
     MOCK_CTL_FLOOR = 0x14,
     MOCK_CTL_ATTEN = 0x15,
     MOCK_CTL_TURNAROUND = 0x16,
+    MOCK_CTL_FADE = 0x17,
+    MOCK_CTL_DOPPLER = 0x18,
+    MOCK_CTL_FADE_DELAY = 0x19,
+    MOCK_CTL_FREQ_OFFSET = 0x1A,
     MOCK_CTL_STATUS = 0x20,
     MOCK_CTL_PARROT_REPLAY = 0x30,
     MOCK_CTL_CLIP_PLAY_CMD = 0x31,
@@ -118,6 +132,7 @@ enum {
     MOCK_CTL_CLIP_STATUS = 0x37,
     MOCK_CTL_LINK_BUFFER = 0x40,
     MOCK_CTL_LINK_MATCH = 0x41,
+    MOCK_CTL_LINK_COORD = 0x42,
     MOCK_CTL_PTT_LINE = 0x50,
     MOCK_CTL_VOX = 0x51,
     MOCK_CTL_VOX_THRESHOLD = 0x52,
@@ -223,7 +238,9 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx);
  * setting is named by its command number. Its value is the number the
  * command carries: 0, 1, 2 for a choice, and wire units for the rest (tenths
  * of a dB, Hz, ms or tenths of a second; the noise floor and the VOX
- * threshold as tenths of a dB below full scale; the SNR may be negative).
+ * threshold as tenths of a dB below full scale; the Doppler spread in
+ * hundredths of a hertz and the fading delay in tenths of a millisecond;
+ * the SNR and the frequency offset may be negative).
  */
 typedef enum {
     MOCK_CTL_SET_OK = 0,

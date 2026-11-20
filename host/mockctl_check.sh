@@ -56,8 +56,13 @@ check 0 "parrot      delay 2.5 s, period 15.0 s; idle"
 check 0 "period 7.5 s"                               period=7.5
 check 1 "delay=61: refused by the mock (out of range?)" delay=61
 check 1 "replay: refused by the mock (needs route=parrot, a recording and PTT off)" replay
-check 0 "link        buffer 30 ms, frequency match on"
-check 0 "link        buffer 80 ms, frequency match off" linkbuffer=80 match=off
+check 0 "link        buffer 30 ms, frequency match on, shared channel on"
+check 0 "link        buffer 80 ms, frequency match off, shared channel off" linkbuffer=80 match=off share=off
+check 0 "fade        off; frequency offset +0.0 Hz"
+check 0 "fade        mpp; frequency offset -12.5 Hz"   fade=mpp offset=-12.5
+check 0 "fade        custom: 0.15 Hz, 7.5 ms"          fade=custom doppler=0.15 fadedelay=7.5
+check 1 "fade is off, mpg, mpp, mpd, mps, nvis-d, lowlat-d, hilat-m, hilat-d or custom" fade=storm
+check 1 "doppler=31: refused by the mock (out of range?)" doppler=31
 check 1 "linkbuffer=5: refused by the mock (out of range?)" linkbuffer=5
 check 1 "route=link: refused by the mock (this mock was built without the link)" route=link
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
@@ -66,7 +71,8 @@ check 1 "line is off, rts or dtr"                    line=cts
 check 1 "voxlevel=-3: refused by the mock (out of range?)" voxlevel=-3
 check 0 "route       monitor"                        reset
 check 0 "parrot      delay 1.0 s, period off"
-check 0 "link        buffer 30 ms, frequency match on"
+check 0 "fade        off; frequency offset +0.0 Hz"
+check 0 "link        buffer 30 ms, frequency match on, shared channel on"
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "snr         +10.0 dB in 2500 Hz"
 

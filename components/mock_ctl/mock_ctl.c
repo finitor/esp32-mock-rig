@@ -24,10 +24,15 @@ static const setting_t settings[] = {
     {MOCK_CTL_FLOOR, 2, false, (int32_t)(-AE_FLOOR_MAX_DBFS * 10), (int32_t)(-AE_FLOOR_MIN_DBFS * 10)},
     {MOCK_CTL_ATTEN, 2, false, 0, (int32_t)(AE_ATTEN_MAX_DB * 10)},
     {MOCK_CTL_TURNAROUND, 2, false, 0, (int32_t)AE_TURNAROUND_MAX_MS},
+    {MOCK_CTL_FADE, 0, false, 0, AE_FADE_COUNT - 1},
+    {MOCK_CTL_DOPPLER, 2, false, 1, (int32_t)(AE_DOPPLER_MAX_HZ * 100)},
+    {MOCK_CTL_FADE_DELAY, 2, false, 0, (int32_t)(AE_FADE_DELAY_MAX_MS * 10)},
+    {MOCK_CTL_FREQ_OFFSET, 2, true, (int32_t)(-AE_OFFSET_MAX_HZ * 10), (int32_t)(AE_OFFSET_MAX_HZ * 10)},
     {MOCK_CTL_PARROT_DELAY, 2, false, 0, (int32_t)(AE_PARROT_DELAY_MAX_MS / 100)},
     {MOCK_CTL_PARROT_PERIOD, 2, false, 0, (int32_t)(AE_PARROT_PERIOD_MAX_MS / 100)},
     {MOCK_CTL_LINK_BUFFER, 2, false, (int32_t)AE_LINK_BUFFER_MIN_MS, (int32_t)AE_LINK_BUFFER_MAX_MS},
     {MOCK_CTL_LINK_MATCH, 0, false, 0, 1},
+    {MOCK_CTL_LINK_COORD, 0, false, 0, 1},
     {MOCK_CTL_PTT_LINE, 0, false, 0, AE_LINE_DTR},
     {MOCK_CTL_VOX, 0, false, 0, 1},
     {MOCK_CTL_VOX_THRESHOLD, 2, false, (int32_t)(-AE_VOX_MAX_DBFS * 10), (int32_t)(-AE_VOX_MIN_DBFS * 10)},
@@ -83,6 +88,16 @@ int32_t mock_ctl_setting_get(const ae_config_t *cfg, uint8_t cmd)
         return tenths_of_s(cfg->parrot_delay_ms);
     case MOCK_CTL_PARROT_PERIOD:
         return tenths_of_s(cfg->parrot_period_ms);
+    case MOCK_CTL_FADE:
+        return (int32_t)cfg->fade;
+    case MOCK_CTL_DOPPLER:
+        return (int32_t)lroundf(cfg->fade_doppler_hz * 100.0f);
+    case MOCK_CTL_FADE_DELAY:
+        return tenths(cfg->fade_delay_ms);
+    case MOCK_CTL_FREQ_OFFSET:
+        return tenths(cfg->freq_offset_hz);
+    case MOCK_CTL_LINK_COORD:
+        return cfg->link_coord ? 1 : 0;
     case MOCK_CTL_LINK_BUFFER:
         return (int32_t)cfg->link_buffer_ms;
     case MOCK_CTL_LINK_MATCH:
@@ -138,6 +153,21 @@ mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd
         break;
     case MOCK_CTL_PARROT_PERIOD:
         cfg->parrot_period_ms = (uint32_t)w * 100u;
+        break;
+    case MOCK_CTL_FADE:
+        cfg->fade = (ae_fade_t)w;
+        break;
+    case MOCK_CTL_DOPPLER:
+        cfg->fade_doppler_hz = (float)w / 100.0f;
+        break;
+    case MOCK_CTL_FADE_DELAY:
+        cfg->fade_delay_ms = (float)w / 10.0f;
+        break;
+    case MOCK_CTL_FREQ_OFFSET:
+        cfg->freq_offset_hz = (float)w / 10.0f;
+        break;
+    case MOCK_CTL_LINK_COORD:
+        cfg->link_coord = w == 1;
         break;
     case MOCK_CTL_LINK_BUFFER:
         cfg->link_buffer_ms = (uint32_t)w;

@@ -12,14 +12,18 @@
  *             flags: 01 transmitting
  *   audio:  4D 12 <flags> <seq, 2> <tx Hz, 4> <samples, 2 each, 0..120>
  *             flags: 01 first of a transmission, 02 last
+ *   state:  4D 13 <boot id, 4> <version, 4> <nonce, 4> <clock ms, 4> <seed, 4>
+ *             <n> then n times <id> <value, 4>
  */
 #define MAGIC 0x4D
 #define VERSION 1
 #define TYPE_HELLO 1
 #define TYPE_AUDIO 2
+#define TYPE_STATE 3
 
 #define HELLO_LEN (11 + LINK_NAME_MAX)
 #define AUDIO_HDR 9
+#define STATE_HDR 23
 #define FLAG_KEYED 0x01
 #define FLAG_START 0x01
 #define FLAG_END 0x02
@@ -32,6 +36,7 @@
 
 _Static_assert(AUDIO_HDR + 2 * LINK_FRAME_SAMPLES <= LINK_MAX_PACKET, "an audio packet must fit one ESP-NOW frame");
 _Static_assert(HELLO_LEN <= LINK_MAX_PACKET, "hello too long");
+_Static_assert(STATE_HDR + 5 * LINK_STATE_ITEMS <= LINK_MAX_PACKET, "state too long");
 
 static void put_u16(uint8_t *p, uint16_t v)
 {
@@ -192,6 +197,58 @@ void link_send_failed(link_t *l)
 
 /* ---- announcing, and the peer --------------------------------------------------- */
 
+static uint32_t clock_now(link_t *l)
+{
+    return l->clock ? l->clock(l->clock_ctx) : atomic_load(&l->now_ms);
+}
+
+void link_set_clock(link_t *l, uint32_t (*clock)(void *ctx), void *ctx)
+{
+    l->clock = clock;
+    l->clock_ctx = ctx;
+}
+
+void link_set_shared(link_t *l, const link_shared_t *mine, int32_t clock_offset_ms)
+{
+    l->have_mine = mine != NULL;
+    if (mine) l->mine = *mine;
+    if (l->mine.n > LINK_STATE_ITEMS) l->mine.n = LINK_STATE_ITEMS;
+    l->mine_offset_ms = clock_offset_ms;
+}
+
+bool link_peer_shared(link_t *l, link_shared_t *theirs, uint32_t *heard_ms)
+{
+    for (int tries = 0; tries < 4; tries++) {
+        uint32_t gen = atomic_load(&l->pst_gen);
+        if (gen & 1u) continue; /* being written */
+        *theirs = l->pst;
+        *heard_ms = l->pst_heard_ms;
+        if (atomic_load(&l->pst_gen) == gen) return atomic_load(&l->pst_have) && atomic_load(&l->have_peer);
+    }
+    return false;
+}
+
+static void send_state(link_t *l)
+{
+    uint8_t pkt[STATE_HDR + 5 * LINK_STATE_ITEMS];
+    uint8_t dst[LINK_ADDR_LEN];
+    if (!l->have_mine || !peer_addr(l, dst)) return; /* it is for the peer and no one else */
+
+    pkt[0] = MAGIC;
+    pkt[1] = (VERSION << 4) | TYPE_STATE;
+    put_u32(&pkt[2], l->mine.boot_id);
+    put_u32(&pkt[6], l->mine.version);
+    put_u32(&pkt[10], l->mine.nonce);
+    put_u32(&pkt[14], clock_now(l) + (uint32_t)l->mine_offset_ms);
+    put_u32(&pkt[18], l->mine.seed);
+    pkt[22] = l->mine.n;
+    for (unsigned i = 0; i < l->mine.n; i++) {
+        pkt[STATE_HDR + 5 * i] = l->mine.item[i].id;
+        put_u32(&pkt[STATE_HDR + 5 * i + 1], (uint32_t)l->mine.item[i].value);
+    }
+    (void)l->send(l->ctx, dst, pkt, STATE_HDR + 5 * (size_t)l->mine.n);
+}
+
 void link_tick(link_t *l, uint32_t now_ms)
 {
     atomic_store(&l->now_ms, now_ms);
@@ -214,6 +271,7 @@ void link_tick(link_t *l, uint32_t now_ms)
     put_u32(&pkt[7], atomic_load(&l->tx_hz));
     memcpy(&pkt[11], l->name, LINK_NAME_MAX);
     (void)l->send(l->ctx, NULL, pkt, sizeof pkt);
+    send_state(l);
 }
 
 /* ---- receiving: the transport's side ---------------------------------------------- */
@@ -238,6 +296,7 @@ static void on_hello(link_t *l, const uint8_t *src, const uint8_t *data, int rss
         atomic_fetch_add(&l->peer_gen, 1u);
         l->have_expected = false;
         atomic_store(&l->has_rssi, false);
+        atomic_store(&l->pst_have, false); /* another board's state is not this one's */
         atomic_store(&l->peer_heard_ms, atomic_load(&l->now_ms));
         atomic_store(&l->have_peer, true);
     } else if (memcmp(src, l->peer_addr, LINK_ADDR_LEN) != 0) {
@@ -308,6 +367,27 @@ static void on_audio(link_t *l, const uint8_t *src, const uint8_t *data, size_t 
     if (l->after_end) atomic_store(&l->rx_ended, true);
 }
 
+static void on_state(link_t *l, const uint8_t *src, const uint8_t *data, int rssi_dbm)
+{
+    if (!atomic_load(&l->have_peer) || memcmp(src, l->peer_addr, LINK_ADDR_LEN) != 0) return;
+    heard(l, rssi_dbm);
+
+    atomic_fetch_add(&l->pst_gen, 1u);
+    l->pst.boot_id = get_u32(&data[2]);
+    l->pst.version = get_u32(&data[6]);
+    l->pst.nonce = get_u32(&data[10]);
+    l->pst.clock_ms = get_u32(&data[14]);
+    l->pst.seed = get_u32(&data[18]);
+    l->pst.n = data[22];
+    for (unsigned i = 0; i < l->pst.n; i++) {
+        l->pst.item[i].id = data[STATE_HDR + 5 * i];
+        l->pst.item[i].value = (int32_t)get_u32(&data[STATE_HDR + 5 * i + 1]);
+    }
+    l->pst_heard_ms = clock_now(l);
+    atomic_fetch_add(&l->pst_gen, 1u);
+    atomic_store(&l->pst_have, true);
+}
+
 void link_receive(link_t *l, const uint8_t *src, const uint8_t *data, size_t len, int rssi_dbm)
 {
     if (!atomic_load(&l->enabled) || !src || !data || len < 2 || len > LINK_MAX_PACKET) return;
@@ -320,6 +400,11 @@ void link_receive(link_t *l, const uint8_t *src, const uint8_t *data, size_t len
     case TYPE_AUDIO:
         if (len >= AUDIO_HDR && (len - AUDIO_HDR) % 2 == 0 && (len - AUDIO_HDR) / 2 <= LINK_FRAME_SAMPLES) {
             on_audio(l, src, data, len, rssi_dbm);
+        }
+        break;
+    case TYPE_STATE:
+        if (len >= STATE_HDR && data[22] <= LINK_STATE_ITEMS && len == STATE_HDR + 5 * (size_t)data[22]) {
+            on_state(l, src, data, rssi_dbm);
         }
         break;
     default:

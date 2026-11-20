@@ -40,12 +40,23 @@ Settings:
     floor=DBFS            noise floor, -90 to -12
     atten=DB              extra attenuation, 0 to 120
     turnaround=MS         receive mute after unkeying, 0 to 5000 (not in monitor)
+    fade=off|mpg|mpp|mpd|mps|nvis-d|lowlat-d|hilat-m|hilat-d|custom
+                          fading as on an HF path: two paths that fade apart.
+                          mpg good, mpp poor, mpd disturbed, mps slow and
+                          selective; the next four are severe ITU-R F.1487
+                          conditions; custom takes doppler= and fadedelay=
+    doppler=HZ            custom fading: Doppler spread, 0.01 to 30
+    fadedelay=MS          custom fading: delay of the second path, 0 to 10
+    offset=HZ             frequency offset of the receive audio, -200 to 200
     delay=S               parrot: seconds from unkeying to the replay, 0 to 60
     period=S              parrot: start the replay a whole number of these
                           after key-on (15 for FT8, 7.5 for FT4); 0 = off
     linkbuffer=MS         link: audio held before it is played, 10 to 200
     match=on|off          link: hear the other board only when it transmits
                           on this radio's receive frequency
+    share=on|off          link: two linked boards keep one set of channel
+                          settings (noise, snr, bw, floor, atten, fade,
+                          doppler, fadedelay) and fade alike
     line=off|rts|dtr      the serial control line that keys the radio, if any
     vox=on|off            transmit audio keys the radio
     voxlevel=DBFS         a sample this large opens the VOX, -80 to -6
@@ -90,6 +101,9 @@ NUMBERS = {
     "floor": (0x14, 2, False, -10),   # sent as dB below full scale
     "atten": (0x15, 2, False, 10),
     "turnaround": (0x16, 2, False, 1),
+    "doppler": (0x18, 2, False, 100),   # hundredths of a hertz
+    "fadedelay": (0x19, 2, False, 10),  # tenths of a millisecond
+    "offset": (0x1A, 2, True, 10),      # tenths of a hertz
     "delay": (0x32, 2, False, 10),    # tenths of a second
     "period": (0x33, 2, False, 10),
     "linkbuffer": (0x40, 2, False, 1),
@@ -100,7 +114,9 @@ NUMBERS = {
 CHOICES = {
     "route": (0x10, ("monitor", "radio", "parrot", "link")),
     "noise": (0x11, ("off", "on")),
+    "fade": (0x17, ("off", "mpg", "mpp", "mpd", "mps", "nvis-d", "lowlat-d", "hilat-m", "hilat-d", "custom")),
     "match": (0x41, ("off", "on")),
+    "share": (0x42, ("off", "on")),
     "line": (0x50, ("off", "rts", "dtr")),
     "vox": (0x51, ("off", "on")),
 }
@@ -268,6 +284,10 @@ def show(port):
     print("  floor       %.1f dBFS" % values["floor"])
     print("  atten       %.1f dB" % values["atten"])
     print("  turnaround  %d ms" % values["turnaround"])
+    fade = values["fade"]
+    if fade == "custom":
+        fade = "custom: %.2f Hz, %.1f ms" % (values["doppler"], values["fadedelay"])
+    print("  fade        %s; frequency offset %+.1f Hz" % (fade, values["offset"]))
 
     st = ask(port, CMD_STATUS)
     if len(st) != 6:
@@ -295,7 +315,8 @@ def show(port):
         state = "no buffer"
     print("  parrot      delay %.1f s, period %s; %s" % (values["delay"], period, state))
 
-    print("  link        buffer %d ms, frequency match %s" % (values["linkbuffer"], values["match"]))
+    print("  link        buffer %d ms, frequency match %s, shared channel %s" % (
+        values["linkbuffer"], values["match"], values["share"]))
 
     clips = ask(port, CMD_CLIP_STATUS)
     if len(clips) < 2 or len(clips) != 2 + 2 * clips[1]:

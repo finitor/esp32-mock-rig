@@ -245,6 +245,199 @@ bool dsp_vox_process(dsp_vox_t *v, const int16_t *in, size_t n)
     return v->on;
 }
 
+/* ---- fading ---------------------------------------------------------------
+ *
+ * The Hilbert transformer's taps at +1, +3, ... +63 from the middle, Q15;
+ * those at -k are the negatives, and the even ones are zero. Then the filter
+ * that shapes the gains' spectrum. Both from host/tools/gen_hilbert_fir.py
+ * --table; do not edit by hand.
+ */
+static const int16_t hilbert_coef[DSP_HILBERT_PAIRS] = {
+     20849,   6918,   4114,   2899,   2214,   1771,   1458,   1223,
+      1040,    892,    770,    667,    579,    504,    437,    379,
+       328,    283,    244,    208,    177,    150,    125,    104,
+        86,     70,     56,     44,     34,     25,     18,     12,
+};
+static const float fade_gain_coef[DSP_FADE_GAIN_TAPS] = {
+    5.972436973e-05f, 1.034535186e-04f, 1.757791050e-04f, 2.929662034e-04f,
+    4.789565190e-04f, 7.680737910e-04f, 1.208197950e-03f, 1.864238767e-03f,
+    2.821585837e-03f, 4.189028259e-03f, 6.100446251e-03f, 8.714414465e-03f,
+    1.221077164e-02f, 1.678325909e-02f, 2.262756286e-02f, 2.992454479e-02f,
+    3.881911382e-02f, 4.939602169e-02f, 6.165476118e-02f, 7.548654681e-02f,
+    9.065688428e-02f, 1.067973093e-01f, 1.234093669e-01f, 1.398827718e-01f,
+    1.555280138e-01f, 1.696216619e-01f, 1.814605795e-01f, 1.904195632e-01f,
+    1.960058923e-01f, 1.979041865e-01f, 1.960058923e-01f, 1.904195632e-01f,
+    1.814605795e-01f, 1.696216619e-01f, 1.555280138e-01f, 1.398827718e-01f,
+    1.234093669e-01f, 1.067973093e-01f, 9.065688428e-02f, 7.548654681e-02f,
+    6.165476118e-02f, 4.939602169e-02f, 3.881911382e-02f, 2.992454479e-02f,
+    2.262756286e-02f, 1.678325909e-02f, 1.221077164e-02f, 8.714414465e-03f,
+    6.100446251e-03f, 4.189028259e-03f, 2.821585837e-03f, 1.864238767e-03f,
+    1.208197950e-03f, 7.680737910e-04f, 4.789565190e-04f, 2.929662034e-04f,
+    1.757791050e-04f, 1.034535186e-04f, 5.972436973e-05f,
+};
+
+/* Noise for the gains: a value for each seed, stream and gain sample, the
+ * same wherever and whenever it is asked for. Four 16-bit pieces of a
+ * 64-bit hash, summed: near enough to Gaussian once 59 of them have been
+ * through the filter, and exact integer arithmetic, so two boards agree. */
+static float fade_noise(uint32_t seed, unsigned stream, uint64_t k)
+{
+    uint64_t z = k * 4u + stream + ((uint64_t)seed << 32 | (seed ^ 0x9E3779B9u)) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    int32_t sum = (int32_t)(z & 0xFFFF) + (int32_t)((z >> 16) & 0xFFFF) + (int32_t)((z >> 32) & 0xFFFF) +
+                  (int32_t)(z >> 48) - 2 * 65535;
+    return (float)sum * (1.0f / 37837.2f); /* unit variance: 65536 * sqrt(4 / 12) */
+}
+
+/* The gain at sample k + which (0 or 1), for one stream. */
+static float fade_gain(const dsp_fade_t *f, int stream, int which)
+{
+    const float *w = &f->noise[stream][which];
+    float acc = 0.0f;
+    for (int j = 0; j < DSP_FADE_GAIN_TAPS; j++) acc += fade_gain_coef[j] * w[j];
+    return acc;
+}
+
+/* Everything about the gains follows from the seed, the spread and t. */
+static void fade_place(dsp_fade_t *f)
+{
+    /* t * inc, a 96-bit product, in two halves: the gain sample and the
+     * fraction. Integer arithmetic, so stepping sample by sample from any
+     * start arrives at the same values. */
+    uint64_t lo = (f->t & 0xFFFFFFFFu) * (uint64_t)f->inc;
+    f->k = (f->t >> 32) * (uint64_t)f->inc + (lo >> 32);
+    f->frac = (uint32_t)lo;
+
+    const uint64_t first = f->k - (DSP_FADE_GAIN_TAPS - 1) / 2; /* wraps below zero, which the hash does not mind */
+    for (int s = 0; s < 4; s++) {
+        for (int j = 0; j <= DSP_FADE_GAIN_TAPS; j++) f->noise[s][j] = fade_noise(f->seed, (unsigned)s, first + (uint64_t)j);
+        f->g0[s] = fade_gain(f, s, 0);
+        f->g1[s] = fade_gain(f, s, 1);
+    }
+}
+
+/* On to the next gain sample. */
+static void fade_step(dsp_fade_t *f)
+{
+    f->k++;
+    const uint64_t last = f->k + (DSP_FADE_GAIN_TAPS - 1) / 2 + 1;
+    for (int s = 0; s < 4; s++) {
+        memmove(&f->noise[s][0], &f->noise[s][1], DSP_FADE_GAIN_TAPS * sizeof(float));
+        f->noise[s][DSP_FADE_GAIN_TAPS] = fade_noise(f->seed, (unsigned)s, last);
+        f->g0[s] = f->g1[s];
+        f->g1[s] = fade_gain(f, s, 1);
+    }
+}
+
+void dsp_fade_init(dsp_fade_t *f, uint32_t seed)
+{
+    memset(f, 0, sizeof *f);
+    f->seed = seed;
+    f->rot_re = 1.0f;
+    f->step_re = 1.0f;
+    fade_place(f);
+}
+
+void dsp_fade_set(dsp_fade_t *f, uint32_t spread_chz, uint32_t path_delay, int32_t offset_dhz)
+{
+    if (spread_chz > DSP_FADE_SPREAD_MAX_CHZ) spread_chz = DSP_FADE_SPREAD_MAX_CHZ;
+    f->path_delay = path_delay < DSP_FADE_PATH_MAX ? path_delay : DSP_FADE_PATH_MAX - 1;
+    if (spread_chz != f->spread_chz) {
+        f->spread_chz = spread_chz;
+        /* gain samples per audio sample: 32 * spread / 12000, times 2^32 */
+        f->inc = (uint32_t)((((uint64_t)DSP_FADE_GAIN_RATE * spread_chz) << 32) / (100u * DSP_FADE_FS_HZ));
+        fade_place(f);
+    }
+
+    bool shift = offset_dhz != 0;
+    if (shift) {
+        float w = 2.0f * 3.14159265f * ((float)offset_dhz / 10.0f) / (float)DSP_FADE_FS_HZ;
+        f->step_re = cosf(w);
+        f->step_im = sinf(w);
+    }
+    if (shift != f->shift) {
+        f->rot_re = 1.0f;
+        f->rot_im = 0.0f;
+    }
+    f->shift = shift;
+}
+
+void dsp_fade_seek(dsp_fade_t *f, uint32_t seed, uint64_t t)
+{
+    f->seed = seed;
+    f->t = t;
+    fade_place(f);
+}
+
+uint64_t dsp_fade_time(const dsp_fade_t *f)
+{
+    return f->t;
+}
+
+void dsp_fade_process(dsp_fade_t *f, const int16_t *in, int16_t *out, size_t n)
+{
+    const float frac_scale = 1.0f / 4294967296.0f;
+    const float half_power = 0.70710678f; /* two paths of equal power make one of unit power */
+
+    for (size_t i = 0; i < n; i++) {
+        f->hist[f->pos] = in[i];
+        f->hist[f->pos + DSP_HILBERT_TAPS] = in[i];
+        f->pos = (f->pos + 1) % DSP_HILBERT_TAPS;
+
+        /* w holds the last 127 inputs, oldest first. The real part is the
+         * one in the middle; the imaginary part its Hilbert transform. */
+        const int16_t *w = &f->hist[f->pos];
+        int64_t acc = 0;
+        for (int p = 0; p < DSP_HILBERT_PAIRS; p++) {
+            int k = 2 * p + 1;
+            acc += (int64_t)hilbert_coef[p] * ((int32_t)w[DSP_FADE_DELAY - k] - (int32_t)w[DSP_FADE_DELAY + k]);
+        }
+        float re = (float)w[DSP_FADE_DELAY];
+        float im = (float)acc * (1.0f / 32768.0f);
+
+        float y_re = re, y_im = im;
+        if (f->spread_chz) {
+            /* The second path is the same signal, later. */
+            f->path_re[f->path_pos] = re;
+            f->path_im[f->path_pos] = im;
+            uint32_t at = (f->path_pos + DSP_FADE_PATH_MAX - f->path_delay) % DSP_FADE_PATH_MAX;
+            float re2 = f->path_re[at], im2 = f->path_im[at];
+            f->path_pos = (f->path_pos + 1) % DSP_FADE_PATH_MAX;
+
+            float u = (float)f->frac * frac_scale;
+            float a_re = f->g0[0] + (f->g1[0] - f->g0[0]) * u;
+            float a_im = f->g0[1] + (f->g1[1] - f->g0[1]) * u;
+            float b_re = f->g0[2] + (f->g1[2] - f->g0[2]) * u;
+            float b_im = f->g0[3] + (f->g1[3] - f->g0[3]) * u;
+            y_re = (re * a_re - im * a_im + re2 * b_re - im2 * b_im) * half_power;
+            y_im = (re * a_im + im * a_re + re2 * b_im + im2 * b_re) * half_power;
+
+            uint32_t before = f->frac;
+            f->frac += f->inc;
+            if (f->frac < before) fade_step(f);
+        }
+        f->t++;
+
+        if (f->shift) {
+            float o = y_re * f->rot_re - y_im * f->rot_im;
+            float r = f->rot_re * f->step_re - f->rot_im * f->step_im;
+            f->rot_im = f->rot_re * f->step_im + f->rot_im * f->step_re;
+            f->rot_re = r;
+            if (++f->rot_n >= 512) { /* keep the rotating unit vector a unit vector */
+                f->rot_n = 0;
+                float mag = sqrtf(f->rot_re * f->rot_re + f->rot_im * f->rot_im);
+                f->rot_re /= mag;
+                f->rot_im /= mag;
+            }
+            y_re = o;
+        }
+        long v = lrintf(y_re);
+        out[i] = sat16(v > 32767 ? 32767 : v < -32768 ? -32768 : (int32_t)v);
+    }
+}
+
 /* ---- FIFO ---------------------------------------------------------------- */
 
 bool dsp_fifo_init(dsp_fifo_t *f, int16_t *storage, uint32_t capacity)

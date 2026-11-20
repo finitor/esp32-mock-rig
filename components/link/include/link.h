@@ -23,6 +23,10 @@
  *              drifts far from the target one sample is dropped or repeated.
  *   frequency  A packet is only heard if it was sent on the frequency this
  *              radio is listening on, unless matching is switched off.
+ *   state      With each announcement a board may send its peer a small
+ *              state: numbered values, a version, a clock and a seed. The
+ *              link only carries it; what it means is the caller's (the
+ *              coord module shares channel settings and fading with it).
  *   peer       Boards announce themselves four times a second. A board
  *              links to the first one it hears and stays with it until it
  *              has been silent for LINK_PEER_TIMEOUT_MS. Audio goes to the
@@ -33,7 +37,8 @@
  *   the transport's task link_receive(), link_send_failed()
  *   a slow periodic task link_tick()
  * link_configure(), link_set_radio() and link_get_status() may be called
- * from any task. The send function is called from the audio task (audio)
+ * from any task; link_set_shared() and link_peer_shared() belong with
+ * link_tick(). The send function is called from the audio task (audio)
  * and from the periodic task (announcements), so it must cope with both.
  */
 #ifndef LINK_H
@@ -77,6 +82,22 @@ extern "C" {
 #define LINK_CONCEAL_MAX 10
 
 #define LINK_FIFO_SAMPLES 8192u /* the jitter buffer's storage, at 12 kHz */
+
+/* What one board tells its peer about itself, beyond the announcement. */
+#define LINK_STATE_ITEMS 12
+
+typedef struct {
+    uint32_t boot_id;  /* the sender; new each time it starts */
+    uint32_t version;  /* of the values: more changes, higher */
+    uint32_t nonce;    /* ranks two states of the same version */
+    uint32_t clock_ms; /* the sender's shared clock as the packet left */
+    uint32_t seed;
+    uint8_t n;
+    struct {
+        uint8_t id;
+        int32_t value;
+    } item[LINK_STATE_ITEMS];
+} link_shared_t;
 
 /* Send one packet: to the board at dst, or to every board in range if dst is
  * NULL. Returns false if it could not be sent. */
@@ -174,6 +195,19 @@ typedef struct {
 
     uint32_t last_hello_ms; /* the periodic task */
     bool hello_sent;
+    bool have_mine;         /* a state to send with each announcement */
+    link_shared_t mine;
+    int32_t mine_offset_ms; /* its clock_ms is the local clock plus this */
+
+    /* the peer's state: written by the transport's task; pst_gen is odd
+     * while it is being written */
+    _Atomic uint32_t pst_gen;
+    link_shared_t pst;
+    uint32_t pst_heard_ms;
+    _Atomic bool pst_have;
+
+    uint32_t (*clock)(void *ctx); /* a millisecond clock finer than link_tick()'s, if given */
+    void *clock_ctx;
 
     /* counters: each written by one task */
     _Atomic uint32_t n_sent, n_send_failed, n_received, n_lost, n_late, n_off_frequency, n_underruns;
@@ -202,6 +236,20 @@ bool link_rx(link_t *l, int16_t *out, size_t n);
 /* Call every 10 to 50 ms with a millisecond clock: announces the board and
  * drops a peer that has gone quiet. */
 void link_tick(link_t *l, uint32_t now_ms);
+
+/* The state to send the peer with each announcement, or NULL for none. Its
+ * clock_ms is filled in as each packet leaves: the local clock plus
+ * clock_offset_ms. */
+void link_set_shared(link_t *l, const link_shared_t *mine, int32_t clock_offset_ms);
+
+/* The peer's latest state and when, by the local clock, it arrived. False if
+ * there is no peer or it has sent none. */
+bool link_peer_shared(link_t *l, link_shared_t *theirs, uint32_t *heard_ms);
+
+/* A millisecond clock to stamp states with as they leave and arrive. Without
+ * one the time given to link_tick() is used, which is only as fine as it is
+ * called. Call before anything else uses the link. */
+void link_set_clock(link_t *l, uint32_t (*clock)(void *ctx), void *ctx);
 
 /* A packet arrived from the board at src. rssi_dbm is 0 if the transport
  * does not measure it. Anything malformed is ignored. */

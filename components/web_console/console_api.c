@@ -60,8 +60,9 @@ static void out_str(out_t *o, const char *s)
     out_f(o, "\"");
 }
 
-/* value / scale as a decimal number. scale is 1 or 10, or their negatives
- * where the wire counts down from full scale; 10 prints one decimal. No
+/* value / scale as a decimal number. scale is 1, 10 or 100, or their
+ * negatives where the wire counts down from full scale; 10 prints one
+ * decimal and 100 two. No
  * floating point is printed anywhere, so the text is the same on every C
  * library. */
 static void out_scaled(out_t *o, int32_t value, int scale)
@@ -73,6 +74,10 @@ static void out_scaled(out_t *o, int32_t value, int scale)
         return;
     }
     int32_t mag = v < 0 ? -v : v;
+    if (div == 100) {
+        out_f(o, "%s%ld.%02ld", v < 0 ? "-" : "", (long)(mag / div), (long)(mag % div));
+        return;
+    }
     out_f(o, "%s%ld.%ld", v < 0 ? "-" : "", (long)(mag / div), (long)(mag % div));
 }
 
@@ -113,9 +118,12 @@ typedef struct {
 static const char *const w_route[] = {"monitor", "radio", "parrot", "link"};
 static const char *const w_onoff[] = {"off", "on"};
 static const char *const w_line[] = {"off", "rts", "dtr"};
+static const char *const w_fade[] = {"off",    "mpg",      "mpp",     "mpd",     "mps",
+                                     "nvis-d", "lowlat-d", "hilat-m", "hilat-d", "custom"};
 
 #define G_RX "Receive"
 #define G_PARROT "Parrot"
+#define G_PATH "Path"
 #define G_LINK "Link"
 #define G_PTT "PTT"
 
@@ -131,6 +139,16 @@ static const cset_t csets[] = {
     {"atten", MOCK_CTL_ATTEN, 10, "Attenuation", G_RX, "dB", NULL, NULL, 0},
     {"turnaround", MOCK_CTL_TURNAROUND, 1, "Turnaround", G_RX, "ms", "Receive mute after unkeying; not in monitor.",
      NULL, 0},
+    {"fade", MOCK_CTL_FADE, 0, "Fading", G_PATH, NULL,
+     "Two paths that fade apart. mpg good, mpp poor, mpd disturbed, mps slow and selective; nvis-d, lowlat-d, "
+     "hilat-m and hilat-d are severe ITU-R F.1487 conditions; custom uses the two numbers below.",
+     w_fade, 10},
+    {"doppler", MOCK_CTL_DOPPLER, 100, "Doppler spread", G_PATH, "Hz", "For custom fading: how fast it fades.", NULL,
+     0},
+    {"fadedelay", MOCK_CTL_FADE_DELAY, 10, "Path delay", G_PATH, "ms",
+     "For custom fading: how much later the second path arrives.", NULL, 0},
+    {"offset", MOCK_CTL_FREQ_OFFSET, 10, "Frequency offset", G_PATH, "Hz", "Moves the receive audio up or down.",
+     NULL, 0},
     {"delay", MOCK_CTL_PARROT_DELAY, 10, "Replay delay", G_PARROT, "s", "From unkeying to the replay.", NULL, 0},
     {"period", MOCK_CTL_PARROT_PERIOD, 10, "Slot period", G_PARROT, "s", "15 for FT8, 7.5 for FT4, 0 for off.", NULL,
      0},
@@ -138,6 +156,9 @@ static const cset_t csets[] = {
      "Audio held before it is played: more rides out uneven arrival, less answers sooner.", NULL, 0},
     {"match", MOCK_CTL_LINK_MATCH, 0, "Frequency match", G_LINK, NULL,
      "On: the other board is heard only when it transmits on this radio's receive frequency.", w_onoff, 2},
+    {"share", MOCK_CTL_LINK_COORD, 0, "Shared channel", G_LINK, NULL,
+     "On: the two boards keep one set of noise and fading settings, changed from either, and fade alike.", w_onoff,
+     2},
     {"line", MOCK_CTL_PTT_LINE, 0, "Control-line PTT", G_PTT, NULL, "CAT keying always works; these add to it.",
      w_line, 3},
     {"vox", MOCK_CTL_VOX, 0, "VOX", G_PTT, NULL, "Transmit audio keys the radio.", w_onoff, 2},
@@ -205,7 +226,7 @@ size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, s
             out_scaled(&o, lo, s->scale);
             out_f(&o, ",\"max\":");
             out_scaled(&o, hi, s->scale);
-            out_f(&o, ",\"step\":%s", s->scale == 1 ? "1" : "0.1");
+            out_f(&o, ",\"step\":%s", s->scale == 1 ? "1" : s->scale == 100 ? "0.01" : "0.1");
         }
         out_f(&o, "}");
     }
@@ -795,11 +816,16 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
         }
         out_f(&o,
               ",\"buffer\":%lu,\"target\":%lu,\"sent\":%lu,\"send_failed\":%lu,\"received\":%lu,\"lost\":%lu,"
-              "\"late\":%lu,\"off_frequency\":%lu,\"underruns\":%lu,\"overruns\":%lu,\"dropped\":%lu,\"repeated\":%lu}",
+              "\"late\":%lu,\"off_frequency\":%lu,\"underruns\":%lu,\"overruns\":%lu,\"dropped\":%lu,\"repeated\":%lu",
               (unsigned long)k->buffer_ms, (unsigned long)k->target_ms, (unsigned long)k->sent,
               (unsigned long)k->send_failed, (unsigned long)k->received, (unsigned long)k->lost, (unsigned long)k->late,
               (unsigned long)k->off_frequency, (unsigned long)k->underruns, (unsigned long)k->overruns,
               (unsigned long)k->dropped, (unsigned long)k->repeated);
+        out_f(&o, ",\"shared\":");
+        out_bool(&o, s->link_shared);
+        out_f(&o, ",\"leads\":");
+        out_bool(&o, s->link_leads);
+        out_f(&o, "}");
     } else {
         out_f(&o, "null");
     }

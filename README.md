@@ -10,7 +10,7 @@ ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks
 - Emulate the CAT (CI-V protocol) of an Icom IC-705 (Hamlib rig model 3085) or a Xiegu G90 (Hamlib 3088) on the serial port, switchable while it runs.
 - Key from CAT, a serial control line, or VOX.
 - Parrot mode: record transmit audio and play it back as receive audio; keep recordings in flash as clips.
-- Simulate a channel: noise at a set SNR, attenuation, turnaround delay.
+- Simulate a channel: noise at a set SNR, attenuation, turnaround delay, and HF fading by the same named conditions as Data2G's simulator.
 - Link two boards (ESP-NOW or wired UART) so two modems can hold an ARQ session over a fake radio path.
 - Offer a web console over Wi-Fi to change settings and watch telemetry while it runs.
 
@@ -58,6 +58,12 @@ The board starts as an IC-705. To make it a G90, and keep it one through restart
 python3 host/tools/mockctl.py -p <CAT port> rig=g90
 ```
 
+Fading makes the receive audio behave as on an HF path: two paths that fade independently. The conditions are named as in the Data2G project's simulator (`mpg` good, `mpp` poor, `mpd` disturbed, `mps` slow and selective, and four severe ITU-R F.1487 ones), and the SNR is then the average. A poor path at 5 dB:
+
+```bash
+python3 host/tools/mockctl.py -p <CAT port> fade=mpp noise=on snr=5
+```
+
 Parrot mode records each transmission and plays it back as receive audio; with a period it comes back in a later time slot, here one FT8 slot (15 s) on:
 
 ```bash
@@ -82,7 +88,7 @@ python3 host/tools/mockctl.py -p <CAT port> vox=on keep
 
 While a modem application holds the CAT port, the same settings are in the web console, which also shows PTT, levels and the audio buffer live. The board joins the Wi-Fi network set in `idf.py menuconfig` or in the console's own Wi-Fi form; with none, it hosts a network named `mockradio-xxxx` (password `mockradio`) and the console is at `http://192.168.4.1/`. On a shared network it is at `http://mockradio-xxxx.local/`. The console has no login, so use it on a network you trust.
 
-Two boards hear each other in the link route: what one host transmits, the other receives, when both radios are on the same frequency. The audio travels over ESP-NOW, with both boards on the same Wi-Fi channel (joined to the same network, or one joined to the network the other hosts), or over three wires between their UARTs if the firmware is built for that. Set it on each board, here or in its web console:
+Two boards hear each other in the link route: what one host transmits, the other receives, when both radios are on the same frequency. The audio travels over ESP-NOW, with both boards on the same Wi-Fi channel (joined to the same network, or one joined to the network the other hosts), or over three wires between their UARTs if the firmware is built for that. Two linked boards share one channel: noise, SNR and fading set on either apply to both, and the path fades alike both ways. Set the route on each board, here or in its web console:
 
 ```bash
 python3 host/tools/mockctl.py -p <CAT port> route=link

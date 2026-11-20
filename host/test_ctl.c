@@ -481,6 +481,65 @@ static void test_ptt_sources(void)
     EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
 }
 
+static void test_fading_settings(void)
+{
+    fresh();
+    /* Off at first; the custom numbers are a poor path's. */
+    EXPECT("fe fe f0 e0 17 fd", "fe fe e0 f0 17 00 fd");
+    EXPECT("fe fe f0 e0 18 fd", "fe fe e0 f0 18 01 00 fd"); /* 1.00 Hz */
+    EXPECT("fe fe f0 e0 19 fd", "fe fe e0 f0 19 00 20 fd"); /* 2.0 ms */
+    EXPECT("fe fe f0 e0 1a fd", "fe fe e0 f0 1a 00 00 00 fd");
+
+    /* A named condition, and each of them. */
+    EXPECT("fe fe f0 e0 17 02 fd", OK);
+    CHECK(config().fade == AE_FADE_MPP);
+    EXPECT("fe fe f0 e0 17 fd", "fe fe e0 f0 17 02 fd");
+    EXPECT("fe fe f0 e0 17 08 fd", OK);
+    CHECK(config().fade == AE_FADE_HILAT_D);
+    EXPECT("fe fe f0 e0 17 09 fd", OK);
+    CHECK(config().fade == AE_FADE_CUSTOM);
+    EXPECT("fe fe f0 e0 17 10 fd", NG);
+    EXPECT("fe fe f0 e0 17 0a fd", NG);
+    EXPECT("fe fe f0 e0 17 00 fd", OK);
+
+    /* Custom numbers: 0.15 Hz and 7.5 ms, and their limits. */
+    EXPECT("fe fe f0 e0 18 00 15 fd", OK);
+    CHECK(near(config().fade_doppler_hz, 0.15f, 0.0001f));
+    EXPECT("fe fe f0 e0 18 fd", "fe fe e0 f0 18 00 15 fd");
+    EXPECT("fe fe f0 e0 18 30 00 fd", OK);
+    EXPECT("fe fe f0 e0 18 00 01 fd", OK);
+    EXPECT("fe fe f0 e0 18 00 00 fd", NG);
+    EXPECT("fe fe f0 e0 18 30 01 fd", NG);
+    CHECK(near(config().fade_doppler_hz, 0.01f, 0.0001f));
+    EXPECT("fe fe f0 e0 19 00 75 fd", OK);
+    CHECK(near(config().fade_delay_ms, 7.5f, 0.001f));
+    EXPECT("fe fe f0 e0 19 01 00 fd", OK);
+    EXPECT("fe fe f0 e0 19 00 00 fd", OK);
+    EXPECT("fe fe f0 e0 19 01 01 fd", NG);
+
+    /* Frequency offset, either way. */
+    EXPECT("fe fe f0 e0 1a 00 55 01 fd", OK);
+    CHECK(near(config().freq_offset_hz, -5.5f, 0.001f));
+    EXPECT("fe fe f0 e0 1a fd", "fe fe e0 f0 1a 00 55 01 fd");
+    EXPECT("fe fe f0 e0 1a 20 00 00 fd", OK);
+    EXPECT("fe fe f0 e0 1a 20 00 01 fd", OK);
+    EXPECT("fe fe f0 e0 1a 20 01 00 fd", NG);
+    EXPECT("fe fe f0 e0 1a 00 55 fd", NG);
+    CHECK(near(config().freq_offset_hz, -200.0f, 0.001f));
+
+    /* The shared channel is a setting of the link's. */
+    EXPECT("fe fe f0 e0 42 fd", "fe fe e0 f0 42 01 fd");
+    EXPECT("fe fe f0 e0 42 00 fd", OK);
+    CHECK(!config().link_coord);
+    EXPECT("fe fe f0 e0 42 02 fd", NG);
+
+    /* Reset puts them all back. */
+    EXPECT("fe fe f0 e0 17 03 fd", OK);
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(config().fade == AE_FADE_OFF && near(config().fade_doppler_hz, 1.0f, 0.0001f));
+    CHECK(near(config().freq_offset_hz, 0.0f, 0.001f) && config().link_coord);
+}
+
 static int g_link_ended;
 
 static void fake_link_tx(void *ctx, const int16_t *tx_audio, size_t n, bool keyed)
@@ -661,6 +720,11 @@ static void test_kept_settings(void)
     cfg.parrot_period_ms = 15000;
     cfg.link_buffer_ms = 80;
     cfg.link_match = false;
+    cfg.link_coord = false;
+    cfg.fade = AE_FADE_CUSTOM;
+    cfg.fade_doppler_hz = 0.15f;
+    cfg.fade_delay_ms = 7.5f;
+    cfg.freq_offset_hz = -12.5f;
     cfg.ptt_line = AE_LINE_RTS;
     cfg.vox_on = true;
     cfg.vox_threshold_dbfs = -35.5f;
@@ -686,7 +750,9 @@ static void test_kept_settings(void)
     CHECK(got.route == AE_ROUTE_PARROT && got.noise_on && near(got.snr_db, -3.5f, 0.001f));
     CHECK(near(got.ref_bw_hz, 3000.0f, 0.5f) && near(got.noise_floor_dbfs, -55.5f, 0.001f) && near(got.atten_db, 6.0f, 0.001f));
     CHECK(got.turnaround_ms == 150 && got.parrot_delay_ms == 2500 && got.parrot_period_ms == 15000);
-    CHECK(got.link_buffer_ms == 80 && !got.link_match && got.ptt_line == AE_LINE_RTS);
+    CHECK(got.link_buffer_ms == 80 && !got.link_match && got.ptt_line == AE_LINE_RTS && !got.link_coord);
+    CHECK(got.fade == AE_FADE_CUSTOM && near(got.fade_doppler_hz, 0.15f, 0.0001f) && near(got.fade_delay_ms, 7.5f, 0.001f));
+    CHECK(near(got.freq_offset_hz, -12.5f, 0.001f));
     CHECK(got.vox_on && near(got.vox_threshold_dbfs, -35.5f, 0.001f) && got.vox_hang_ms == 250);
 
     /* Kept by newer firmware: a setting this one does not know, and a value
@@ -896,9 +962,8 @@ static void test_not_the_radio(void)
     /* Reserved for parts that do not exist yet, and numbers never assigned. */
     EXPECT("fe fe f0 e0 31 fd", NG);
     EXPECT("fe fe f0 e0 31 01 fd", NG);
-    EXPECT("fe fe f0 e0 42 fd", NG);
+    EXPECT("fe fe f0 e0 43 fd", NG);
     EXPECT("fe fe f0 e0 55 fd", NG);
-    EXPECT("fe fe f0 e0 17 fd", NG);
     EXPECT("fe fe f0 e0 7f fd", NG);
 
     /* Radio commands at the mock's address are not the radio's. */
@@ -928,6 +993,7 @@ int main(void)
     test_status();
     test_parrot();
     test_ptt_sources();
+    test_fading_settings();
     test_link_settings();
     test_kept_settings();
     test_clips();

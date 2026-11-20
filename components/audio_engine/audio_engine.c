@@ -65,6 +65,23 @@ void ae_config_defaults(ae_config_t *cfg)
     cfg->vox_hang_ms = 100;
     cfg->link_buffer_ms = 30;
     cfg->link_match = true;
+    cfg->link_coord = true;
+    cfg->fade = AE_FADE_OFF;
+    cfg->fade_doppler_hz = 1.0f;
+    cfg->fade_delay_ms = 2.0f;
+    cfg->freq_offset_hz = 0.0f;
+}
+
+void ae_fade_preset(ae_fade_t fade, float *doppler_hz, float *delay_ms)
+{
+    static const float presets[AE_FADE_COUNT][2] = {
+        [AE_FADE_MPG] = {0.1f, 0.5f},     [AE_FADE_MPP] = {1.0f, 2.0f},       [AE_FADE_MPD] = {2.0f, 4.0f},
+        [AE_FADE_MPS] = {0.15f, 2.0f},    [AE_FADE_NVIS_D] = {1.0f, 7.0f},    [AE_FADE_LOWLAT_D] = {10.0f, 6.0f},
+        [AE_FADE_HILAT_M] = {10.0f, 3.0f}, [AE_FADE_HILAT_D] = {30.0f, 7.0f},
+    };
+    bool known = fade > AE_FADE_OFF && fade < AE_FADE_CUSTOM;
+    *doppler_hz = known ? presets[fade][0] : 0.0f;
+    *delay_ms = known ? presets[fade][1] : 0.0f;
 }
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
@@ -92,6 +109,13 @@ void ae_configure(ae_t *e, const ae_config_t *cfg)
     uint32_t buffer_ms = min_u32(cfg->link_buffer_ms, AE_LINK_BUFFER_MAX_MS);
     atomic_store(&e->cfg_link_buffer_ms, buffer_ms < AE_LINK_BUFFER_MIN_MS ? AE_LINK_BUFFER_MIN_MS : buffer_ms);
     atomic_store(&e->cfg_link_match, cfg->link_match ? 1 : 0);
+    atomic_store(&e->cfg_link_coord, cfg->link_coord ? 1 : 0);
+    bool fade_known = cfg->fade > AE_FADE_OFF && cfg->fade < AE_FADE_COUNT;
+    atomic_store(&e->cfg_fade, fade_known ? (int32_t)cfg->fade : (int32_t)AE_FADE_OFF);
+    atomic_store(&e->cfg_doppler_chz, to_cdb(cfg->fade_doppler_hz, AE_DOPPLER_MIN_HZ, AE_DOPPLER_MAX_HZ));
+    atomic_store(&e->cfg_fade_delay_dms, (int32_t)lroundf(clampf(cfg->fade_delay_ms, 0.0f, AE_FADE_DELAY_MAX_MS) * 10.0f));
+    atomic_store(&e->cfg_offset_dhz,
+                 (int32_t)lroundf(clampf(cfg->freq_offset_hz, -AE_OFFSET_MAX_HZ, AE_OFFSET_MAX_HZ) * 10.0f));
     atomic_fetch_add(&e->cfg_gen, 1u);
 }
 
@@ -117,12 +141,25 @@ void ae_get_config(ae_t *e, ae_config_t *cfg)
     cfg->vox_hang_ms = atomic_load(&e->cfg_vox_hang_ms);
     cfg->link_buffer_ms = atomic_load(&e->cfg_link_buffer_ms);
     cfg->link_match = atomic_load(&e->cfg_link_match) != 0;
+    cfg->link_coord = atomic_load(&e->cfg_link_coord) != 0;
+    cfg->fade = (ae_fade_t)atomic_load(&e->cfg_fade);
+    cfg->fade_doppler_hz = from_cdb(atomic_load(&e->cfg_doppler_chz));
+    cfg->fade_delay_ms = (float)atomic_load(&e->cfg_fade_delay_dms) / 10.0f;
+    cfg->freq_offset_hz = (float)atomic_load(&e->cfg_offset_dhz) / 10.0f;
+}
+
+void ae_fade_clock(ae_t *e, uint32_t seed, uint32_t clock_ms)
+{
+    atomic_store(&e->fc_seed, seed);
+    atomic_store(&e->fc_ms, clock_ms);
+    atomic_store(&e->fc_set, true);
 }
 
 void ae_init(ae_t *e, uint32_t seed)
 {
     memset(e, 0, sizeof *e);
     dsp_chan_init(&e->chan, seed);
+    dsp_fade_init(&e->fade, seed);
     atomic_store(&e->st_gain_q24, 1 << 24);
 
     ae_config_t cfg;
@@ -247,13 +284,31 @@ static void load_config(ae_t *e)
     e->delay_samples = cfg.parrot_delay_ms * (uint32_t)(AE_FS_HZ / 1000);
     e->period_samples = cfg.parrot_period_ms * (uint32_t)(AE_FS_HZ / 1000);
 
+    /* Fading and the frequency offset. The named conditions are numbers too. */
+    float doppler_hz = cfg.fade_doppler_hz, delay_ms = cfg.fade_delay_ms;
+    if (cfg.fade != AE_FADE_CUSTOM) ae_fade_preset(cfg.fade, &doppler_hz, &delay_ms);
+    uint32_t spread_chz = cfg.fade == AE_FADE_OFF ? 0u : (uint32_t)lroundf(doppler_hz * 100.0f);
+    int32_t offset_dhz = atomic_load(&e->cfg_offset_dhz);
+    bool fade_on = spread_chz != 0 || offset_dhz != 0;
+    if (fade_on && !e->fade_on) {
+        /* The stage starts clean, with one sample at 12 kHz in hand: its two
+         * resamplers do not always make as many samples as a block needs. */
+        dsp_decim4_init(&e->fd_down);
+        dsp_interp4_init(&e->fd_up);
+        memset(e->fd_pend, 0, sizeof e->fd_pend);
+        e->fd_pend_n = DSP_RS_FACTOR;
+    }
+    dsp_fade_set(&e->fade, spread_chz, (uint32_t)lroundf(delay_ms * (float)DSP_FADE_FS_HZ / 1000.0f), offset_dhz);
+    e->fade_on = fade_on;
+    e->fading = spread_chz != 0;
+
     if (cfg.noise_on) {
         /* The floor is fixed and the signal is placed above or below it.
          * White noise of RMS N across 0..fs/2 has N * sqrt(bw / (fs/2))
          * inside the reference bandwidth. */
         float floor_rms = FULL_SCALE * db_to_lin(cfg.noise_floor_dbfs);
         float target = floor_rms * db_to_lin(cfg.snr_db) * sqrtf(cfg.ref_bw_hz / ((float)AE_FS_HZ / 2.0f));
-        float max_rms = FULL_SCALE * db_to_lin(AE_SIGNAL_MAX_DBFS);
+        float max_rms = FULL_SCALE * db_to_lin(e->fading ? AE_SIGNAL_MAX_FADING_DBFS : AE_SIGNAL_MAX_DBFS);
         if (target > max_rms) {
             floor_rms *= max_rms / target; /* SNR too high for this floor: lower the floor */
             target = max_rms;
@@ -349,6 +404,55 @@ static void apply_plan(ae_t *e)
     atomic_store(&e->st_gain_limited, limited);
 }
 
+/* The fading stage for one block: down to 12 kHz, through the fading, and
+ * back up. src NULL is silence: the stage runs on regardless, so that its
+ * filters and its place in the fading carry through. src and out may be the
+ * same buffer. */
+static void fade_block(ae_t *e, const int16_t *src, int16_t *out, size_t n)
+{
+    enum { PIECE = 64 };
+    static const int16_t silence[PIECE];
+
+    /* Keep to the clock, if one is given. */
+    if (atomic_load(&e->fc_set)) {
+        uint32_t seed = atomic_load(&e->fc_seed);
+        uint64_t want = (uint64_t)atomic_load(&e->fc_ms) * (DSP_FADE_FS_HZ / 1000u);
+        uint64_t at = dsp_fade_time(&e->fade);
+        int64_t ahead = (int64_t)(want - at);
+        if (seed != e->fade.seed || ahead > 600 || ahead < -600) {
+            dsp_fade_seek(&e->fade, seed, want); /* another fading, or 50 ms out: go there */
+        } else if (ahead > 36) {
+            dsp_fade_seek(&e->fade, seed, at + 1); /* 3 ms out: a sample at a time */
+        } else if (ahead < -36 && at > 0) {
+            dsp_fade_seek(&e->fade, seed, at - 1);
+        }
+    }
+
+    while (n) {
+        size_t k = n < PIECE ? n : PIECE;
+        int16_t low[PIECE / DSP_RS_FACTOR + 1], up[PIECE + DSP_RS_FACTOR];
+        size_t m = dsp_decim4(&e->fd_down, src ? src : silence, k, low);
+        dsp_fade_process(&e->fade, low, low, m);
+        dsp_interp4(&e->fd_up, low, m, up);
+        m *= DSP_RS_FACTOR;
+
+        /* Out go k samples: what was left over, then the new ones; what is
+         * left of those is kept for the next piece. */
+        size_t from_pend = e->fd_pend_n < k ? e->fd_pend_n : k;
+        size_t from_up = k - from_pend;
+        memcpy(out, e->fd_pend, from_pend * sizeof(int16_t));
+        memmove(e->fd_pend, e->fd_pend + from_pend, (e->fd_pend_n - from_pend) * sizeof(int16_t));
+        e->fd_pend_n -= (uint32_t)from_pend;
+        memcpy(out + from_pend, up, from_up * sizeof(int16_t));
+        memcpy(e->fd_pend + e->fd_pend_n, up + from_up, (m - from_up) * sizeof(int16_t));
+        e->fd_pend_n += (uint32_t)(m - from_up);
+
+        if (src) src += k;
+        out += k;
+        n -= k;
+    }
+}
+
 /* The receive channel for one block. keyed is the PTT state for all of it. */
 static void rx_block(ae_t *e, bool keyed, const int16_t *src, int16_t *out, size_t n)
 {
@@ -367,16 +471,22 @@ static void rx_block(ae_t *e, bool keyed, const int16_t *src, int16_t *out, size
             e->mute_left -= (uint32_t)skip;
         }
     }
+    /* The level is taken from the source as it was sent, before any fading:
+     * the SNR asked for is the average, and a fade falls below it. */
+    if (skip < n && src && track_level(e, src + skip, n - skip)) {
+        e->plan_dirty = true;
+        atomic_store(&e->st_level_ms, (uint32_t)e->level_ms);
+    }
+    if (e->fade_on) {
+        fade_block(e, src, out, n);
+        src = out;
+    }
     if (skip) memset(out, 0, skip * sizeof(int16_t));
     atomic_store(&e->st_rx_muted, skip > 0);
     if (skip == n) return;
 
     const int16_t *in = src ? src + skip : NULL;
     size_t m = n - skip;
-    if (in && track_level(e, in, m)) {
-        e->plan_dirty = true;
-        atomic_store(&e->st_level_ms, (uint32_t)e->level_ms);
-    }
     if (e->plan_dirty) apply_plan(e);
     dsp_chan_process(&e->chan, in, out + skip, m);
 }
@@ -500,8 +610,12 @@ static bool parrot_block(ae_t *e, bool keyed, const int16_t *tx, int16_t *out, s
 
     size_t lead = 0; /* silence before the replay starts in this block */
     if (e->par_state == AE_PARROT_WAITING) {
-        if (e->par_play_at >= e->now + n) return false;
-        if (e->par_play_at > e->now) lead = (size_t)(e->par_play_at - e->now);
+        /* The fading stage delays what goes through it: start that much
+         * sooner, so the replay still comes out when it is due. */
+        uint64_t start = e->par_play_at;
+        if (e->fade_on) start = start > AE_FADE_LATENCY ? start - AE_FADE_LATENCY : 0;
+        if (start >= e->now + n) return false;
+        if (start > e->now) lead = (size_t)(start - e->now);
         e->par_state = AE_PARROT_PLAYING;
         e->par_pos = min_u32(PAR_SKIP, e->par_len);
         e->par_flush = PAR_FLUSH;

@@ -15,10 +15,11 @@ Last updated: Nov 19, 2026.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
 - The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 979 KB image with the web console and the ESP-NOW link; 344 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 989 KB image with the web console and the ESP-NOW link; 345 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The G90 personality (Milestone 5, steps 27 and 28) is written. `rig_g90` is built from the Radioddity CI-V table, Hamlib's Xiegu backend and one log of a real G90, not from a radio: the G90 and DE-19 are not accessible during this project. It passes real Hamlib on the host: `rigctl -m 3088` (Hamlib 4.7.1 only) over a pseudo-terminal, 32 command groups, no command rejected. The radio imitated is chosen at run time, over CI-V (`60`), with `mockctl.py` or in the web console, and the firmware keeps the choice in flash. Reconciling it with the real radio (step 29) waits for the station.
 - Flash persistence (step 14) is written. Settings can be kept as the power-up settings, and the parrot's recording can be kept as one of five clips in a flash partition of its own and played back later. The packing of settings (`mock_ctl`) and the clip store (`clips`) are portable C with host unit tests, the latter on a pretend flash chip that can lose power mid-save. The firmware side (NVS, the partition, the task that writes clips) has only been compiled: no byte has been written to real flash.
+- Path simulation (Milestone 6, steps 30 and 31) is written. The receive channel can fade the signal as an HF path does, by the eight conditions the Data2G project's simulator names (its `mpg`, `mpp`, `mpd` and `mps`, and four ITU-R F.1487 ones) or by custom numbers, and can shift it in frequency. Two linked boards share one channel: a protocol on the link keeps their path settings, fading seed and clock in step, so the path fades alike both ways. All of it is portable C with host unit tests, which check the fading's statistics and that two boards with clocks 100 ppm apart fade together. None of it has run on a board, and its cost in processor time there is an estimate.
 - Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two. Everything that can be written without hardware now is.
 - The two-board link (Milestone 4, steps 21 to 25) is written. Its core (`link`: packets, jitter buffer, loss and clock-drift handling, peer discovery, frequency matching, framing for a wire) is portable C with host unit tests that join two boards by a simulated path with loss, jitter, reordering and clocks that differ. It is a fourth receive route in `audio_engine`, with two settings on both control paths and its statistics in the web console. Two simulated boards have been watched hearing each other in a browser. The ESP-NOW and UART transports have only been compiled: no packet has crossed between two boards.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
@@ -92,7 +93,8 @@ Firmware modules:
 - `usb_composite`: descriptors and TinyUSB callbacks for UAC2 + CDC-ACM, including line-state changes
 - `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
 - `rig_ic705` and `rig_g90`: the two personalities, behind one interface; the parser becomes one or the other at run time
-- `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
+- `coord`: two linked boards agreeing on one channel: the path's settings, and the seed and clock their fading runs by
+- `audio_dsp`: the signal processing itself, with no hardware dependencies: fading and frequency offset, 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
 - `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. In the link route the receiver hears a second board and the transmit audio goes to it; the engine only hands the audio over, through two functions the firmware supplies. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
 - `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, the link's settings, PTT sources and status now; personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
 - `link`: the path between two boards: 12 kHz audio in 10 ms packets, a jitter buffer with loss and clock-drift handling, peer discovery and frequency matching, all portable; and one of two transports that carry the packets, ESP-NOW or a UART, chosen at build time. See [Two-board link](#two-board-link)
@@ -115,6 +117,7 @@ Repository layout:
 | `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/ui/` | LED policy: the state to show and its colour |
+| `components/coord/` | Shared channel: keeps two linked boards' path settings and fading in step |
 | `components/clips/` | Clip store: recordings kept in a flash partition, and saving and playing them through the parrot |
 | `components/web_console/` | Web console: `console_api.c` (settings and telemetry as JSON, portable), `web_console.c` (HTTP and WebSocket server), `www/index.html` (the page, embedded in the firmware), `Kconfig` (the console switch) |
 | `components/wifi_net/` | Wi-Fi: joining or hosting a network, the board's name, and its `Kconfig` settings |
@@ -123,7 +126,7 @@ Repository layout:
 | `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `storage.c` keeps things in flash (NVS, the clips partition and the task that writes it); `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
 | `partitions.csv` | Flash layout: NVS, 2 MB for the firmware, the rest of the 16 MB for clips |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console`, `test_link` and `test_clips` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console`, `test_link`, `test_clips` and `test_coord` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` and `tools/gen_hilbert_fir.py` (filter generators), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -295,6 +298,10 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `14` | Noise floor | Tenths of a dB below full scale, 2 bytes: 12.0 to 90.0 |
 | `15` | Attenuation | Tenths of a dB, 2 bytes: 0 to 120.0 |
 | `16` | Turnaround time | ms, 2 bytes: 0 to 5000 |
+| `17` | Fading | `00` off, `01` mpg, `02` mpp, `03` mpd, `04` mps, `05` nvis-d, `06` lowlat-d, `07` hilat-m, `08` hilat-d, `09` custom (`18` and `19`) |
+| `18` | Custom fading: Doppler spread | Hundredths of a hertz, 2 bytes: 0.01 to 30.00 |
+| `19` | Custom fading: delay of the second path | Tenths of a millisecond, 2 bytes: 0 to 10.0 |
+| `1A` | Frequency offset | Tenths of a hertz, 2 bytes plus sign: −200.0 to +200.0 |
 | `20` | Status, read only | Flags (`01` receive muted, `02` gain limited); level of the receive source in tenths of a dB below full scale, 2 bytes (`99 99` if nothing has been measured); gain the channel applies, tenths of a dB, 2 bytes plus sign |
 | `30` | Play the parrot's recording again, now | None. Refused unless the route is parrot, there is a recording and PTT is off |
 | `31` | Play clip N: a recording kept in flash replaces the parrot's and is replayed | N, 1 BCD byte from `01`. Refused unless the route is parrot, PTT is off, clip N exists and no clip operation is under way |
@@ -306,6 +313,7 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `37` | Clip status, read only | Flags (`01` an operation is under way, `02` the last one failed); the number of clips; then each clip's length in tenths of a second, 2 bytes, 0 for none |
 | `40` | Link buffer: audio held before it is played | ms, 2 bytes: 10 to 200 |
 | `41` | Link frequency match | `00` off, `01` on: the other board is heard only when it transmits on this radio's receive frequency |
+| `42` | Link shared channel | `00` off, `01` on: two linked boards keep one set of path settings (`11` to `15`, `17` to `19`) and fade alike |
 | `50` | Control-line PTT | `00` off, `01` RTS keys, `02` DTR keys |
 | `51` | VOX | `00` off, `01` on |
 | `52` | VOX threshold | Tenths of a dB below full scale, 2 bytes: 6.0 to 80.0 |
@@ -326,6 +334,8 @@ mockctl.py -p PORT replay                   play the parrot's recording again
 mockctl.py -p PORT vox=on voxlevel=-40      key from transmit audio (Data2G's default PTT mode)
 mockctl.py -p PORT line=rts                 key from the RTS line
 mockctl.py -p PORT route=link linkbuffer=50 hear a second board, with 50 ms of buffer
+mockctl.py -p PORT fade=mpp noise=on snr=5  a poor HF path, 5 dB SNR on average
+mockctl.py -p PORT fade=custom doppler=0.5 fadedelay=1.5
 mockctl.py -p PORT rig=g90                  become a Xiegu G90 (rig=ic705 to go back)
 mockctl.py -p PORT vox=on keep              power up with the VOX on from now on
 mockctl.py -p PORT forget                   power up with the build's settings again
@@ -420,7 +430,7 @@ As built in `audio_engine` (host-tested, not yet run on a board):
 **Channel simulation (applied on the receive side)**
 
 - Additive noise at a configurable SNR, so ARQ modems step down through their speed levels.
-- Attenuation, and optionally fading or a small frequency offset (PathSim-style), later.
+- Attenuation, fading and a small frequency offset.
 - TX→RX turnaround delay of a few tens of ms, to mimic a real radio switching.
 
 As built in `audio_engine` (host-tested, not yet run on a board):
@@ -432,6 +442,32 @@ As built in `audio_engine` (host-tested, not yet run on a board):
 - **Routes.** *Monitor*: receive is always open and PTT is ignored; with noise off and no attenuation this is the Milestone 1 loopback, bit for bit. *Radio*: receive is silent while keyed and for the turnaround time after unkeying (default 30 ms), then carries the receive source through the channel. PTT is sampled once per audio block, so the turnaround can run up to 10 ms long. The radio route has no receive source, so the host hears the noise floor only. *Parrot* behaves like radio and adds the replay as its source.
 - **Settings:** route, noise on/off, SNR, reference bandwidth, noise floor, attenuation, turnaround time, and the parrot's delay and period. Their power-up values are build-time (`idf.py menuconfig`, "Mock radio: receive route and channel at power-up"); the [mock-only controls](#mock-only-controls) change them at run time, and the engine takes a change at the next audio block.
 - **Precision.** The channel's gain has 24 fractional bits and signal and noise are summed before rounding, so a signal of a few counts at −30 dB SNR keeps its level and is dithered by the noise.
+
+**Fading and frequency offset (step 30).** As built in `audio_dsp` and `audio_engine`; host-tested, and not yet run on a board.
+
+- **The model** is the one Data2G's simulator uses (`data2g/hfchannel.py`), which is the Watterson model as ITU-R F.1487 has it: two paths of equal mean power, the second delayed, each multiplied by a complex gain that wanders as a Rayleigh process with a Gaussian Doppler spectrum. The Doppler spread is two standard deviations of that spectrum.
+- **Conditions.** Named as Data2G names them, with its numbers, so a figure quoted there means the same here:
+
+  | Name | Doppler spread | Delay | What Data2G calls it |
+  | --- | --- | --- | --- |
+  | `mpg` | 0.1 Hz | 0.5 ms | good |
+  | `mpp` | 1 Hz | 2 ms | poor |
+  | `mpd` | 2 Hz | 4 ms | disturbed |
+  | `mps` | 0.15 Hz | 2 ms | slow and selective, measured on a 4000 km path |
+  | `nvis-d` | 1 Hz | 7 ms | mid-latitude disturbed NVIS (F.1487) |
+  | `lowlat-d` | 10 Hz | 6 ms | low latitude disturbed (F.1487) |
+  | `hilat-m` | 10 Hz | 3 ms | high latitude moderate (F.1487) |
+  | `hilat-d` | 30 Hz | 7 ms | high latitude disturbed (F.1487) |
+  | `custom` | 0.01 to 30 Hz | 0 to 10 ms | the `doppler` and `fadedelay` settings |
+
+- **Where.** In the receive channel, on whatever the route hears (the parrot's replay, the other board, or the loopback), before noise is added. It works at 12 kHz: the audio is brought down, made complex by a Hilbert transformer (127 taps, the image 60 dB down from 200 Hz to 5.8 kHz), faded, and brought back up. With fading or an offset on, receive audio is limited to 0–4.5 kHz and comes 7.25 ms later; the parrot starts its replay that much sooner, so slot alignment is kept.
+- **SNR is the average.** The signal's level is measured before the fading and the gain set from that, so the SNR setting is the SNR at the path's mean power and a fade is a real drop below it, as in Data2G's simulator. The level measurement does not chase the fades.
+- **Headroom.** With fading on, the signal's average is kept at −18 dBFS or below (−12 without), because the two paths sometimes add up; an SNR too high for the floor lowers the floor. With noise off there is no such scaling, and a loud signal's fading peaks clip.
+- **The gains are a function of seed and time,** not of what went before: noise from a hash of (seed, path, sample number), shaped by one 59-tap filter at 32 samples per hertz of spread and interpolated. A stage can be put anywhere in its fading, and two stages with the same seed, settings and time fade alike to the sample. That is what lets two boards share a path. Data2G's generator shapes the whole session at once with an FFT; this one is a running equivalent, checked by its statistics, not against Data2G's output.
+- **Frequency offset** moves the receive audio up or down by up to 200 Hz, with or without fading. It is each board's own setting.
+- **Checked on the host:** the Rayleigh distribution of the envelope (the fraction of time 10 and 20 dB down and 3 dB up), unit mean power, the correlation over time that a Gaussian spectrum of the set spread gives, the correlation across frequency that the set delay gives, and that the result does not depend on block size.
+- **Cost.** Estimated at a few million multiply-adds per second, some percent of one core. Not measured on the chip.
+- **Not included** from Data2G's simulator: impulsive clicks, a wandering noise floor, interference, and sample-clock error (two real boards have that already).
 
 ## Two-board link
 
@@ -490,6 +526,20 @@ audio:  4D 12 <flags> <seq, 2> <tx Hz, 4> <samples, 2 each>     flags: 01 first 
 
 **Peer.** A board in the link route announces itself four times a second with its name, its frequencies and whether it is transmitting. A board links to the first one it hears and stays with it until it has been silent for 3 s. Audio goes to the peer's own address and is taken only from the peer, so a third board in range is ignored by a linked pair. A board outside the link route announces nothing and ignores what arrives.
 
+**Shared channel (step 31).** Each board applies the channel to what it receives. For the two directions to be one path, the boards agree on it (`coord`), over a third kind of packet sent to the peer with each announcement:
+
+```
+state:  4D 13 <boot id, 4> <version, 4> <nonce, 4> <clock ms, 4> <seed, 4> <n> then n times <id> <value, 4>
+```
+
+- **Settings.** Noise on or off, SNR, its bandwidth, the noise floor, attenuation and the fading are the pair's. Each board's set has a version that goes up with every change made on that board; the higher version wins, so a change on either board reaches the other within half a second. When two boards meet with the same version (two that have not been touched since power-up, say), one set is picked by a number each board draws at start-up. Everything else stays each board's own: route, turnaround, the parrot, PTT, the link's buffer, the frequency offset.
+- **Fading.** Both boards fade from one seed and one clock. The board with the higher start-up number leads; the other takes its seed and steers its own clock to the leader's, a millisecond per 20 ms tick, or at once if it is more than 200 ms out. If the leader goes away the follower carries on from where its clock stands.
+- **Noise stays local.** Each board makes its own noise floor, because a receiver hears noise whether or not anyone is transmitting and the link carries nothing between transmissions. Only its settings are shared.
+- **Nothing from a peer is trusted.** Values go through the same range checks as a command over CAT, only the path's settings are accepted, and what a board cannot use it leaves as it was.
+- **Switch.** `share` (control `42`), on by default. Off on either board, each has its own channel, and the two directions can be set differently on purpose.
+- **Checked on the host:** two boards whose clocks start a quarter of an hour apart and run 100 ppm apart agree on the time within 3 ms for five minutes; settings follow in both directions; and the two receivers' fading (2 Hz spread) correlates above 0.98 when shared and not at all when not.
+- **Limits.** The clocks agree to a few milliseconds at best, less well over a real transport than in the test, so at the fastest fading (10 to 30 Hz, where the path changes in tens of milliseconds) the two directions fade alike only roughly. The versions count changes, not time: "newer" means more changes since power-up.
+
 **Transports.** One is compiled in, chosen in menuconfig; both boards need the same.
 
 | Transport | How |
@@ -508,6 +558,7 @@ audio:  4D 12 <flags> <seq, 2> <tx Hz, 4> <samples, 2 each>     flags: 01 first 
 - Two boards. A third in the link route pairs with whichever it hears first and is ignored by the other two; there is no way yet to choose a peer.
 - The transport is a build-time choice, not a setting.
 - Only frequency is matched: a USB signal is heard by a radio in LSB or FM as if the modes agreed.
+- A frequency offset set on both boards moves both directions the same way. Between two real radios the offsets are opposite; set them with opposite signs to imitate that.
 - Each 10 ms audio packet is close to ESP-NOW's largest frame, and the rate ESP-NOW sends at has been left at its default; whether that leaves enough air time beside Wi-Fi is not known.
 - Not verified on hardware, including whether ESP-NOW passes between a board hosting a network and a board joined to it, and whether it survives a board's change from joining to hosting.
 
@@ -660,6 +711,12 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 28. Written: `rig_g90` from the Radioddity CAT manual and Hamlib's `xiegu.c`, with host unit tests. `rigctl -m 3088` (Hamlib 4.7.1) runs against it on the host with no command rejected. Other Hamlib versions were read, not run.
 29. When the real G90 and DE-19 are available: capture the DE-19's USB descriptors and a `rigctl` session against the radio, and reconcile the personality with them.
 
+**Milestone 6: path simulation**
+
+30. Written, host-tested: fading and frequency offset in the receive channel: two-path Rayleigh fading with a Gaussian Doppler spectrum, by Data2G's named conditions or custom numbers, with the SNR setting as the average.
+31. Written, host-tested; over a real transport compiled only: the shared channel. Two linked boards keep one set of path settings and fade from one seed and clock.
+32. Acceptance: two phones running Data2G in ARQ over `mpp` and `mpd` between two boards, with throughput and speed levels compared against Data2G's own simulator at the same condition and SNR; and the processor time fading takes, measured on a board.
+
 ## Decision log
 
 | Date | Decision | Why |
@@ -725,6 +782,13 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | A recording is kept as a clip only when asked, by a task of its own; the command is answered when the work begins. | Megabytes of flash take seconds to write and disturb audio meanwhile, so it cannot follow every transmission or run in the task that reads CAT. |
 | Nov 19, 2026 | A clip plays through the parrot: it replaces the recording in the parrot's buffer and is replayed. The engine lends the buffer to the clip task and takes it back. | The replay path, with the channel applied, exists already; one buffer and one hand-over is less than a second playback path. |
 | Nov 19, 2026 | The firmware uses its own partition table (`partitions.csv`): 2 MB for the application and the rest for clips. This replaces the 1.5 MB table above. | Clips need a partition, and the image is near 1 MB. |
+| Nov 19, 2026 | Fading uses Data2G's model, its condition names and its numbers. | The mock exists to exercise Data2G; a condition should mean the same in its simulator and on the bench, so that results can be compared. |
+| Nov 19, 2026 | Fading runs at 12 kHz inside the receive channel, after the level measurement and before the noise. | The parrot's and the link's audio is 12 kHz already, so little is lost; a Hilbert transformer at 12 kHz is a quarter the work of one at 48 kHz. Measuring first makes the SNR setting the average, as Data2G defines it, and keeps the gain from cancelling slow fades. |
+| Nov 19, 2026 | The fading gains are computed from a seed and a time, by a hash and a fixed filter, not by a running random generator. | Two boards can then produce the same fading without exchanging it, and a board can join part-way. Integer arithmetic for the time keeps the two exactly in step. |
+| Nov 19, 2026 | Each board still applies the channel to what it receives, and two linked boards coordinate. One board does not process both directions. | Noise must be made where it is heard, since nothing crosses the link between transmissions. With noise local anyway, sharing settings and a fading clock is less than moving the fading to one board, and neither board is special. |
+| Nov 19, 2026 | Shared settings are reconciled by version: the set changed more often wins, and a tie goes to the higher start-up number. The same number picks which board's clock leads. | No board needs configuring as the master, either may be changed from its console, and two boards always converge. Counting changes needs no shared time. |
+| Nov 19, 2026 | The shared channel is on by default. | Two linked boards are one path. Wanting the two directions to differ is the exception, and has a switch. |
+| Nov 19, 2026 | The frequency offset is not shared. | Between two radios it has opposite signs in the two directions, so one shared value would be wrong for one of them. |
 | Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
@@ -743,6 +807,10 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Does ESP-NOW pass between a board hosting a network and a board joined to it, and does it come back after a board changes from joining to hosting? Compiled only. (step 26)
 - [ ] Is ESP-NOW's default sending rate enough for 100 packets of 249 bytes a second in each direction of a session, or does the rate need raising? (step 26)
 - [ ] What is the link's delay end to end on boards, host audio in to host audio out, and is 30 ms of buffer the right default for Data2G's ARQ turnaround? 27 ms on a path with no delay in the host test. (step 26)
+- [ ] How much processor time does fading take on the S3, and does it disturb USB audio? Estimated at some percent of one core. (step 32)
+- [ ] Does the mock's fading give Data2G the same results as Data2G's own simulator at the same condition and SNR? The gain generator is a running equivalent of its FFT one, checked by its statistics only. (step 32)
+- [ ] How closely do two boards' clocks agree over ESP-NOW and over the UART, and is that close enough for the fast conditions (10 to 30 Hz) to fade alike both ways? Within 3 ms in the host test, where packets arrive at once. (step 32)
+- [ ] Which more of Data2G's simulator is worth having: impulsive clicks, a wandering noise floor, interference?
 - [ ] Should a board be able to choose its peer, for more than two boards in range? Today the first one heard is taken.
 - [ ] Should the link compare mode as well as frequency?
 - [ ] Are GPIO17 and GPIO18 free for the UART link on the boards that arrive? (step 26)

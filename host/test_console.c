@@ -205,8 +205,9 @@ static void tone(int16_t *out, size_t n, float amplitude)
 
 #define DEFAULTS                                                                                                  \
     "{\"route\":\"monitor\",\"noise\":\"off\",\"snr\":10.0,\"bw\":2500,\"floor\":-40.0,\"atten\":0.0,"           \
-    "\"turnaround\":30,\"delay\":1.0,\"period\":0.0,\"linkbuffer\":30,\"match\":\"on\",\"line\":\"off\","    \
-    "\"vox\":\"off\",\"voxlevel\":-40.0,\"voxhang\":100}"
+    "\"turnaround\":30,\"fade\":\"off\",\"doppler\":1.00,\"fadedelay\":2.0,\"offset\":0.0,\"delay\":1.0,"      \
+    "\"period\":0.0,\"linkbuffer\":30,\"match\":\"on\",\"share\":\"on\",\"line\":\"off\",\"vox\":\"off\","   \
+    "\"voxlevel\":-40.0,\"voxhang\":100}"
 
 /* ---- tests ------------------------------------------------------------------- */
 
@@ -236,15 +237,20 @@ static void test_settings_apply(void)
     /* Every setting, with white space, in another order. */
     CHECK(apply(" {\n \"voxhang\" : 250 , \"voxlevel\":-30.5,\"vox\":\"on\",\"line\":\"dtr\",\"period\":7.5,"
                 "\"delay\":0,\"turnaround\":0,\"atten\":120,\"floor\":-90,\"bw\":3000,\"snr\":80,"
-                "\"match\":\"off\",\"linkbuffer\":200,\"noise\":\"off\",\"route\":\"parrot\" }\r\n") == CONSOLE_OK);
+                "\"match\":\"off\",\"linkbuffer\":200,\"noise\":\"off\",\"route\":\"parrot\","
+                "\"share\":\"off\",\"offset\":-12.5,\"fadedelay\":7.5,\"doppler\":0.15,\"fade\":\"custom\" }\r\n") ==
+          CONSOLE_OK);
     CHECK_STR(settings(),
               "{\"route\":\"parrot\",\"noise\":\"off\",\"snr\":80.0,\"bw\":3000,\"floor\":-90.0,\"atten\":120.0,"
-              "\"turnaround\":0,\"delay\":0.0,\"period\":7.5,\"linkbuffer\":200,\"match\":\"off\",\"line\":\"dtr\","
-              "\"vox\":\"on\",\"voxlevel\":-30.5,\"voxhang\":250}");
+              "\"turnaround\":0,\"fade\":\"custom\",\"doppler\":0.15,\"fadedelay\":7.5,\"offset\":-12.5,\"delay\":0.0,"
+              "\"period\":7.5,\"linkbuffer\":200,\"match\":\"off\",\"share\":\"off\",\"line\":\"dtr\",\"vox\":\"on\","
+              "\"voxlevel\":-30.5,\"voxhang\":250}");
     ae_config_t cfg = config();
     CHECK(cfg.route == AE_ROUTE_PARROT && cfg.ptt_line == AE_LINE_DTR && cfg.vox_on);
     CHECK(cfg.parrot_period_ms == 7500 && cfg.parrot_delay_ms == 0 && cfg.vox_hang_ms == 250);
-    CHECK(cfg.link_buffer_ms == 200 && !cfg.link_match);
+    CHECK(cfg.link_buffer_ms == 200 && !cfg.link_match && !cfg.link_coord);
+    CHECK(cfg.fade == AE_FADE_CUSTOM && near(cfg.fade_doppler_hz, 0.15f) && near(cfg.fade_delay_ms, 7.5f));
+    CHECK(near(cfg.freq_offset_hz, -12.5f));
     CHECK(near(cfg.vox_threshold_dbfs, -30.5f) && near(cfg.noise_floor_dbfs, -90.0f) && near(cfg.ref_bw_hz, 3000.0f));
 
     /* The other end of each range. */
@@ -297,6 +303,14 @@ static void test_settings_refused(void)
     CHECK(apply("{\"linkbuffer\":9}") == CONSOLE_BAD_REQUEST);
     CHECK_STR(g_err, "linkbuffer: must be between 10 and 200 ms");
     CHECK(apply("{\"linkbuffer\":201}") == CONSOLE_BAD_REQUEST);
+    CHECK(apply("{\"doppler\":30.01}") == CONSOLE_BAD_REQUEST);
+    CHECK_STR(g_err, "doppler: must be between 0.01 and 30.00 Hz");
+    CHECK(apply("{\"doppler\":0}") == CONSOLE_BAD_REQUEST);
+    CHECK(apply("{\"fadedelay\":10.1}") == CONSOLE_BAD_REQUEST);
+    CHECK(apply("{\"offset\":-200.1}") == CONSOLE_BAD_REQUEST);
+    CHECK_STR(g_err, "offset: must be between -200.0 and 200.0 Hz");
+    CHECK(apply("{\"fade\":\"storm\"}") == CONSOLE_BAD_REQUEST);
+    CHECK_HAS(g_err, "fade: must be one of \"off\", \"mpg\", \"mpp\",");
     CHECK(apply("{\"match\":\"yes\"}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"snr\":1e30}") == CONSOLE_BAD_REQUEST);
     CHECK(apply("{\"snr\":-1e300}") == CONSOLE_BAD_REQUEST);
@@ -487,8 +501,13 @@ static void test_info(void)
     CHECK_HAS(g_buf, "{\"name\":\"voxhang\",\"label\":\"VOX hang\",\"group\":\"PTT\",\"unit\":\"ms\",\"min\":0,"
                      "\"max\":5000,\"step\":1}]}");
     /* Every setting the settings object has is in the list, and no other. */
-    static const char *const names[] = {"route",  "noise",      "snr",   "bw",   "floor", "atten",    "turnaround", "delay",
-                                        "period", "linkbuffer", "match", "line", "vox",   "voxlevel", "voxhang"};
+    static const char *const names[] = {"route",     "noise",  "snr",   "bw",     "floor",      "atten", "turnaround",
+                                        "fade",      "doppler", "fadedelay", "offset", "delay", "period",
+                                        "linkbuffer", "match",  "share", "line",   "vox",        "voxlevel", "voxhang"};
+    CHECK_HAS(g_buf, "{\"name\":\"doppler\",\"label\":\"Doppler spread\",\"group\":\"Path\",");
+    CHECK_HAS(g_buf, "\"unit\":\"Hz\",\"min\":0.01,\"max\":30.00,\"step\":0.01}");
+    CHECK_HAS(g_buf, "\"choices\":[\"off\",\"mpg\",\"mpp\",\"mpd\",\"mps\",\"nvis-d\",\"lowlat-d\",\"hilat-m\",\"hilat-d\","
+                     "\"custom\"]}");
     size_t listed = 0;
     for (const char *p = g_buf; (p = strstr(p, "{\"name\":\"")) != NULL; p++) listed++;
     CHECK(listed == sizeof names / sizeof names[0]);
@@ -872,12 +891,13 @@ static void test_telemetry(void)
         .target_ms = 30, .sent = 1, .send_failed = 2, .received = 3, .lost = 4, .late = 5, .off_frequency = 6,
         .underruns = 7, .overruns = 8, .dropped = 9, .repeated = 10,
     };
+    s.link_shared = true;
     size_t full = console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf);
     CHECK(full > 0 && json_valid(g_buf));
     CHECK_HAS(g_buf, "\"link\":{\"state\":\"receiving\",\"peer\":\"mock\\\"radio-0002\",\"peer_rx\":7074000,"
                      "\"peer_tx\":7076000,\"peer_keyed\":true,\"rssi\":-61,\"buffer\":35,\"target\":30,\"sent\":1,"
                      "\"send_failed\":2,\"received\":3,\"lost\":4,\"late\":5,\"off_frequency\":6,\"underruns\":7,"
-                     "\"overruns\":8,\"dropped\":9,\"repeated\":10},\"rssi\":-57}");
+                     "\"overruns\":8,\"dropped\":9,\"repeated\":10,\"shared\":true,\"leads\":false},\"rssi\":-57}");
     s.link.state = LINK_OFF_FREQUENCY;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
     CHECK_HAS(g_buf, "\"state\":\"off frequency\"");

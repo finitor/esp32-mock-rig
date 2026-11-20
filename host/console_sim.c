@@ -32,6 +32,7 @@
 #include "cat_civ.h"
 #include "clip_store.h"
 #include "console_api.h"
+#include "coord.h"
 #include "link.h"
 #include "mock_ctl.h"
 #include "rig_g90.h"
@@ -53,6 +54,7 @@ typedef struct {
     mock_ctl_t ctl;
     civ_t civ;
     link_t link;
+    coord_t coord;
     console_meter_t tx_meter, rx_meter;
     uint32_t tx_seen, rx_seen;
     int16_t parrot[PARROT_SECONDS * AE_PARROT_FS_HZ];
@@ -193,6 +195,7 @@ static void board_init(board_t *b, int index)
     civ_init(&b->civ, &rig_ic705, civ_tx, on_ptt, b);
     civ_set_private(&b->civ, MOCK_CTL_ADDR, mock_ctl_command, &b->ctl);
     mock_ctl_set_rigs(&b->ctl, &b->civ, rigs, sizeof rigs / sizeof rigs[0], NULL, NULL);
+    coord_init(&b->coord, &b->ctl, &b->link, 20261119u + 77u * (uint32_t)index);
 
     const mock_ctl_store_t store = {.save = kept_save, .forget = kept_forget, .ctx = b};
     const mock_ctl_clips_t clips = {.start = clips_start, .status = clips_status, .ctx = b};
@@ -213,6 +216,7 @@ static void board_housekeeping(board_t *b)
     ae_get_config(&b->engine, &cfg);
     link_configure(&b->link, cfg.route == AE_ROUTE_LINK, cfg.link_buffer_ms, cfg.link_match);
     link_set_radio(&b->link, (uint32_t)civ_rx_freq(&b->civ), (uint32_t)civ_tx_freq(&b->civ));
+    coord_tick(&b->coord, (uint32_t)(g_samples / 48u));
     link_tick(&b->link, (uint32_t)(g_samples / 48u));
 }
 
@@ -234,6 +238,11 @@ static void run(uint32_t ms)
                 console_meter_add(&b->tx_meter, tx, BLOCK);
             }
             if (b->recording) {
+                /* Both boards have the same clock here; on real ones the
+                 * shared clock is what brings them together. */
+                uint32_t seed, clock;
+                coord_fade_clock(&b->coord, (uint32_t)(g_samples / 48u), &seed, &clock);
+                ae_fade_clock(&b->engine, seed, clock);
                 ae_process(&b->engine, b->playing ? tx : NULL, rx, BLOCK);
                 console_meter_add(&b->rx_meter, rx, BLOCK);
             }
@@ -261,6 +270,10 @@ static void telemetry(board_t *b)
     s.fifo_level = b->playing ? 960u + (uint32_t)(rand() % 97) - 48u : 0u;
     s.has_link = true;
     link_get_status(&b->link, &s.link);
+    coord_status_t co;
+    coord_get_status(&b->coord, &co);
+    s.link_shared = co.sharing;
+    s.link_leads = co.leads;
     s.has_rssi = true;
     s.rssi_dbm = -52 - rand() % 4;
     console_telemetry_json(&b->ctl, &s, g_json, sizeof g_json);
