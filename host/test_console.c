@@ -11,6 +11,7 @@
 #include "cat_civ.h"
 #include "console_api.h"
 #include "mock_ctl.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 
 static int g_failed;
@@ -470,7 +471,8 @@ static void test_info(void)
     size_t n = console_info_json(&g_ctl, &info, g_buf, sizeof g_buf);
     CHECK(n > 0 && n == strlen(g_buf));
     CHECK(json_valid(g_buf));
-    CHECK_HAS(g_buf, "{\"api\":1,\"name\":\"mockradio-1a2b\",\"rig\":\"IC-705\",\"hamlib\":3085,\"parrot_capacity\":2.0,");
+    CHECK_HAS(g_buf, "{\"api\":1,\"name\":\"mockradio-1a2b\",\"rig\":\"IC-705\",\"hamlib\":3085,\"rigs\":[],"
+                     "\"parrot_capacity\":2.0,");
     CHECK_HAS(g_buf, "{\"name\":\"route\",\"label\":\"Receive route\",\"group\":\"Receive\",");
     CHECK_HAS(g_buf, "\"choices\":[\"monitor\",\"radio\",\"parrot\",\"link\"]}");
     CHECK_HAS(g_buf, "{\"name\":\"linkbuffer\",\"label\":\"Buffer\",\"group\":\"Link\",");
@@ -502,8 +504,57 @@ static void test_info(void)
     fresh_with(false);
     CHECK(console_info_json(&g_ctl, &odd, g_buf, sizeof g_buf) > 0);
     CHECK(json_valid(g_buf));
-    CHECK_HAS(g_buf, "\"name\":\"a\\\"b\\\\c\\u000a\",\"rig\":\"\",\"hamlib\":0,\"parrot_capacity\":0.0,");
+    CHECK_HAS(g_buf, "\"name\":\"a\\\"b\\\\c\\u000a\",\"rig\":\"\",\"hamlib\":0,\"rigs\":[],\"parrot_capacity\":0.0,");
     CHECK(console_info_json(&g_ctl, &odd, g_buf, 100) == 0);
+}
+
+/* The radio imitated: listed, shown, and changed. */
+static void test_personality(void)
+{
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
+    const console_info_t info = {.name = "mockradio-1a2b", .rig = "ignored", .hamlib_model = 1};
+    console_sample_t s;
+    memset(&s, 0, sizeof s);
+
+    fresh();
+    /* With no list of personalities there is nothing to change to. */
+    CHECK(console_rig_apply(&g_ctl, "{\"hamlib\":3088}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "the mock has no personality for Hamlib model 3088");
+
+    mock_ctl_set_rigs(&g_ctl, &g_civ, rigs, 2, NULL, NULL);
+    CHECK(console_info_json(&g_ctl, &info, g_buf, sizeof g_buf) > 0);
+    CHECK(json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"rig\":\"Icom IC-705\",\"hamlib\":3085,\"rigs\":[{\"name\":\"Icom IC-705\",\"hamlib\":3085},"
+                     "{\"name\":\"Xiegu G90\",\"hamlib\":3088}],\"parrot_capacity\":");
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, ",\"hamlib\":3085,\"host\":");
+
+    CHECK(apply("{\"atten\":6}") == CONSOLE_OK);
+    CHECK(console_rig_apply(&g_ctl, " { \"hamlib\" : 3088 } ", g_err, sizeof g_err) == CONSOLE_OK);
+    CHECK(g_err[0] == '\0' && g_civ.rig == &rig_g90);
+    CHECK(console_info_json(&g_ctl, &info, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, "\"rig\":\"Xiegu G90\",\"hamlib\":3088,\"rigs\":[");
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
+    CHECK_HAS(g_buf, ",\"hamlib\":3088,\"host\":");
+    CHECK(near(config().atten_db, 6.0f)); /* the mock's settings are not the radio's */
+
+    /* What it refuses, leaving the radio as it is. */
+    CHECK(console_rig_apply(&g_ctl, "{\"hamlib\":3073}", g_err, sizeof g_err) == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "the mock has no personality for Hamlib model 3073");
+    static const char *const bad[] = {
+        "",          "{}",           "3088",       "{\"hamlib\":\"3088\"}", "{\"hamlib\":3088.5}", "{\"hamlib\":-3088}",
+        "{\"hamlib\":0}", "{\"hamlib\":1e9}", "{\"model\":3088}", "{\"hamlib\":3088,\"x\":1}", "{\"hamlib\":3088",   "{\"hamlib\":null}",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        g_checks++;
+        if (console_rig_apply(&g_ctl, bad[i], g_err, sizeof g_err) != CONSOLE_BAD_REQUEST || g_err[0] == '\0') {
+            fail(__FILE__, __LINE__, "malformed request accepted");
+            printf("     request: %s\n", bad[i]);
+        }
+    }
+    CHECK(g_civ.rig == &rig_g90);
+    CHECK(console_rig_apply(&g_ctl, "{\"hamlib\":3085}", NULL, 0) == CONSOLE_OK);
+    CHECK(g_civ.rig == &rig_ic705);
 }
 
 static void test_json_string(void)
@@ -630,7 +681,7 @@ static void test_telemetry(void)
     CHECK(json_valid(g_buf));
     char want[1024];
     snprintf(want, sizeof want,
-             "{\"t\":1234,\"gen\":%lu,\"host\":false,"
+             "{\"t\":1234,\"gen\":%lu,\"hamlib\":0,\"host\":false,"
              "\"ptt\":{\"on\":false,\"cat\":false,\"line\":false,\"vox\":false},"
              "\"cat\":{\"freq\":7074000,\"txfreq\":7074000,\"mode\":\"USB-D\",\"split\":false,\"ok\":0,\"ng\":0,"
              "\"dropped\":0},"
@@ -668,7 +719,7 @@ static void test_telemetry(void)
     s.rssi_dbm = -57;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
     CHECK(json_valid(g_buf));
-    CHECK_HAS(g_buf, "\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false},");
+    CHECK_HAS(g_buf, "\"hamlib\":0,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false},");
     CHECK_HAS(g_buf, "\"cat\":{\"freq\":14074000,\"txfreq\":14075000,\"mode\":\"USB\",\"split\":true,"
                      "\"ok\":4000000000,\"ng\":2,\"dropped\":1},");
     CHECK_HAS(g_buf, "\"audio\":{\"tx\":{\"rms\":-12.1,\"peak\":-9.0},\"rx\":{\"rms\":-120.0,\"peak\":-120.0},");
@@ -742,6 +793,7 @@ int main(void)
     test_parrot_needs_buffer();
     test_same_settings_as_civ();
     test_info();
+    test_personality();
     test_json_string();
     test_meter();
     test_mode_names();

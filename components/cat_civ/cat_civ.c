@@ -179,13 +179,22 @@ void civ_set_private(civ_t *c, uint8_t addr, civ_private_fn fn, void *ctx)
     c->private_ctx = ctx;
 }
 
-void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, void *ctx)
+/* The radio as the personality has it at power-up. */
+static void power_up(civ_t *c, const civ_rig_t *rig)
 {
-    memset(c, 0, sizeof *c);
     c->rig = rig;
-    c->tx = tx;
-    c->on_ptt = on_ptt;
-    c->ctx = ctx;
+    c->sel = 0;
+    c->split = false;
+    c->ptt = false;
+    c->tuner = 0;
+    c->att = 0;
+    c->ts = 0;
+    c->rit_on = false;
+    c->rit_hz = 0;
+    memset(c->level, 0, sizeof c->level);
+    memset(c->meter, 0, sizeof c->meter);
+    memset(c->func, 0, sizeof c->func);
+    memset(c->setting, 0, sizeof c->setting);
 
     for (int v = 0; v < 2; v++) {
         c->vfo[v].freq = rig->init_freq[v];
@@ -200,6 +209,22 @@ void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, v
     for (size_t i = 0; i < rig->n_meters && i < CIV_MAX_METERS; i++) c->meter[i] = rig->meters[i].initial;
     for (size_t i = 0; i < rig->n_funcs && i < CIV_MAX_FUNCS; i++) c->func[i] = rig->funcs[i].initial;
     for (size_t i = 0; i < rig->n_settings && i < CIV_MAX_SETTINGS; i++) c->setting[i] = rig->settings[i].initial;
+}
+
+void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, void *ctx)
+{
+    memset(c, 0, sizeof *c);
+    c->tx = tx;
+    c->on_ptt = on_ptt;
+    c->ctx = ctx;
+    power_up(c, rig);
+}
+
+void civ_set_rig(civ_t *c, const civ_rig_t *rig)
+{
+    bool was_keyed = c->ptt;
+    power_up(c, rig);
+    if (was_keyed && c->on_ptt) c->on_ptt(c->ctx, false); /* the new radio starts in receive */
 }
 
 /* ---- command handlers ------------------------------------------------- */

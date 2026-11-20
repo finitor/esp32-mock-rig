@@ -35,7 +35,7 @@ check() {
     fi
 }
 
-check 0 "protocol 1, personality: Hamlib model 3085"
+check 0 "protocol 1, personality: Icom IC-705, Hamlib model 3085"
 check 0 "snr         +10.0 dB in 2500 Hz"            show
 check 0 "status      source nothing measured yet, gain +0.0 dB"
 check 0 "snr         -12.5 dB in 3000 Hz"            noise=on snr=-12.5 bw=3000
@@ -69,6 +69,11 @@ check 0 "parrot      delay 1.0 s, period off"
 check 0 "link        buffer 30 ms, frequency match on"
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "snr         +10.0 dB in 2500 Hz"
+
+check 0 "personality: Xiegu G90, Hamlib model 3088" snr=3 rig=g90
+check 0 "snr         +3.0 dB in 2500 Hz"
+check 1 "rig is ic705 or g90"                        rig=ts480
+check 0 "personality: Icom IC-705, Hamlib model 3085" rig=ic705
 
 [ "$fail" -eq 0 ] && echo "PASS" || echo "FAILED"
 exit "$fail"

@@ -15,10 +15,10 @@ Last updated: Nov 19, 2026.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
 - The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 966 KB image with the web console and the ESP-NOW link; 318 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 970 KB image with the web console and the ESP-NOW link; 339 KB with the console off and the link on a UART, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
-- The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two.
+- The G90 personality (Milestone 5, steps 27 and 28) is written. `rig_g90` is built from the Radioddity CI-V table, Hamlib's Xiegu backend and one log of a real G90, not from a radio: the G90 and DE-19 are not accessible during this project. It passes real Hamlib on the host: `rigctl -m 3088` (Hamlib 4.7.1 only) over a pseudo-terminal, 32 command groups, no command rejected. The radio imitated is chosen at run time, over CI-V (`60`), with `mockctl.py` or in the web console, and the firmware keeps the choice in flash. Reconciling it with the real radio (step 29) waits for the station.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two. Everything that can be written without hardware now is.
 - The two-board link (Milestone 4, steps 21 to 25) is written. Its core (`link`: packets, jitter buffer, loss and clock-drift handling, peer discovery, frequency matching, framing for a wire) is portable C with host unit tests that join two boards by a simulated path with loss, jitter, reordering and clocks that differ. It is a fourth receive route in `audio_engine`, with two settings on both control paths and its statistics in the web console. Two simulated boards have been watched hearing each other in a browser. The ESP-NOW and UART transports have only been compiled: no packet has crossed between two boards.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
@@ -27,12 +27,12 @@ Last updated: Nov 19, 2026.
 
 Build ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port on one USB cable, the way an Icom IC-705's USB port does. Modem and logging software (Data2G, WSJT-X, VARA, Winlink, fldigi) should drive it through Hamlib exactly as it would a real rig.
 
-The radio being imitated is a swappable personality. The first pass is an Icom IC-705. A later pass adds a Xiegu G90, so software can be set up on the bench and moved to the operator's real G90 without changing its rig settings.
+The radio being imitated is a swappable personality: an Icom IC-705, which came first, or a Xiegu G90, so software can be set up on the bench and moved to the operator's real G90 without changing its rig settings.
 
 In scope:
 
 - One USB connection that shows up as a USB sound card (UAC2, 48 kHz 16-bit mono, playback + capture) plus a USB serial port (CDC-ACM).
-- An Icom CI-V CAT emulation on the serial port: first an IC-705 that Hamlib (rig model 3085) accepts, later a G90 (rig model 3088).
+- An Icom CI-V CAT emulation on the serial port: an IC-705 that Hamlib (rig model 3085) accepts, or a G90 (rig model 3088), switchable at run time.
 - PTT from CAT, from a serial control line (Digirig style), and optionally VOX.
 - Parrot mode: record transmit audio into PSRAM and play it back as receive audio.
 - Channel simulation: noise at a set SNR, attenuation, optional fading.
@@ -90,7 +90,7 @@ Firmware modules:
 
 - `usb_composite`: descriptors and TinyUSB callbacks for UAC2 + CDC-ACM, including line-state changes
 - `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
-- `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
+- `rig_ic705` and `rig_g90`: the two personalities, behind one interface; the parser becomes one or the other at run time
 - `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
 - `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. In the link route the receiver hears a second board and the transmit audio goes to it; the engine only hands the audio over, through two functions the firmware supplies. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
 - `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, the link's settings, PTT sources and status now; personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
@@ -109,6 +109,7 @@ Repository layout:
 | --- | --- |
 | `components/cat_civ/` | CI-V core |
 | `components/rig_ic705/` | IC-705 personality |
+| `components/rig_g90/` | G90 personality |
 | `components/audio_dsp/` | Audio DSP |
 | `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
@@ -165,14 +166,14 @@ The mock radio speaks Icom's CI-V protocol. Which radio it claims to be is a per
 | Personality | Pass | Hamlib model | Default CI-V address | Reference |
 | --- | --- | --- | --- | --- |
 | Icom IC-705 | First | 3085 | `A4` | Icom's IC-705 CI-V Reference Guide; Hamlib's Icom backend |
-| Xiegu G90 | Later | 3088 | `70`, `88` or `A4` depending on source | Hamlib's `xiegu.c`; Radioddity CAT manual; the real radio when available |
+| Xiegu G90 | Second | 3088 | `70` in the manual; Hamlib sends to `A4` (4.7.1) or `88` (master) | Radioddity CAT manual; Hamlib's `xiegu.c`; the real radio when available |
 
 ### Core and personalities
 
 - **`cat_civ` (core):** buffers bytes until `FD`, validates the frame, dispatches on command and sub-command, keeps the radio state, and builds replies. It implements the commands every CI-V radio shares.
-- **Personality (`rig_ic705`, later `rig_g90`):** a table of what makes one radio different: default address, transceiver ID reply, mode-byte table, which commands and sub-commands exist, frequency coverage and transmit bands, power limit, level and meter defaults, the `1A 05` menu settings it has, power-up state, and handlers for radio-specific commands.
+- **Personality (`rig_ic705`, `rig_g90`):** a table of what makes one radio different: default address, transceiver ID reply, mode-byte table, which commands and sub-commands exist, frequency coverage and transmit bands, power limit, level and meter defaults, the `1A 05` menu settings it has, power-up state, and handlers for radio-specific commands.
 
-The core never names a radio. Anything radio-specific goes through the personality interface, so adding the G90 means adding one module rather than editing the core. The first pass selects the personality at build time; run-time selection (a stored setting) arrives with the G90. The CI-V address cannot be used to pick the personality, because Hamlib 4.7.1 addresses both radios at `A4`.
+The core never names a radio. Anything radio-specific goes through the personality interface, so adding the G90 meant adding one module: the core gained only `civ_set_rig()`, which makes the parser another radio as if one had been switched off and the other on (power-up state, PTT released). Which radio is a run-time choice: the mock-only control `60`, `mockctl.py rig=g90` or the web console's selector, kept in flash by the firmware, with the build's choice (menuconfig) used until a board has been told. It is not one of the settings that `01` (reset) puts back. The CI-V address cannot be used to pick the personality, because Hamlib 4.7.1 addresses both radios at `A4`.
 
 ### Framing
 
@@ -221,17 +222,46 @@ How it is verified without a radio:
 - **Icom's CI-V Reference Guide** gives the official data layout for every command.
 - Hamlib's `simulators/simic705.c` is a hint only. It sends nothing for unknown commands, does not handle `1A 05`, and rewrites the received buffer rather than building replies.
 
-### G90 personality (later pass)
+### G90 personality
 
-What is known so far, kept here so the later pass starts from it:
+Built from documents, not from a radio. Each fact below is marked with where it comes from:
 
-- The G90 speaks a subset of CI-V at 19200 baud, 8N1, no handshake. Hamlib keys it with `1C 00`.
-- Addresses: Hamlib 4.7.1 sends to `A4`, current Hamlib master defaults to `88`, and `70` is reported for some units. The any-address rule covers all three.
-- Identity: newer Hamlib probes `1D 19` first and accepts `00 90` as a G90, then falls back to `19 00`.
-- Hamlib notes that firmware v20240504.8 handles `25`/`26` badly (Hamlib issue 1547), and that undocumented `14` sub-commands return a fixed 255. Whether to support `25`/`26` or reply error so Hamlib falls back is undecided.
-- Radio facts: receive 0.5–30 MHz, transmit on the amateur HF bands, 20 W maximum. Digital modes are U-D and L-D; how they are reported over CI-V is not confirmed.
-- Hamlib's `simulators/simxiegug90.c` is only a partial reference: it answers the ID probe with a value Hamlib does not recognise, never answers `1D 19`, stores Hamlib enum values rather than CI-V mode codes, and sends nothing for unknown commands.
-- No reference traffic from a real G90 exists for this project. Until the station is available, the G90 personality is built from Hamlib's `rigs/icom/xiegu.c` and the Radioddity CAT manual, and is unverified against hardware.
+- **[M]** Radioddity, "Xiegu G90 CAT control and digital modes" v1.0 (2021-06-23), section 6: the official command table.
+- **[H]** Hamlib `rigs/icom/xiegu.c`, read at 4.5.5, 4.6.5, 4.7.1 and master. Master's G90 code cites [M], the specification sheet, and observations on stock firmware v1.81.
+- **[I]** Hamlib issue 1547: a log of a G90 with firmware 20240504.8.
+- **[R]** What `rigctl -m 3088` (Hamlib 4.7.1) sent this personality on the host, and accepted back.
+
+| Command | In the personality | Source |
+| --- | --- | --- |
+| `00`, `01` | Set frequency and mode with no reply (transceive) | M |
+| `02` | Frequency edges: lower, `2D` ('-'), higher; 0.5 and 30 MHz | M, range from H |
+| `03`, `05` | Read and set the frequency, 5 BCD bytes, least significant first | M, R |
+| `04`, `06` | Read and set mode and filter. Modes `00` LSB, `01` USB, `02` AM, `03` CW, `05` FM, `07` CW-R; filters 1 to 3 | M; FM and the filter byte from H |
+| `07` | `00` VFO A, `01` VFO B, `B0` swap. No `A0` | M |
+| `0F` | `00`/`01` split off and on. No repeater duplex | M |
+| `11` | Attenuator: stores the byte given, reads it back | Differs from the radio, see below |
+| `14` | `01` AF, `03` squelch, `09` CW sidetone, `0A` power, `0C` key speed, as 0 to 255; `02` RF gain. Any other sub-command reads as 255 and cannot be set | M; RF gain from H |
+| `15` | `01` squelch status, `02` S-meter, `11` power, `12` SWR | M |
+| `16` | `02` preamplifier, `12` AGC (off, fast, middle, slow), `22` NB, `44` compressor, `50` dial lock | M |
+| `19 00` | Identity: `70` | H: the value Hamlib takes for a G90. Not in M |
+| `1A 06` | Data mode switch: U-D and L-D are USB and LSB with it on. Reads back as two bytes, the second always `00` | H (Hamlib selects data modes this way); the second byte from a note in Xiegu's X6100 CI-V table seen only as a search-result quotation |
+| `1C 00`, `1C 01` | PTT; tuner off, on, tune | M, R |
+| `1D 19` | Xiegu's identity command on newer firmware: `00 90` | H (master tries it first) |
+| `21` | RIT | H (master sets it on a tested G90). Not in M |
+| `25`, `26` | Frequency and mode of either VFO | I, R: see below |
+| `10`, `18`, `1A 03`, `1A 05` | Refused | Not in M, and Hamlib does not send them to a G90 |
+
+**Commands 25 and 26.** They are not in [M], and [I] shows firmware 20240504.8 answering `25` wrongly. But Hamlib tries them on a G90, and if they are refused its first mode command of every session fails: `rigctl -m 3088` returned "Command rejected by the rig" for the first `m` when this personality refused them. So the personality answers them, correctly. A program that works here may meet the radio's faults there.
+
+**Known differences from the radio.** None stops Hamlib; all are recorded so that a surprise on the real station has a first suspect.
+
+- The radio echoes each command before answering it [I]. The mock does not, like an Icom with echo off; Hamlib copes with either.
+- The radio answers PTT (older firmware) and the attenuator with the command itself, not `FB` [H]. The mock answers `FB`, which Hamlib accepts in both versions read.
+- The attenuator command toggles whatever its data [M] and reads back `0C` for on [H]. The mock stores the byte it is given, which is what Hamlib 4.7.1 (`12`) and master (`01`) each expect to read back.
+- Some of the radio's replies hold bytes that are not BCD: full power as `5F`, some AF and SWR values [H]. The mock's replies are always BCD.
+- The radio's address is `70` by default and it answers `88` and others [M]; [I] shows one answering `A4`. The mock answers any address.
+
+**Not checked.** Only Hamlib 4.7.1 has been run. Hamlib master differs for the G90 in ways read from its source and covered by unit tests, not by running it: it addresses `88`, tries `1D 19` first, sends `11 00`/`11 01` for the attenuator and `21 00` for RIT. No Android or desktop program that speaks to a G90 directly has been tried, and nothing has been compared with a real G90.
 
 ### Mock-only controls
 
@@ -271,7 +301,8 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `52` | VOX threshold | Tenths of a dB below full scale, 2 bytes: 6.0 to 80.0 |
 | `53` | VOX hang time | ms, 2 bytes: 0 to 5000 |
 | `54` | PTT status, read only | The sources keying the radio now: `01` CAT, `02` control line, `04` VOX, added together; `00` is receiving |
-| `31`, `60` | Reserved: play stored clip N, personality | Refused until those parts exist |
+| `60` | The radio imitated | Its Hamlib model number in BCD, 2 bytes: `30 85` the IC-705, `30 88` the G90. Setting it switches radios; the new one starts from its power-up state. Refused for a model the mock does not have |
+| `31` | Reserved: play stored clip N | Refused until that part exists |
 
 Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
 
@@ -286,11 +317,12 @@ mockctl.py -p PORT replay                   play the parrot's recording again
 mockctl.py -p PORT vox=on voxlevel=-40      key from transmit audio (Data2G's default PTT mode)
 mockctl.py -p PORT line=rts                 key from the RTS line
 mockctl.py -p PORT route=link linkbuffer=50 hear a second board, with 50 ms of buffer
+mockctl.py -p PORT rig=g90                  become a Xiegu G90 (rig=ic705 to go back)
 ```
 
 Limits, as built:
 
-- Settings live in RAM. A power cycle returns to the build-time values (menuconfig); `01` returns to them without one.
+- Settings live in RAM. A power cycle returns to the build-time values (menuconfig); `01` returns to them without one. The radio imitated is the exception: the firmware keeps it in flash, and `01` leaves it alone.
 - The controls share the CAT port, so they can only be sent while no other program is using it, or by the program that is. A reply read by a second program on the same port is lost to the sender and may confuse the other. A phone app holding the port leaves no way in at all; the [web console](#web-control-and-telemetry-console) is the way in then.
 - `rigctl`'s `w` command sends a frame to `F0` (seen in the pseudo-terminal log) but printed no reply with Hamlib 4.7.1, so it can set but not usefully read.
 - Verified on the host only: unit tests through the real parser and engine, and `mockctl.py` against the parser over a pseudo-terminal. Not run on a board.
@@ -471,6 +503,7 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 | `GET /api/info` | The board's name, the personality, and the list of settings: each one's name, label, group, and either its choices or its unit, range and step |
 | `GET /api/settings` | Every setting: `{"route":"monitor","noise":"off","snr":10.0,"bw":2500, ...}` |
 | `POST /api/settings` | Change any subset: `{"noise":"on","snr":-12.5}`. Answers with every setting, or with `{"error":"snr: must be between -60.0 and 80.0 dB"}` |
+| `POST /api/rig` | Change the radio imitated: `{"hamlib":3088}` |
 | `POST /api/reset` | Back to the power-up settings |
 | `POST /api/replay` | Play the parrot's recording again |
 | `GET /api/telemetry` | One telemetry snapshot |
@@ -595,10 +628,10 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 25. Written, compiled only: UART transport with framing and a check, as a build-time alternative.
 26. Acceptance: two PCs running fldigi or VARA first, then two Android phones running Data2G in ARQ mode, stepping the SNR down from the web console to watch speed adaptation.
 
-**Milestone 5: G90 personality (later pass)**
+**Milestone 5: G90 personality**
 
-27. Run-time personality selection as a stored setting, switched by a mock-only control.
-28. `rig_g90` from Hamlib's `xiegu.c` and the Radioddity CAT manual; test with `rigctl -m 3088 -s 19200 -vvvv` on the host, against more than one Hamlib version because the default address has changed.
+27. Written, host-tested: run-time personality selection, switched by mock-only control `60`, by `mockctl.py` and in the web console. The firmware stores the choice in flash; that part is compiled only.
+28. Written: `rig_g90` from the Radioddity CAT manual and Hamlib's `xiegu.c`, with host unit tests. `rigctl -m 3088` (Hamlib 4.7.1) runs against it on the host with no command rejected. Other Hamlib versions were read, not run.
 29. When the real G90 and DE-19 are available: capture the DE-19's USB descriptors and a `rigctl` session against the radio, and reconcile the personality with them.
 
 ## Decision log
@@ -655,6 +688,11 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | A board pairs with the first other board it hears announcing itself, and audio goes to that board's address only. | Two boards need no set-up, and addressed ESP-NOW frames are acknowledged and retried by the radio where broadcast ones are not. |
 | Nov 19, 2026 | The link's transport (ESP-NOW or UART) is chosen at build time; the link's buffer and frequency matching are run-time settings in the engine's settings. | The UART needs pins and wires, so it is a property of the build; the two settings get the CI-V control, the console form and reset for free by living with the others. |
 | Nov 19, 2026 | Wi-Fi bring-up moved to its own component, `wifi_net`, used by the web console and by the ESP-NOW transport. | Both need the radio on one channel, and the link must work with the console switched off. |
+| Nov 19, 2026 | The G90 personality answers commands `25` and `26`, though the manual does not list them and one firmware answers them wrongly. | Hamlib tries them on a G90, and its first mode command of each session fails if they are refused (seen with rigctl 4.7.1). A bench stand-in that Hamlib rejects is no use; the difference from the radio is written down. |
+| Nov 19, 2026 | The G90 personality does not copy the radio's known departures from CI-V: the echo, the non-`FB` acknowledgements, the toggling attenuator, the non-BCD bytes. | Hamlib accepts the plain forms in every version read, the departures differ between firmware versions, and none could be checked against a radio. They are listed in the design instead. |
+| Nov 19, 2026 | The G90 identifies itself as `70` to `19 00` and `00 90` to `1D 19`. | Those are the values Hamlib's backend recognises as a G90, in 4.7.1 and in master. |
+| Nov 19, 2026 | The radio imitated is chosen at run time by its Hamlib model number, through mock-only control `60` or the web console, and switching is power-off and power-on: `civ_set_rig()` in the core. | One firmware image serves both radios; the model number is what the user types into their software anyway; a clean power-up state leaves nothing of one radio in the other. The core still names no radio. |
+| Nov 19, 2026 | The firmware stores the choice of radio in flash. Nothing else is stored, and reset (`01`) does not touch it. | A board set up as the station's radio should still be that radio after a power cycle; settings should still start from a known state. |
 | Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
@@ -688,7 +726,10 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Should the S-meter (`15 02`) follow the receive level the engine produces? `civ_set_meter` exists for it. Not done with step 13; no client seen so far depends on it.
 - [ ] Are the VOX defaults right for real modems (−40 dBFS, 100 ms hang), and does Data2G in its default VOX mode hold a clean transmission against the mock with `vox=on`? (after step 9)
 - [ ] Is the RGB LED on GPIO48 on the boards that arrive, does it need the solder pad bridged, and is 10 % brightness right? (step 6)
-- [ ] G90, later pass: exact replies (BCD byte order, mode bytes for U-D and L-D, ID bytes for `19 00` and `1D 19`, behaviour on unknown commands, echo), and whether to support `25`/`26` (steps 28–29)
+- [x] G90: which replies to give, and whether to support `25`/`26`. Decided from the manual, Hamlib's source and a run of `rigctl -m 3088` (Nov 19, 2026): see [G90 personality](#g90-personality). `25`/`26` are supported, because Hamlib's first mode command fails without them.
+- [ ] G90: how does the real radio differ from the personality? Known departures are listed in its section; what a real G90 answers to `26`, to a set of a level it lacks, to `1A 06`, and whether its data modes read back as assumed, are not known. (step 29)
+- [ ] Does Hamlib master (default address `88`, `1D 19` first) accept the G90 personality when run, not only when read? And do WSJT-X, fldigi and Data2G's bundled Hamlib 4.7.2 with model 3088? (after step 9)
+- [ ] Does writing the choice of radio to flash from the USB task disturb audio for the few milliseconds it takes? (after step 9)
 - [ ] G90, later pass: what the real DE-19 presents over USB (VID/PID, one or two COM ports, audio format, device name), and whether it keys the G90 from RTS or DTR or only by CAT. One setup guide says to hold both lines low with PTT set to CAT. (step 29)
 - [x] How control-line PTT mode is selected and stored. Selected with mock-only control `50` or at build time (Nov 19, 2026). It is not stored: like every setting it returns to its build-time value at power-up until step 14. The BOOT button is not used.
 - [x] Exact S3 IN-endpoint limit, and whether duplex UAC2 with a feedback endpoint plus CDC fits. Four IN endpoints besides EP0; it fits exactly, with FIFO space to spare.
@@ -713,7 +754,8 @@ No existing project does exactly this (checked Nov 2026); these are the closest 
 | Icom IC-705 CI-V Reference Guide (PDF from Icom's download site; mirrored on [ManualsLib](https://www.manualslib.com/manual/2012725/Icom-Ic-705.html)) | Official command table and data formats for the first-pass personality |
 | Hamlib source: `rigs/icom/` (IC-705 backend) and [`simulators/simic705.c`](https://github.com/Hamlib/Hamlib/blob/master/simulators/simic705.c) | What Hamlib sends an IC-705 and expects back; the simulator is a hint only |
 | Hamlib source: [`rigs/icom/xiegu.c`](https://github.com/Hamlib/Hamlib/blob/master/rigs/icom/xiegu.c) and [`simulators/simxiegug90.c`](https://github.com/Hamlib/Hamlib/blob/master/simulators/simxiegug90.c) | What Hamlib sends a G90 and expects back; the simulator is only a partial reference |
-| Radioddity "Xiegu G90 CAT control and digital modes" manual v1.0 (2021-06-23) | The CAT command source Hamlib's backend cites |
+| [Radioddity "Xiegu G90 CAT control and digital modes" manual v1.0 (2021-06-23)](https://radioddity.com/blogs/all/xiegu-g90-cat-and-digital-modes) | The official CI-V command table (section 6); the source of the G90 personality and the one Hamlib's backend cites |
+| [Hamlib issue 1547](https://github.com/Hamlib/Hamlib/issues/1547) | A log of a real G90 (firmware 20240504.8): it echoes commands, answers at `A4`, and answers `25` wrongly |
 | [G90 digital modes with the DE-19 (user write-up)](https://hmdsamarasekara.github.io/posts/xiegu-g90-digital-modes/) | DE-19 cabling, serial settings and G90 menu settings; reports a CH342 chip |
 | [Data2G](https://github.com/arodland/Data2G/) | Target modem; Android USB code under `native/core/audio/android`, `native/core/rig/android`, `native/android-app` |
 | [FT8CN](https://github.com/N0BOY/FT8CN) and its maintained fork [FT8AF](https://github.com/patrickrb/FT8AF) | Android FT8 apps with their own CI-V code; Icom commands in `rigs/IcomRig.java` and `rigs/IcomRigConstant.java` |

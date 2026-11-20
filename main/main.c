@@ -12,8 +12,9 @@
  * it, and the RGB LED shows what it is doing. In the link route the transmit
  * audio goes to a second board and that board's comes back as receive
  * audio. A web console over Wi-Fi changes the same settings and shows live
- * telemetry. Before USB starts, a
- * short self-check proves the portable modules run on the target.
+ * telemetry. The radio imitated is an Icom IC-705 or a Xiegu G90, chosen over
+ * either control path and remembered in flash. Before USB starts, a short
+ * self-check proves the portable modules run on the target.
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -28,12 +29,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "sdkconfig.h"
 
 #include "audio_dsp.h"
 #include "audio_engine.h"
 #include "cat_civ.h"
 #include "mock_ctl.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 #include "status_led.h"
 #include "ui_led.h"
@@ -139,6 +143,64 @@ static bool link_rx_op(void *ctx, int16_t *out, size_t n)
     return link_rx(ctx, out, n);
 }
 #endif
+
+/* ---- the radio imitated ------------------------------------------------------
+ *
+ * One of these personalities, chosen with the mock's own control 60 or in
+ * the web console and kept in flash, so that a board stays the radio it was
+ * made. A board that has never been told starts as the build's choice.
+ */
+static const civ_rig_t *const s_rigs[] = {&rig_ic705, &rig_g90};
+#define N_RIGS (sizeof s_rigs / sizeof s_rigs[0])
+
+#define RIG_NAMESPACE "mockradio"
+#define RIG_KEY "rig"
+
+static const civ_rig_t *rig_at_start(void)
+{
+#ifdef CONFIG_MOCK_RIG_G90
+    const civ_rig_t *rig = &rig_g90;
+#else
+    const civ_rig_t *rig = &rig_ic705;
+#endif
+    nvs_handle_t nvs;
+    uint16_t model = 0;
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        err = nvs_flash_erase();
+        if (err == ESP_OK) err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no flash storage (%s): the choice of radio will not be remembered", esp_err_to_name(err));
+        return rig;
+    }
+    if (nvs_open(RIG_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return rig; /* nothing stored yet */
+    if (nvs_get_u16(nvs, RIG_KEY, &model) == ESP_OK) {
+        for (size_t i = 0; i < N_RIGS; i++) {
+            if (s_rigs[i]->hamlib_model == model) rig = s_rigs[i];
+        }
+    }
+    nvs_close(nvs);
+    return rig;
+}
+
+/* Runs on the task that changed the radio: the USB task for CAT, the web
+ * console's for the page. A flash write takes a few milliseconds. */
+static void rig_changed(void *ctx, const civ_rig_t *rig)
+{
+    nvs_handle_t nvs;
+    (void)ctx;
+
+    ESP_LOGI(TAG, "now imitating %s (Hamlib model %d)", rig->name, rig->hamlib_model);
+    esp_err_t err = nvs_open(RIG_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_set_u16(nvs, RIG_KEY, (uint16_t)rig->hamlib_model);
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (err != ESP_OK) ESP_LOGW(TAG, "the choice of radio was not stored: %s", esp_err_to_name(err));
+}
 
 /* Call with the CAT lock held, or before anything else uses the parser. */
 static void link_follow_radio(void)
@@ -461,8 +523,6 @@ static void console_start(void)
 {
     const web_console_config_t cfg = {
         .ctl = &s_ctl,
-        .rig = rig_ic705.name,
-        .hamlib_model = rig_ic705.hamlib_model,
         .lock = cat_lock,
         .unlock = cat_unlock,
         .sample = console_sample,
@@ -474,7 +534,8 @@ static void console_start(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "USB mock radio: %s personality (Hamlib model %d)", rig_ic705.name, rig_ic705.hamlib_model);
+    const civ_rig_t *rig = rig_at_start();
+    ESP_LOGI(TAG, "USB mock radio: %s personality (Hamlib model %d)", rig->name, rig->hamlib_model);
 
     size_t psram = esp_psram_is_initialized() ? esp_psram_get_size() : 0;
     if (psram) {
@@ -495,8 +556,9 @@ void app_main(void)
     console_meter_init(&s_tx_meter);
     console_meter_init(&s_rx_meter);
 #endif
-    civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
+    civ_init(&s_civ, rig, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
+    mock_ctl_set_rigs(&s_ctl, &s_civ, s_rigs, N_RIGS, rig_changed, NULL);
     link_follow_radio();
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);

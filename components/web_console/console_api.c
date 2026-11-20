@@ -169,12 +169,19 @@ size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, s
     ae_parrot_status_t par;
     ae_get_parrot_status(m->engine, &par);
 
+    const civ_rig_t *rig = mock_ctl_rig(m);
     out_init(&o, buf, cap);
     out_f(&o, "{\"api\":%d,\"name\":", CONSOLE_API_VERSION);
     out_str(&o, info->name ? info->name : "");
     out_f(&o, ",\"rig\":");
-    out_str(&o, info->rig ? info->rig : "");
-    out_f(&o, ",\"hamlib\":%d,\"parrot_capacity\":", info->hamlib_model);
+    out_str(&o, rig ? rig->name : info->rig ? info->rig : "");
+    out_f(&o, ",\"hamlib\":%d,\"rigs\":[", rig ? rig->hamlib_model : info->hamlib_model);
+    for (size_t i = 0; rig && i < m->n_rigs; i++) {
+        out_f(&o, "%s{\"name\":", i ? "," : "");
+        out_str(&o, m->rigs[i]->name);
+        out_f(&o, ",\"hamlib\":%d}", m->rigs[i]->hamlib_model);
+    }
+    out_f(&o, "],\"parrot_capacity\":");
     out_scaled(&o, (int32_t)((par.capacity_ms + 50) / 100), 10);
     out_f(&o, ",\"settings\":[");
     for (size_t i = 0; i < ARRAY_LEN(csets); i++) {
@@ -505,6 +512,34 @@ console_result_t console_settings_apply(mock_ctl_t *m, const char *json, char *e
     return CONSOLE_OK;
 }
 
+console_result_t console_rig_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap)
+{
+    static const char malformed[] = "expected the radio's Hamlib model number, like {\"hamlib\":3088}";
+    const char *p = json;
+    bool first = true;
+    bool have = false;
+    double model = 0;
+    jmember_t mem;
+    int r;
+
+    if (err && err_cap) err[0] = '\0';
+    if (!j_open(&p)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+    while ((r = j_next(&p, &first, &mem)) == 1) {
+        if (mem.name_len != 6 || memcmp(mem.name, "hamlib", 6) != 0 || mem.type != J_NUMBER) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+        }
+        model = mem.num;
+        have = true;
+    }
+    if (r < 0 || !have || !(model >= 1.0 && model <= 9999.0) || model != floor(model)) {
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+    }
+    if (!mock_ctl_select_rig(m, (int)model)) {
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "the mock has no personality for Hamlib model %d", (int)model);
+    }
+    return CONSOLE_OK;
+}
+
 size_t console_error_json(const char *message, char *buf, size_t cap)
 {
     out_t o;
@@ -621,8 +656,9 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     console_mode_name(s->mode, s->data, mode, sizeof mode);
 
     out_init(&o, buf, cap);
-    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"host\":", (unsigned long)s->uptime_ms,
-          (unsigned long)ae_config_gen(m->engine));
+    const civ_rig_t *rig = mock_ctl_rig(m);
+    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"hamlib\":%d,\"host\":", (unsigned long)s->uptime_ms,
+          (unsigned long)ae_config_gen(m->engine), rig ? rig->hamlib_model : 0);
     out_bool(&o, s->host);
 
     out_f(&o, ",\"ptt\":{\"on\":");

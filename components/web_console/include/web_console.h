@@ -9,6 +9,7 @@
  *   GET  /api/info        who this is and the list of settings
  *   GET  /api/settings    every setting
  *   POST /api/settings    change settings: a JSON object, any subset
+ *   POST /api/rig         change the radio imitated: {"hamlib":3088}
  *   POST /api/reset       back to the power-up settings
  *   POST /api/replay      play the parrot's recording again
  *   GET  /api/telemetry   one snapshot of the telemetry
@@ -31,12 +32,11 @@ extern "C" {
 #endif
 
 typedef struct {
-    mock_ctl_t *ctl; /* the settings, shared with the CI-V controls */
-    const char *rig; /* the personality's name and Hamlib model, for the page */
-    int hamlib_model;
+    mock_ctl_t *ctl; /* the settings and the choice of radio, shared with the CI-V controls */
 
-    /* Held around every change of settings, so that it cannot interleave
-     * with a change arriving over CAT. Must not block for long. */
+    /* Held around every change of settings or of the radio imitated, so that
+     * it cannot interleave with a change arriving over CAT. Must not block
+     * for long. */
     void (*lock)(void *ctx);
     void (*unlock)(void *ctx);
 

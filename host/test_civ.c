@@ -1,14 +1,16 @@
 /*
- * Unit tests for cat_civ with the IC-705 personality.
+ * Unit tests for cat_civ with the IC-705 and G90 personalities.
  *
  * The request/reply pairs marked "rigctl" were recorded from Hamlib 4.7.1
  * (rigctl -m 3085) talking to this parser through host/civ_pty; Hamlib
- * accepted every reply. They are kept here as regression fixtures.
+ * accepted every reply. They are kept here as regression fixtures. The G90
+ * personality's were recorded the same way with rigctl -m 3088.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include "cat_civ.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 
 static uint8_t g_out[512];
@@ -379,6 +381,193 @@ static void test_external_ptt(void)
     CHECK(g_ptt_events == 2); /* the other source never calls back */
 }
 
+/* ---- the G90 personality ------------------------------------------------------ */
+
+static void fresh_g90(civ_t *c)
+{
+    civ_init(c, &rig_g90, tx, on_ptt, NULL);
+    g_ptt_events = 0;
+}
+
+static void test_g90_rigctl(void)
+{
+    civ_t c;
+    fresh_g90(&c);
+    /* rigctl: what Hamlib 4.7.1 sends when it opens a G90, and reads back. */
+    EXPECT(&c, "fe fe a4 e0 03 fd", "fe fe e0 a4 03 00 40 07 14 00 fd");
+    EXPECT(&c, "fe fe a4 e0 25 00 fd", "fe fe e0 a4 25 00 00 40 07 14 00 fd");
+    EXPECT(&c, "fe fe a4 e0 19 00 fd", "fe fe e0 a4 19 00 70 fd"); /* 70: Hamlib takes it for a G90 */
+    EXPECT(&c, "fe fe a4 e0 26 00 fd", "fe fe e0 a4 26 00 01 01 01 fd"); /* USB, data, filter 1: U-D */
+    EXPECT(&c, "fe fe a4 e0 1c 00 fd", "fe fe e0 a4 1c 00 00 fd");
+    /* rigctl: F 7074000, M PKTLSB, T 1, T 0 */
+    EXPECT(&c, "fe fe a4 e0 25 00 00 40 07 07 00 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 26 00 00 01 01 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 26 00 fd", "fe fe e0 a4 26 00 00 01 01 fd");
+    EXPECT(&c, "fe fe a4 e0 1c 00 01 fd", "fe fe e0 a4 fb fd");
+    CHECK(civ_ptt(&c) && g_ptt_events == 1 && g_ptt_last);
+    EXPECT(&c, "fe fe a4 e0 1c 00 00 fd", "fe fe e0 a4 fb fd");
+    CHECK(!civ_ptt(&c) && g_ptt_events == 2);
+    CHECK(c.frames_ng == 0);
+
+    /* The other addresses a G90 is found at: the manual's default, and the
+     * one newer Hamlib uses. */
+    EXPECT(&c, "fe fe 70 e0 03 fd", "fe fe e0 70 03 00 40 07 07 00 fd");
+    EXPECT(&c, "fe fe 88 e0 03 fd", "fe fe e0 88 03 00 40 07 07 00 fd");
+    /* The identity command of newer firmware, which newer Hamlib tries first. */
+    EXPECT(&c, "fe fe 88 e0 1d 19 fd", "fe fe e0 88 1d 19 00 90 fd");
+    EXPECT(&c, "fe fe 88 e0 1d 00 fd", "fe fe e0 88 fa fd");
+    EXPECT(&c, "fe fe 88 e0 1d 19 00 fd", "fe fe e0 88 fa fd");
+}
+
+static void test_g90_manual(void)
+{
+    civ_t c;
+    fresh_g90(&c);
+
+    /* Modes: LSB USB AM CW FM CW-R. No RTTY and no wide FM. */
+    EXPECT(&c, "fe fe 70 e0 04 fd", "fe fe e0 70 04 01 01 fd");
+    EXPECT(&c, "fe fe 70 e0 06 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 06 02 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 06 03 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 06 05 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 06 07 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 04 fd", "fe fe e0 70 04 07 01 fd");
+    EXPECT(&c, "fe fe 70 e0 06 04 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 06 06 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 06 08 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 06 17 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 06 01 fd", "fe fe e0 70 fb fd");
+
+    /* The data modes are USB and LSB with the data switch; it reads back as
+     * two bytes, the second always 0. */
+    EXPECT(&c, "fe fe 70 e0 1a 06 fd", "fe fe e0 70 1a 06 01 00 fd");
+    EXPECT(&c, "fe fe 70 e0 1a 06 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 1a 06 fd", "fe fe e0 70 1a 06 00 00 fd");
+    EXPECT(&c, "fe fe 70 e0 1a 06 01 02 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 1a 06 fd", "fe fe e0 70 1a 06 01 00 fd");
+    EXPECT(&c, "fe fe 70 e0 04 fd", "fe fe e0 70 04 01 02 fd");
+
+    /* 0.5 to 30 MHz, and the band edges say so. */
+    EXPECT(&c, "fe fe 70 e0 02 fd", "fe fe e0 70 02 00 00 50 00 00 2d 00 00 00 30 00 fd");
+    EXPECT(&c, "fe fe 70 e0 05 00 00 50 00 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 05 00 00 00 30 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 05 99 99 49 00 00 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 05 01 00 00 30 00 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 05 00 00 20 44 01 fd", "fe fe e0 70 fa fd"); /* 144.2 MHz: not this radio */
+    EXPECT(&c, "fe fe 70 e0 05 00 40 07 14 00 fd", "fe fe e0 70 fb fd");
+    CHECK(civ_in_tx_range(&c, 14074000) && civ_in_tx_range(&c, 5357000));
+    CHECK(!civ_in_tx_range(&c, 13000000) && !civ_in_tx_range(&c, 50313000));
+
+    /* VFOs: A, B and swap; no "A = B". Split, but no repeater duplex. */
+    EXPECT(&c, "fe fe 70 e0 07 01 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 03 fd", "fe fe e0 70 03 00 40 07 07 00 fd");
+    EXPECT(&c, "fe fe 70 e0 07 b0 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 03 fd", "fe fe e0 70 03 00 40 07 14 00 fd");
+    EXPECT(&c, "fe fe 70 e0 07 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 07 a0 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 0f 01 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 0f fd", "fe fe e0 70 0f 01 fd");
+    EXPECT(&c, "fe fe 70 e0 0f 00 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 0f 11 fd", "fe fe e0 70 fa fd");
+
+    /* Levels: the five in the manual and RF gain. Any other reads as 255
+     * and cannot be set. */
+    EXPECT(&c, "fe fe 70 e0 14 0a fd", "fe fe e0 70 14 0a 02 55 fd");
+    EXPECT(&c, "fe fe 70 e0 14 0a 01 28 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 14 0a fd", "fe fe e0 70 14 0a 01 28 fd");
+    EXPECT(&c, "fe fe 70 e0 14 01 00 76 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 14 01 fd", "fe fe e0 70 14 01 00 76 fd");
+    EXPECT(&c, "fe fe 70 e0 14 03 fd", "fe fe e0 70 14 03 00 00 fd");
+    EXPECT(&c, "fe fe 70 e0 14 09 fd", "fe fe e0 70 14 09 01 28 fd");
+    EXPECT(&c, "fe fe 70 e0 14 0c fd", "fe fe e0 70 14 0c 01 30 fd");
+    EXPECT(&c, "fe fe 70 e0 14 02 fd", "fe fe e0 70 14 02 02 55 fd");
+    EXPECT(&c, "fe fe 70 e0 14 0b fd", "fe fe e0 70 14 0b 02 55 fd"); /* mic gain: not there */
+    EXPECT(&c, "fe fe 70 e0 14 06 fd", "fe fe e0 70 14 06 02 55 fd");
+    EXPECT(&c, "fe fe 70 e0 14 7f fd", "fe fe e0 70 14 7f 02 55 fd");
+    EXPECT(&c, "fe fe 70 e0 14 0b 01 28 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 14 0b fd", "fe fe e0 70 14 0b 02 55 fd");
+    EXPECT(&c, "fe fe 70 e0 14 fd", "fe fe e0 70 fa fd");
+
+    /* Meters and switches. */
+    EXPECT(&c, "fe fe 70 e0 15 01 fd", "fe fe e0 70 15 01 00 fd");
+    EXPECT(&c, "fe fe 70 e0 15 02 fd", "fe fe e0 70 15 02 00 12 fd");
+    EXPECT(&c, "fe fe 70 e0 15 11 fd", "fe fe e0 70 15 11 00 00 fd");
+    EXPECT(&c, "fe fe 70 e0 15 12 fd", "fe fe e0 70 15 12 00 00 fd");
+    EXPECT(&c, "fe fe 70 e0 15 15 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 16 12 fd", "fe fe e0 70 16 12 01 fd"); /* AGC fast */
+    EXPECT(&c, "fe fe 70 e0 16 12 03 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 16 12 fd", "fe fe e0 70 16 12 03 fd");
+    EXPECT(&c, "fe fe 70 e0 16 02 02 fd", "fe fe e0 70 fb fd"); /* preamplifier: 01 or 02 is on */
+    EXPECT(&c, "fe fe 70 e0 16 02 fd", "fe fe e0 70 16 02 02 fd");
+    EXPECT(&c, "fe fe 70 e0 16 22 01 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 16 44 01 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 16 50 01 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 16 50 fd", "fe fe e0 70 16 50 01 fd");
+    EXPECT(&c, "fe fe 70 e0 16 46 fd", "fe fe e0 70 fa fd"); /* VOX: not in the manual */
+    EXPECT(&c, "fe fe 70 e0 16 40 fd", "fe fe e0 70 fa fd"); /* noise reduction: the radio has none */
+
+    /* Attenuator, tuner, PTT. */
+    EXPECT(&c, "fe fe 70 e0 11 fd", "fe fe e0 70 11 00 fd");
+    EXPECT(&c, "fe fe 70 e0 11 12 fd", "fe fe e0 70 fb fd");
+    EXPECT(&c, "fe fe 70 e0 11 fd", "fe fe e0 70 11 12 fd");
+    EXPECT(&c, "fe fe 70 e0 1c 01 fd", "fe fe e0 70 1c 01 00 fd");
+    EXPECT(&c, "fe fe 70 e0 1c 01 02 fd", "fe fe e0 70 fb fd"); /* start tuning */
+    EXPECT(&c, "fe fe 70 e0 1c 01 fd", "fe fe e0 70 1c 01 01 fd");
+    EXPECT(&c, "fe fe 70 e0 1c 00 fd", "fe fe e0 70 1c 00 00 fd");
+
+    /* What the manual does not list and Hamlib does not send a G90. */
+    EXPECT(&c, "fe fe 70 e0 18 01 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 10 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 1a 03 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 1a 05 01 19 fd", "fe fe e0 70 fa fd");
+    EXPECT(&c, "fe fe 70 e0 02 00 fd", "fe fe e0 70 fa fd");
+}
+
+/* One parser, two radios: switching is power-off and power-on. */
+static void test_switch_personality(void)
+{
+    civ_t c;
+    fresh(&c);
+    civ_set_private(&c, 0xF0, private_fn, &g_private_calls);
+    EXPECT(&c, "fe fe a4 e0 05 00 00 20 44 01 fd", "fe fe e0 a4 fb fd"); /* 144.2 MHz */
+    EXPECT(&c, "fe fe a4 e0 0f 01 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 14 0b 00 10 fd", "fe fe e0 a4 fb fd");
+    EXPECT(&c, "fe fe a4 e0 1c 00 01 fd", "fe fe e0 a4 fb fd");
+    civ_set_ptt(&c, true); /* and the VOX is keying too */
+    CHECK(g_ptt_events == 1 && g_ptt_last);
+    uint32_t ok = c.frames_ok;
+
+    civ_set_rig(&c, &rig_g90);
+    CHECK(c.rig == &rig_g90);
+    CHECK(g_ptt_events == 2 && !g_ptt_last); /* CAT's PTT is released, and said so */
+    CHECK(civ_ptt(&c));                      /* the VOX's is not the parser's to release */
+    civ_set_ptt(&c, false);
+    CHECK(!civ_ptt(&c));
+    CHECK(civ_rx_freq(&c) == 14074000 && !c.split && c.frames_ok == ok);
+    EXPECT(&c, "fe fe a4 e0 19 00 fd", "fe fe e0 a4 19 00 70 fd");
+    EXPECT(&c, "fe fe a4 e0 14 0b fd", "fe fe e0 a4 14 0b 02 55 fd");
+    EXPECT(&c, "fe fe a4 e0 18 01 fd", "fe fe e0 a4 fa fd");
+    EXPECT(&c, "fe fe f0 e0 02 fd", "fe fe e0 f0 02 12 34 fd"); /* the private address is kept */
+
+    /* And back. Not keyed this time, so nothing is said about PTT. */
+    EXPECT(&c, "fe fe a4 e0 16 12 03 fd", "fe fe e0 a4 fb fd");
+    civ_set_rig(&c, &rig_ic705);
+    CHECK(g_ptt_events == 2);
+    EXPECT(&c, "fe fe a4 e0 19 00 fd", "fe fe e0 a4 19 00 a4 fd");
+    EXPECT(&c, "fe fe a4 e0 16 12 fd", "fe fe e0 a4 16 12 02 fd");
+    EXPECT(&c, "fe fe a4 e0 14 0b fd", "fe fe e0 a4 14 0b 01 28 fd");
+    EXPECT(&c, "fe fe a4 e0 18 01 fd", "fe fe e0 a4 fb fd");
+
+    /* A switch in the middle of a frame does not lose the frame. */
+    static const uint8_t first[] = {0xFE, 0xFE, 0xA4, 0xE0, 0x19};
+    static const uint8_t rest[] = {0x00, 0xFD};
+    g_out_len = 0;
+    civ_feed(&c, first, sizeof first);
+    civ_set_rig(&c, &rig_g90);
+    civ_feed(&c, rest, sizeof rest);
+    CHECK(g_out_len == 8 && g_out[6] == 0x70);
+}
+
 int main(void)
 {
     test_bcd();
@@ -392,6 +581,9 @@ int main(void)
     test_private_address();
     test_framing();
     test_external_ptt();
+    test_g90_rigctl();
+    test_g90_manual();
+    test_switch_personality();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

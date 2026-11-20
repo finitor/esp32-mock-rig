@@ -177,6 +177,13 @@ struct civ {
 /* Reset to the personality's power-up state. tx must not be NULL. */
 void civ_init(civ_t *c, const civ_rig_t *rig, civ_tx_fn tx, civ_ptt_fn on_ptt, void *ctx);
 
+/* Become another radio: its power-up state replaces the present one, as if
+ * the first had been switched off and the second on. If CAT was keying, PTT
+ * is released (on_ptt is called). The callbacks, the private address, PTT
+ * from other sources (civ_set_ptt) and the frame counters stay, and so does
+ * a frame part-way through being received. */
+void civ_set_rig(civ_t *c, const civ_rig_t *rig);
+
 /* Take one address away from the radio. Frames sent to addr go to fn and
  * nowhere else; every other address is still answered as the radio. For
  * controls that belong to the device rather than to the radio it imitates.

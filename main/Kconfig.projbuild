@@ -1,3 +1,23 @@
+menu "Mock radio: the radio imitated"
+
+    choice MOCK_RIG
+        prompt "Radio at first start"
+        default MOCK_RIG_IC705
+        help
+            The radio the board imitates until it is told otherwise. The
+            choice is changed at run time with host/tools/mockctl.py (rig=)
+            or in the web console, and the board remembers it in flash: a
+            board that has been told keeps its radio through a restart and
+            through flashing new firmware, whatever is chosen here.
+
+        config MOCK_RIG_IC705
+            bool "Icom IC-705 (Hamlib model 3085)"
+        config MOCK_RIG_G90
+            bool "Xiegu G90 (Hamlib model 3088)"
+    endchoice
+
+endmenu
+
 menu "Mock radio: receive route and channel at power-up"
 
     comment "Power-up values. Change them at run time with host/tools/mockctl.py."

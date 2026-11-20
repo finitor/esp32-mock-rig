@@ -2,7 +2,10 @@
  * civ_pty: run the CI-V core behind a pseudo-terminal on the development
  * machine, so real Hamlib can talk to it with no radio and no ESP32.
  *
- *   civ_pty [-q] <link-path>
+ *   civ_pty [-q] [-m <Hamlib model>] <link-path>
+ *
+ * The personality is the IC-705 (3085) unless -m names another (3088, the
+ * G90).
  *
  * Creates <link-path> as a symlink to the pty's device, then serves until
  * killed. Point rigctl at the link:
@@ -32,6 +35,7 @@
 #include "audio_engine.h"
 #include "cat_civ.h"
 #include "mock_ctl.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 
 static int g_master = -1;
@@ -82,8 +86,19 @@ int main(int argc, char **argv)
         g_quiet = 1;
         arg++;
     }
+    const civ_rig_t *rig = &rig_ic705;
+    if (arg + 1 < argc && strcmp(argv[arg], "-m") == 0) {
+        int model = atoi(argv[arg + 1]);
+        if (model == rig_g90.hamlib_model) {
+            rig = &rig_g90;
+        } else if (model != rig_ic705.hamlib_model) {
+            fprintf(stderr, "no personality for Hamlib model %s\n", argv[arg + 1]);
+            return 2;
+        }
+        arg += 2;
+    }
     if (arg >= argc) {
-        fprintf(stderr, "usage: %s [-q] <link-path>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-q] [-m <Hamlib model>] <link-path>\n", argv[0]);
         return 2;
     }
     g_link = argv[arg];
@@ -122,9 +137,11 @@ int main(int argc, char **argv)
     mock_ctl_init(&ctl, &engine, &power_up);
 
     civ_t civ;
-    civ_init(&civ, &rig_ic705, tx, on_ptt, NULL);
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
+    civ_init(&civ, rig, tx, on_ptt, NULL);
     civ_set_private(&civ, MOCK_CTL_ADDR, mock_ctl_command, &ctl);
-    fprintf(stderr, "%s on %s (link %s)\n", rig_ic705.name, name, g_link);
+    mock_ctl_set_rigs(&ctl, &civ, rigs, sizeof rigs / sizeof rigs[0], NULL, NULL);
+    fprintf(stderr, "%s on %s (link %s)\n", rig->name, name, g_link);
 
     uint8_t buf[256];
     for (;;) {

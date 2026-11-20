@@ -269,6 +269,40 @@ void mock_ctl_init(mock_ctl_t *m, ae_t *engine, const ae_config_t *power_up)
 {
     m->engine = engine;
     m->power_up = *power_up;
+    m->civ = NULL;
+    m->rigs = NULL;
+    m->n_rigs = 0;
+    m->rig_changed = NULL;
+    m->rig_ctx = NULL;
+}
+
+void mock_ctl_set_rigs(mock_ctl_t *m, civ_t *civ, const civ_rig_t *const *rigs, size_t n_rigs,
+                       mock_ctl_rig_fn changed, void *ctx)
+{
+    m->civ = civ;
+    m->rigs = rigs;
+    m->n_rigs = n_rigs;
+    m->rig_changed = changed;
+    m->rig_ctx = ctx;
+}
+
+const civ_rig_t *mock_ctl_rig(const mock_ctl_t *m)
+{
+    return m->civ ? m->civ->rig : NULL;
+}
+
+bool mock_ctl_select_rig(mock_ctl_t *m, int hamlib_model)
+{
+    if (!m->civ) return false;
+    for (size_t i = 0; i < m->n_rigs; i++) {
+        if (m->rigs[i]->hamlib_model != hamlib_model) continue;
+        if (m->civ->rig != m->rigs[i]) {
+            civ_set_rig(m->civ, m->rigs[i]);
+            if (m->rig_changed) m->rig_changed(m->rig_ctx, m->rigs[i]);
+        }
+        return true;
+    }
+    return false;
 }
 
 void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
@@ -289,6 +323,24 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
             civ_u16_to_bcd_be((uint16_t)(model >= 0 && model <= 9999 ? model : 0), &p[2], 2);
             civ_reply(c, f, p, sizeof p);
             return;
+        }
+        break;
+    case MOCK_CTL_RIG:
+        if (f->len == 0) {
+            int model = c->rig->hamlib_model;
+            uint8_t p[3] = {MOCK_CTL_RIG};
+            civ_u16_to_bcd_be((uint16_t)(model >= 0 && model <= 9999 ? model : 0), &p[1], 2);
+            civ_reply(c, f, p, sizeof p);
+            return;
+        }
+        {
+            uint16_t model;
+            /* The controls change the parser they were given, which is the
+             * one this frame came through. */
+            if (f->len == 2 && m->civ == c && civ_bcd_be_to_u16(f->data, 2, &model) && mock_ctl_select_rig(m, model)) {
+                civ_reply_ok(c, f);
+                return;
+            }
         }
         break;
     case MOCK_CTL_RESET:

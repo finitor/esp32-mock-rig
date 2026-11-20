@@ -10,6 +10,7 @@
 #include "audio_engine.h"
 #include "cat_civ.h"
 #include "mock_ctl.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 
 static uint8_t g_out[512];
@@ -546,6 +547,71 @@ static void test_link_settings(void)
     CHECK(g_link_ended == 1);
 }
 
+static int g_rig_changes;
+static const civ_rig_t *g_rig_now;
+
+static void rig_changed(void *ctx, const civ_rig_t *rig)
+{
+    (void)ctx;
+    g_rig_changes++;
+    g_rig_now = rig;
+}
+
+static void test_personality(void)
+{
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
+
+    /* Without a list of personalities it can be read and not set. */
+    fresh();
+    EXPECT("fe fe f0 e0 60 fd", "fe fe e0 f0 60 30 85 fd");
+    EXPECT("fe fe f0 e0 60 30 88 fd", NG);
+    CHECK(mock_ctl_rig(&g_ctl) == NULL && !mock_ctl_select_rig(&g_ctl, 3088));
+
+    g_rig_changes = 0;
+    mock_ctl_set_rigs(&g_ctl, &g_civ, rigs, 2, rig_changed, NULL);
+    CHECK(mock_ctl_rig(&g_ctl) == &rig_ic705);
+    EXPECT("fe fe a4 e0 05 00 00 20 44 01 fd", "fe fe e0 a4 fb fd"); /* 144.2 MHz, an IC-705 frequency */
+    EXPECT("fe fe f0 e0 12 01 25 01 fd", OK);                        /* and a setting of the mock's */
+
+    /* To the G90: a different radio answers, from its power-up state. */
+    EXPECT("fe fe f0 e0 60 30 88 fd", OK);
+    CHECK(g_rig_changes == 1 && g_rig_now == &rig_g90 && mock_ctl_rig(&g_ctl) == &rig_g90);
+    EXPECT("fe fe f0 e0 60 fd", "fe fe e0 f0 60 30 88 fd");
+    EXPECT("fe fe f0 e0 00 fd", "fe fe e0 f0 00 01 30 88 fd");
+    EXPECT("fe fe a4 e0 19 00 fd", "fe fe e0 a4 19 00 70 fd");
+    EXPECT("fe fe a4 e0 03 fd", "fe fe e0 a4 03 00 40 07 14 00 fd");
+    EXPECT("fe fe a4 e0 05 00 00 20 44 01 fd", "fe fe e0 a4 fa fd");
+    /* The mock's own settings are not the radio's: they stay. */
+    CHECK(near(config().snr_db, -12.5f, 0.001f));
+
+    /* The same again changes nothing and resets nothing. */
+    EXPECT("fe fe a4 e0 05 00 40 07 07 00 fd", "fe fe e0 a4 fb fd");
+    EXPECT("fe fe f0 e0 60 30 88 fd", OK);
+    CHECK(g_rig_changes == 1);
+    EXPECT("fe fe a4 e0 03 fd", "fe fe e0 a4 03 00 40 07 07 00 fd");
+
+    /* Models the mock does not have, and malformed requests. */
+    EXPECT("fe fe f0 e0 60 30 73 fd", NG);
+    EXPECT("fe fe f0 e0 60 00 00 fd", NG);
+    EXPECT("fe fe f0 e0 60 30 fd", NG);
+    EXPECT("fe fe f0 e0 60 30 88 00 fd", NG);
+    EXPECT("fe fe f0 e0 60 3a 88 fd", NG);
+    CHECK(g_rig_changes == 1 && mock_ctl_rig(&g_ctl) == &rig_g90);
+
+    /* Keyed over CAT when the radio changes: the new one is receiving. */
+    EXPECT("fe fe a4 e0 1c 00 01 fd", "fe fe e0 a4 fb fd");
+    CHECK(civ_ptt(&g_civ));
+    EXPECT("fe fe f0 e0 60 30 85 fd", OK);
+    CHECK(!civ_ptt(&g_civ) && g_rig_changes == 2 && g_rig_now == &rig_ic705);
+    EXPECT("fe fe a4 e0 19 00 fd", "fe fe e0 a4 19 00 a4 fd");
+
+    /* Reset is for the settings; the radio stays what it is. */
+    CHECK(mock_ctl_select_rig(&g_ctl, 3088) && g_rig_changes == 3);
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(mock_ctl_rig(&g_ctl) == &rig_g90 && near(config().snr_db, 10.0f, 0.001f));
+    CHECK(!mock_ctl_select_rig(&g_ctl, 3073) && mock_ctl_rig(&g_ctl) == &rig_g90);
+}
+
 static void test_not_the_radio(void)
 {
     fresh();
@@ -554,7 +620,6 @@ static void test_not_the_radio(void)
     EXPECT("fe fe f0 e0 31 01 fd", NG);
     EXPECT("fe fe f0 e0 42 fd", NG);
     EXPECT("fe fe f0 e0 55 fd", NG);
-    EXPECT("fe fe f0 e0 60 fd", NG);
     EXPECT("fe fe f0 e0 17 fd", NG);
     EXPECT("fe fe f0 e0 7f fd", NG);
 
@@ -586,6 +651,7 @@ int main(void)
     test_parrot();
     test_ptt_sources();
     test_link_settings();
+    test_personality();
     test_not_the_radio();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

@@ -53,8 +53,14 @@
  *   54            PTT status, read only: <sources keying the radio now>
  *                   01 CAT, 02 control line, 04 VOX; 00 = receiving
  *
+ *   60 <2>        the radio imitated, as its Hamlib model number in BCD:
+ *                 30 85 the IC-705, 30 88 the G90. Setting it is switching
+ *                 one radio off and the other on: the new one starts from
+ *                 its power-up state. Refused for a model the mock does not
+ *                 have. It is not one of the settings 01 puts back.
+ *
  * Reserved for parts that do not exist yet, answered FA: 31 (play a stored
- * clip), 60 (personality).
+ * clip).
  */
 #ifndef MOCK_CTL_H
 #define MOCK_CTL_H
@@ -95,6 +101,7 @@ enum {
     MOCK_CTL_VOX_THRESHOLD = 0x52,
     MOCK_CTL_VOX_HANG = 0x53,
     MOCK_CTL_PTT_STATUS = 0x54,
+    MOCK_CTL_RIG = 0x60,
 };
 
 enum {
@@ -112,9 +119,19 @@ enum {
     MOCK_CTL_PTT_VOX = 0x04,
 };
 
+/* Called after the radio imitated has changed, on whichever task changed it. */
+typedef void (*mock_ctl_rig_fn)(void *ctx, const civ_rig_t *rig);
+
 typedef struct {
     ae_t *engine;
     ae_config_t power_up; /* what MOCK_CTL_RESET restores */
+
+    /* the personalities to choose from: mock_ctl_set_rigs() */
+    civ_t *civ;
+    const civ_rig_t *const *rigs;
+    size_t n_rigs;
+    mock_ctl_rig_fn rig_changed;
+    void *rig_ctx;
 } mock_ctl_t;
 
 /* power_up is copied. It is not applied here: the caller has already
@@ -154,6 +171,24 @@ mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd
 
 /* Put every setting back to its power-up value: what command 01 does. */
 void mock_ctl_reset(mock_ctl_t *m);
+
+/* ---- the radio imitated ------------------------------------------------------
+ *
+ * civ is the parser the controls are attached to, and rigs the personalities
+ * it may become; both must outlive m. changed may be NULL. Without this call
+ * command 60 can be read but not set.
+ */
+void mock_ctl_set_rigs(mock_ctl_t *m, civ_t *civ, const civ_rig_t *const *rigs, size_t n_rigs,
+                       mock_ctl_rig_fn changed, void *ctx);
+
+/* The personality in use, or NULL before mock_ctl_set_rigs(). */
+const civ_rig_t *mock_ctl_rig(const mock_ctl_t *m);
+
+/* Become the personality with this Hamlib model number. False if there is
+ * none; true, and nothing happens, if it is the one in use. Like the
+ * settings functions, the caller keeps this from running at the same time as
+ * the CI-V parser. */
+bool mock_ctl_select_rig(mock_ctl_t *m, int hamlib_model);
 
 #ifdef __cplusplus
 }

@@ -139,12 +139,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        if self.path == "/api/settings":
+        if self.path in ("/api/settings", "/api/rig"):
             # As in the firmware: a cross-site form cannot send this type.
             if not (self.headers.get("Content-Type") or "").startswith("application/json"):
                 self.error(415, "send the settings as application/json")
                 return
-            self.reply(*self.ask("apply " + body))
+            self.reply(*self.ask(("apply " if self.path == "/api/settings" else "rig ") + body))
         elif self.path in ("/api/reset", "/api/replay"):
             self.reply(*self.ask(self.path[5:]))
         elif self.path == "/api/wifi":
@@ -203,6 +203,15 @@ def check(port, port_b, sim):
         print(("ok    " if ok else "FAIL  ") + what)
         failures += 0 if ok else 1
 
+    def soon(what, test, within=3.0):
+        """For what happens in the radio's own time: look until it is so."""
+        end = time.monotonic() + within
+        ok = test()
+        while not ok and time.monotonic() < end:
+            time.sleep(0.1)
+            ok = test()
+        expect(what, ok)
+
     status, page = call("GET", "/")
     expect("the page is served", status == 200 and "/api/info" in page and "<canvas" in page)
 
@@ -245,13 +254,14 @@ def check(port, port_b, sim):
            and t["parrot"]["state"] == "recording" and t["audio"]["tx"] and t["audio"]["tx"]["rms"] > -20)
     call("GET", "/sim/key?on=0")
     call("GET", "/sim/play?on=0")
-    time.sleep(1.0)
-    t = json.loads(call("GET", "/api/telemetry")[1])
-    expect("the parrot replays it", not t["ptt"]["on"] and t["parrot"]["state"] == "playing"
-           and t["audio"]["tx"] is None and t["audio"]["rx"]["rms"] > -20)
-    time.sleep(1.2)
-    status, body = call("POST", "/api/replay")
-    expect("replay on request", status == 200)
+
+    def replaying():
+        t = json.loads(call("GET", "/api/telemetry")[1])
+        return (not t["ptt"]["on"] and t["parrot"]["state"] == "playing" and t["audio"]["tx"] is None
+                and t["audio"]["rx"]["rms"] > -20)
+
+    soon("the parrot replays it", replaying)
+    soon("replay on request", lambda: call("POST", "/api/replay")[0] == 200)
 
     # The WebSocket pushes the same telemetry.
     sock = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -268,6 +278,19 @@ def check(port, port_b, sim):
     expect("the WebSocket pushes telemetry", b"101" in head and b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in head
            and data[0] == 0x81 and "ptt" in pushed and "parrot" in pushed)
 
+    # The radio imitated can be changed, and the page is told.
+    status, body = call("POST", "/api/rig", '{"hamlib":3088}')
+    info = json.loads(call("GET", "/api/info")[1])
+    t = json.loads(call("GET", "/api/telemetry")[1])
+    expect("become a G90", status == 200 and info["rig"] == "Xiegu G90" and info["hamlib"] == 3088
+           and t["hamlib"] == 3088 and len(info["rigs"]) == 2)
+    reply = json.loads(sim.ask("a civ fe fe 70 e0 19 00 fd")[1])
+    expect("the G90 answers CAT", reply == "fe fe e0 70 19 00 70 fd")
+    status, body = call("POST", "/api/rig", '{"hamlib":2028}')
+    expect("refuse a radio the mock is not", status == 409 and "2028" in json.loads(body)["error"])
+    status, body = call("POST", "/api/rig", '{"hamlib":3085}')
+    expect("and an IC-705 again", status == 200 and json.loads(call("GET", "/api/info")[1])["hamlib"] == 3085)
+
     # Two boards in the link route: what one transmits, the other hears.
     base_b = "http://127.0.0.1:%d" % port_b
 
@@ -279,9 +302,8 @@ def check(port, port_b, sim):
 
     status = [r[0] for r in both("POST", "/api/settings", '{"route":"link"}')]
     expect("both boards take the link route", status == [200, 200])
-    time.sleep(0.8)
-    t = telemetry_b()
-    expect("the boards find each other", t["link"]["state"] == "idle" and t["link"]["peer"] == "mockradio-sima")
+    soon("the boards find each other",
+         lambda: telemetry_b()["link"]["state"] == "idle" and telemetry_b()["link"]["peer"] == "mockradio-sima")
     call("GET", "/sim/key?on=1")
     call("GET", "/sim/play?on=1")
     time.sleep(1.0)
@@ -293,22 +315,21 @@ def check(port, port_b, sim):
            and t["channel"]["muted"])
     # Board B tunes away (CI-V 05, 7.074 MHz): on another frequency it hears nothing.
     sim.ask("b civ fe fe a4 e0 05 00 40 07 07 00 fd")
-    time.sleep(0.7)
-    t = telemetry_b()
-    expect("not heard on another frequency", t["link"]["state"] == "off frequency" and t["link"]["off_frequency"] > 20
-           and t["audio"]["rx"]["rms"] < -60)
+
+    def off_frequency():
+        t = telemetry_b()
+        return (t["link"]["state"] == "off frequency" and t["link"]["off_frequency"] > 20
+                and t["audio"]["rx"]["rms"] < -60)
+
+    soon("not heard on another frequency", off_frequency)
     status, body = call("POST", "/api/settings", '{"match":"off"}', board_base=base_b)
-    time.sleep(0.7)
-    expect("heard again with matching off", status == 200 and telemetry_b()["link"]["state"] == "receiving")
+    soon("heard again with matching off", lambda: status == 200 and telemetry_b()["link"]["state"] == "receiving")
     sim.ask("loss 20")
-    time.sleep(1.5)
-    t = telemetry_b()
-    expect("lost packets are counted", t["link"]["lost"] > 5)
+    soon("lost packets are counted", lambda: telemetry_b()["link"]["lost"] > 5)
     sim.ask("loss 0")
     call("GET", "/sim/key?on=0")
     call("GET", "/sim/play?on=0")
-    time.sleep(0.7)
-    expect("idle again after the transmission", telemetry_b()["link"]["state"] == "idle")
+    soon("idle again after the transmission", lambda: telemetry_b()["link"]["state"] == "idle")
     return failures
 
 

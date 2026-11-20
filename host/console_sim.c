@@ -9,6 +9,7 @@
  *
  *   a info | a settings | a telemetry | a reset | a replay
  *   a apply <json>      change settings
+ *   a rig <json>        change the radio imitated: {"hamlib":3088}
  *   a play on|off       the host plays a tone, or stops playing
  *   a record on|off     the host records, or stops (on at the start)
  *   a civ <hex bytes>   bytes from the host's CAT port; the body is the reply in hex
@@ -29,6 +30,7 @@
 #include "console_api.h"
 #include "link.h"
 #include "mock_ctl.h"
+#include "rig_g90.h"
 #include "rig_ic705.h"
 
 #define BLOCK 240 /* 5 ms, as the firmware's capture side delivers it */
@@ -116,8 +118,10 @@ static void board_init(board_t *b, int index)
     ae_config_defaults(&power_up);
     ae_configure(&b->engine, &power_up);
     mock_ctl_init(&b->ctl, &b->engine, &power_up);
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
     civ_init(&b->civ, &rig_ic705, civ_tx, on_ptt, b);
     civ_set_private(&b->civ, MOCK_CTL_ADDR, mock_ctl_command, &b->ctl);
+    mock_ctl_set_rigs(&b->ctl, &b->civ, rigs, sizeof rigs / sizeof rigs[0], NULL, NULL);
     console_meter_init(&b->tx_meter);
     console_meter_init(&b->rx_meter);
 }
@@ -226,7 +230,7 @@ static void board_command(board_t *b, char *line)
     if (!arg) arg = line + strlen(line);
 
     if (strcmp(line, "info") == 0) {
-        const console_info_t info = {.name = b->name, .rig = rig_ic705.name, .hamlib_model = rig_ic705.hamlib_model};
+        const console_info_t info = {.name = b->name};
         console_info_json(&b->ctl, &info, g_json, sizeof g_json);
         printf("200 %s\n", g_json);
     } else if (strcmp(line, "settings") == 0) {
@@ -238,6 +242,14 @@ static void board_command(board_t *b, char *line)
         if (r == CONSOLE_OK) {
             console_settings_json(&b->ctl, g_json, sizeof g_json);
             printf("200 %s\n", g_json);
+        } else {
+            error(r == CONSOLE_UNAVAILABLE ? 409 : 400, err);
+        }
+    } else if (strcmp(line, "rig") == 0) {
+        char err[CONSOLE_ERR_MAX];
+        console_result_t r = console_rig_apply(&b->ctl, arg, err, sizeof err);
+        if (r == CONSOLE_OK) {
+            printf("200 {}\n");
         } else {
             error(r == CONSOLE_UNAVAILABLE ? 409 : 400, err);
         }

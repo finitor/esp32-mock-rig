@@ -33,6 +33,9 @@ header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
 h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 13px; margin: 0 0 10px; color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
 .sub { color: var(--ink2); }
+select { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--axis);
+  border-radius: 6px; padding: 3px 6px; }
+#rigpick[hidden] { display: none; }
 .link { margin-left: auto; color: var(--ink2); white-space: nowrap; }
 .link::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-right: 6px; background: var(--idle); }
@@ -110,6 +113,7 @@ details summary { cursor: pointer; font-weight: 600; }
   <header>
     <h1 id="name">Mock radio</h1>
     <span class="sub" id="rig"></span>
+    <label class="sub" id="rigpick" hidden>imitating <select id="rigsel" aria-label="Radio imitated"></select></label>
     <span class="link" id="link">connecting</span>
   </header>
 
@@ -364,6 +368,7 @@ function update(t) {
   draw();
 
   if (t.gen !== gen) { gen = t.gen; loadSettings(); }   // changed here, over CAT, or by another browser
+  if (info && t.hamlib && t.hamlib !== info.hamlib) loadInfo();   // so was the radio imitated
 }
 
 /* ---- level history: two lines on one dBFS axis, transmit as a band below ---- */
@@ -424,6 +429,36 @@ cv.addEventListener("pointermove", e => { hover = e.clientX - cv.getBoundingClie
 cv.addEventListener("pointerleave", () => { hover = null; draw(); });
 window.addEventListener("resize", draw);
 
+/* ---- the radio imitated ---- */
+function showInfo() {
+  $("name").textContent = info.name;
+  document.title = info.name;
+  const sel = $("rigsel"), many = info.rigs && info.rigs.length > 1;
+  $("rigpick").hidden = !many;
+  $("rig").textContent = many ? "" : "Mock " + info.rig + ", Hamlib model " + info.hamlib;
+  if (many && document.activeElement !== sel) {
+    sel.textContent = "";
+    for (const r of info.rigs) {
+      const o = el("option", null, r.name + " (Hamlib " + r.hamlib + ")");
+      o.value = r.hamlib; o.selected = r.hamlib === info.hamlib;
+      sel.appendChild(o);
+    }
+  }
+}
+async function loadInfo() {
+  try { info = await api("GET", "/api/info"); showInfo(); } catch (e) { /* the link indicator says so */ }
+}
+$("rigsel").addEventListener("change", async () => {
+  const msg = $("actmsg");
+  try {
+    await api("POST", "/api/rig", { hamlib: Number($("rigsel").value) });
+    msg.className = "msg"; msg.textContent = "The radio changed: it starts from its power-up state. Set the programs using it to the same radio.";
+  } catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+  $("rigsel").blur();
+  await loadInfo();
+  setTimeout(() => { msg.textContent = ""; }, 8000);
+});
+
 /* ---- the live link: a WebSocket the board pushes telemetry down ---- */
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
@@ -461,9 +496,7 @@ $("wifiform").addEventListener("submit", async e => {
     try { info = await api("GET", "/api/info"); break; }
     catch (e) { await new Promise(r => setTimeout(r, 2000)); }
   }
-  $("name").textContent = info.name;
-  document.title = info.name;
-  $("rig").textContent = "Mock " + info.rig + ", Hamlib model " + info.hamlib;
+  showInfo();
   buildSettings();
   await loadSettings();
   loadWifi();

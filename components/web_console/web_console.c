@@ -102,7 +102,7 @@ static esp_err_t get_page(httpd_req_t *req)
 
 static esp_err_t get_info(httpd_req_t *req)
 {
-    const console_info_t info = {.name = wifi_net_name(), .rig = s_cfg.rig, .hamlib_model = s_cfg.hamlib_model};
+    const console_info_t info = {.name = wifi_net_name()}; /* the radio comes from the controls */
     size_t len = console_info_json(s_cfg.ctl, &info, s_json, sizeof s_json);
     return send_json(req, "200 OK", s_json, len);
 }
@@ -122,6 +122,19 @@ static esp_err_t post_settings(httpd_req_t *req)
     s_cfg.unlock(s_cfg.ctx);
 
     if (r == CONSOLE_OK) return send_settings(req);
+    return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
+}
+
+static esp_err_t post_rig(httpd_req_t *req)
+{
+    char err[CONSOLE_ERR_MAX];
+    if (!read_json_body(req)) return ESP_OK;
+
+    s_cfg.lock(s_cfg.ctx);
+    console_result_t r = console_rig_apply(s_cfg.ctl, s_body, err, sizeof err);
+    s_cfg.unlock(s_cfg.ctx);
+
+    if (r == CONSOLE_OK) return send_json(req, "200 OK", "{}", 2);
     return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
 }
 
@@ -282,6 +295,7 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/info", .method = HTTP_GET, .handler = get_info},
         {.uri = "/api/settings", .method = HTTP_GET, .handler = get_settings},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = post_settings},
+        {.uri = "/api/rig", .method = HTTP_POST, .handler = post_rig},
         {.uri = "/api/reset", .method = HTTP_POST, .handler = post_reset},
         {.uri = "/api/replay", .method = HTTP_POST, .handler = post_replay},
         {.uri = "/api/telemetry", .method = HTTP_GET, .handler = get_telemetry},

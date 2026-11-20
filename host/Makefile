@@ -2,7 +2,7 @@
 #
 #   make            build everything into host/build/
 #   make test       run the unit tests
-#   make rigctl     run real Hamlib (rigctl) against the parser over a pty
+#   make rigctl     run real Hamlib (rigctl) against each personality over a pty
 #   make mockctl    run tools/mockctl.py against the mock's own controls over a pty
 #   make console    run the web console's API through tools/console_sim.py and check it
 #   make console-sim  serve the web console on http://localhost:8080 with a simulated radio
@@ -10,13 +10,14 @@
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
-CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/audio_dsp/include \
+CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/rig_g90/include -I../components/audio_dsp/include \
            -I../components/audio_engine/include -I../components/mock_ctl/include -I../components/ui/include \
            -I../components/web_console/include -I../components/link/include
 
 BUILD = build
-CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c
-HDRS  = ../components/cat_civ/include/cat_civ.h ../components/rig_ic705/include/rig_ic705.h
+CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c ../components/rig_g90/rig_g90.c
+HDRS  = ../components/cat_civ/include/cat_civ.h ../components/rig_ic705/include/rig_ic705.h \
+        ../components/rig_g90/include/rig_g90.h
 DSP   = ../components/audio_dsp/audio_dsp.c
 DSP_H = ../components/audio_dsp/include/audio_dsp.h
 ENG   = ../components/audio_engine/audio_engine.c
@@ -78,6 +79,7 @@ test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl
 
 rigctl: $(BUILD)/civ_pty
 	./rigctl_check.sh
+	MODEL=3088 ./rigctl_check.sh
 
 mockctl: $(BUILD)/civ_pty
 	./mockctl_check.sh

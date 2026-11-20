@@ -46,13 +46,13 @@ extern "C" {
 
 typedef struct {
     const char *name; /* the board's name on the network */
-    const char *rig;  /* the personality's name */
-    int hamlib_model;
+    const char *rig;  /* the personality's name and model, used only if the */
+    int hamlib_model; /* controls were given no list of personalities */
 } console_info_t;
 
-/* Who this is and what can be set: each setting's name, label, group, and
- * either its choices or its unit, range and step. The page builds its form
- * from this. */
+/* Who this is and what can be set: the radio imitated and the ones it could
+ * be instead, and each setting's name, label, group, and either its choices
+ * or its unit, range and step. The page builds its form from this. */
 size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, size_t cap);
 
 /* ---- settings ---------------------------------------------------------------- */
@@ -69,6 +69,11 @@ typedef enum {
  * values. All of it is applied, or none of it. On anything but CONSOLE_OK,
  * err says what was wrong, in plain words, for the person at the browser. */
 console_result_t console_settings_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
+
+/* Change the radio imitated: json is {"hamlib":3088}, the personality's
+ * Hamlib model number. CONSOLE_UNAVAILABLE if the mock has no such
+ * personality. The new radio starts from its power-up state. */
+console_result_t console_rig_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
 
 /* {"error":"<message>"}, with the message escaped. */
 size_t console_error_json(const char *message, char *buf, size_t cap);
@@ -142,7 +147,8 @@ typedef struct {
 
 /* One snapshot: PTT and its sources, the receive channel's status, the
  * parrot, the link, and everything in the sample. "gen" changes when the settings do,
- * however they were changed, so the page knows to read them again. */
+ * however they were changed, so the page knows to read them again, and
+ * "hamlib" is the radio imitated now, for the same reason. */
 size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *buf, size_t cap);
 
 /* The name of a CI-V mode number ("USB", "CW-R"), with "-D" added for data.

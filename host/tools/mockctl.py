@@ -9,6 +9,14 @@ itself (see components/mock_ctl/include/mock_ctl.h). No radio is involved.
     mockctl.py -p PORT reset                  back to the power-up settings
     mockctl.py -p PORT replay                 play the parrot's recording again
 
+    mockctl.py -p PORT rig=g90                become a Xiegu G90 (or rig=ic705)
+
+The radio imitated:
+    rig=ic705|g90         Icom IC-705 (Hamlib model 3085) or Xiegu G90 (3088).
+                          The new radio starts from its power-up state, and
+                          the board remembers the choice. Programs using the
+                          port must be set to the same radio.
+
 Settings:
     route=monitor|radio|parrot|link
                           monitor: loopback, PTT ignored
@@ -53,6 +61,9 @@ OK, NG = 0xFB, 0xFA
 
 CMD_ID, CMD_RESET, CMD_STATUS = 0x00, 0x01, 0x20
 CMD_REPLAY, CMD_PARROT_STATUS, CMD_PTT_STATUS = 0x30, 0x34, 0x54
+CMD_RIG = 0x60
+# name: (Hamlib model, what to call it)
+RIGS = {"ic705": (3085, "Icom IC-705"), "g90": (3088, "Xiegu G90")}
 PTT_SOURCES = ((0x01, "CAT"), (0x02, "control line"), (0x04, "VOX"))
 FLAG_RX_MUTED, FLAG_GAIN_LIMITED = 0x01, 0x02
 PARROT_STATES = ("idle", "recording", "waiting to replay", "playing")
@@ -84,6 +95,8 @@ REFUSALS = {
     "replay": "needs route=parrot, a recording and PTT off",
     "route=parrot": "this mock has no parrot buffer",
     "route=link": "this mock was built without the link",
+    "rig=ic705": "this mock has no IC-705 personality",
+    "rig=g90": "this mock has no G90 personality: is its firmware older than this tool?",
 }
 
 
@@ -217,7 +230,10 @@ def show(port):
     ident = ask(port, CMD_ID)
     if len(ident) != 3:
         raise ValueError("unexpected identity reply")
-    print("mock radio, control protocol %d, personality: Hamlib model %d" % (ident[0], from_bcd(ident[1:])))
+    model = from_bcd(ident[1:])
+    known = [text for number, text in RIGS.values() if number == model]
+    print("mock radio, control protocol %d, personality: %sHamlib model %d" % (
+        ident[0], known[0] + ", " if known else "", model))
 
     values = {}
     for name, (cmd, words) in CHOICES.items():
@@ -281,7 +297,11 @@ def apply(port, word):
     name, sep, value = word.partition("=")
     if not sep:
         raise ValueError("%r is not name=value, 'show', 'reset' or 'replay'" % word)
-    if name in CHOICES:
+    if name == "rig":
+        if value not in RIGS:
+            raise ValueError("rig is %s" % " or ".join(RIGS))
+        ask(port, CMD_RIG, to_bcd(RIGS[value][0], 2))
+    elif name in CHOICES:
         cmd, words = CHOICES[name]
         if value not in words:
             raise ValueError("%s is %s or %s" % (name, ", ".join(words[:-1]), words[-1]))
