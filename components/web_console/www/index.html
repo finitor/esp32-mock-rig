@@ -109,6 +109,14 @@ section[hidden] { display: none; }
 .clip .what { min-width: 150px; font-weight: 550; }
 .msg { color: var(--ink2); } .msg.bad { color: var(--red); font-weight: 600; }
 details summary { cursor: pointer; font-weight: 600; }
+details summary span { font-weight: 400; color: var(--ink2); }
+details summary span.warn { color: var(--red); font-weight: 600; }
+table { border-collapse: collapse; margin-top: 10px; width: 100%; max-width: 520px; }
+th, td { text-align: right; padding: 4px 0 4px 16px; border-top: 1px solid var(--line); }
+th { font-weight: 600; color: var(--ink2); border-top: 0; font-size: 13px; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+#tasks[hidden] { display: none; }
+#healthsec .kv span:last-child { white-space: nowrap; }
 .wifi { display: grid; gap: 8px; max-width: 420px; margin-top: 10px; }
 .wifi label { display: grid; gap: 3px; color: var(--ink2); }
 @media (max-width: 520px) { .meter { grid-template-columns: 26px 1fr; } .meter .val { grid-column: 1 / -1; text-align: left; } }
@@ -192,6 +200,42 @@ details summary { cursor: pointer; font-weight: 600; }
     <div class="sub">A clip is the parrot's recording, kept through a power cycle and replayed as receive audio in the parrot route. Keeping a long one takes many seconds and disturbs audio while it lasts.</div>
     <div id="clips"></div>
     <div class="actions"><span class="msg" id="clipmsg" role="status"></span></div>
+  </section>
+
+  <section aria-label="Board health" id="healthsec" hidden>
+    <details id="healthbox">
+      <summary>Board health: <span id="healthnow"></span></summary>
+      <div class="cards">
+        <div class="card"><h3>Memory</h3>
+          <div class="kv"><span>Free / lowest</span><span class="num" id="hheap"></span></div>
+          <div class="kv"><span>Largest free piece</span><span class="num" id="hlargest"></span></div>
+          <div class="kv"><span>PSRAM free</span><span class="num" id="hpsram"></span></div>
+        </div>
+        <div class="card"><h3>Processor</h3>
+          <div class="kv"><span>Core 0 busy</span><span class="num" id="hcore0"></span></div>
+          <div class="kv"><span>Core 1 busy</span><span class="num" id="hcore1"></span></div>
+          <div class="kv"><span>Tasks</span><span class="num" id="hrunning"></span></div>
+        </div>
+        <div class="card"><h3>Audio work</h3>
+          <div class="kv"><span id="hblockname">Time per block</span><span class="num" id="hblock"></span></div>
+          <div class="kv"><span>Longest: 1 s / ever</span><span class="num" id="hlongest"></span></div>
+          <div class="kv"><span>Share of its time</span><span class="num" id="hload"></span></div>
+        </div>
+        <div class="card"><h3>Board</h3>
+          <div class="kv"><span>Up</span><span class="num" id="hup"></span></div>
+          <div class="kv"><span>Wi-Fi network lost</span><span class="num" id="hdrops"></span></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="taskread" type="button">Read every task</button>
+        <span class="sub">Stack never used and share of a processor core, per task. Reading them holds the board up for about a millisecond, which may click the audio.</span>
+      </div>
+      <div class="actions"><span class="msg" id="healthmsg" role="status"></span></div>
+      <table id="tasks" hidden>
+        <thead><tr><th scope="col">Task</th><th scope="col">Stack never used</th><th scope="col">Share of a core</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
   </section>
 
   <section aria-label="Wi-Fi">
@@ -559,6 +603,66 @@ $("wifiform").addEventListener("submit", async e => {
   } catch (err) { msg.className = "msg bad"; msg.textContent = err.message; }
 });
 
+/* ---- the board's health: asked for while its section is open, not pushed ---- */
+const kb = n => Math.round(n / 1024) + " KB";
+const pct = v => v.toFixed(1) + " %";
+function showHealth(h) {
+  $("healthsec").hidden = false;
+  const now = $("healthnow"), bad = /crash|watchdog|brownout|glitch/.test(h.reset || "");
+  now.textContent = "last restart: " + (h.reset || "unknown");
+  now.className = bad ? "warn" : "";
+  $("hup").textContent = fmtUp(h.t);
+
+  $("hheap").textContent = kb(h.heap.free) + " / " + kb(h.heap.min);
+  $("hheap").className = "num" + (h.heap.min < 20480 ? " warn" : "");
+  $("hlargest").textContent = kb(h.heap.largest);
+  $("hpsram").textContent = h.psram == null ? "none" : (h.psram / 1048576).toFixed(2) + " MB";
+
+  [0, 1].forEach(i => {
+    const c = $("hcore" + i), v = h.cpu ? h.cpu[i] : null;
+    c.textContent = v == null ? (h.cpu ? "no such core" : "not measured yet") : pct(v);
+    c.className = "num" + (v != null && v > 85 ? " warn" : "");
+  });
+  $("hrunning").textContent = h.running;
+
+  const a = h.audio, idle = last && !last.audio.rx;
+  $("hblockname").textContent = a ? "Time per block of " + (a.block / 48).toFixed(1) + " ms" : "Time per block";
+  $("hblock").textContent = a ? a.avg + " \u00b5s" + (idle ? ", when last recording" : "") : "host has not recorded yet";
+  $("hlongest").textContent = a ? a.max + " / " + a.worst + " \u00b5s" : "";
+  $("hload").textContent = a ? pct(a.load) : "";
+  $("hload").className = "num" + (a && a.load > 50 ? " warn" : "");
+  $("hlongest").className = "num" + (a && a.worst > a.block / 48 * 1000 ? " warn" : "");
+
+  const d = $("hdrops");
+  d.textContent = h.wifi ? (h.wifi.drops ? (h.wifi.drops === 1 ? "once" : h.wifi.drops + " times") : "never") : "no Wi-Fi in this build";
+  d.className = "num" + (h.wifi && h.wifi.drops ? " warn" : "");
+
+  const t = h.tasks, table = $("tasks"), msg = $("healthmsg");
+  table.hidden = !t;
+  if (!t) return;
+  const body = table.tBodies[0];
+  body.textContent = "";
+  const cpu = x => (x.cpu == null ? -1 : x.cpu);
+  for (const x of t.list.slice().sort((p, q) => cpu(q) - cpu(p) || p.name.localeCompare(q.name))) {
+    const tr = el("tr"), stack = el("td", "num" + (x.stack < 512 ? " warn" : ""), x.stack + " bytes");
+    tr.append(el("td", null, x.name), stack, el("td", "num", x.cpu == null ? "read again to see" : pct(x.cpu)));
+    body.appendChild(tr);
+  }
+  msg.className = "msg" + (t.missed ? " bad" : "");
+  msg.textContent = "Read " + (t.age < 1500 ? "just now" : fmtUp(t.age) + " ago") + "; it held the board up for " + t.took + " \u00b5s." +
+    (t.missed ? " " + t.missed + " tasks are not listed: no room." : "");
+}
+async function loadHealth() {
+  try { showHealth(await api("GET", "/api/health")); return true; } catch (e) { return false; }
+}
+$("taskread").addEventListener("click", async () => {
+  const msg = $("healthmsg");
+  try { showHealth(await api("POST", "/api/tasks", {})); }
+  catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+});
+setInterval(() => { if ($("healthbox").open && !app.classList.contains("stale")) loadHealth(); }, 2000);
+$("healthbox").addEventListener("toggle", () => { if ($("healthbox").open) loadHealth(); });
+
 (async function start() {
   for (;;) {
     try { info = await api("GET", "/api/info"); break; }
@@ -568,6 +672,7 @@ $("wifiform").addEventListener("submit", async e => {
   buildSettings();
   await loadSettings();
   loadWifi();
+  loadHealth();               // a board that reports none keeps the section hidden
   connect();
   draw();
 })();

@@ -36,6 +36,13 @@ CONFIG_UAC_SUPPORT_MACOS=y
 # from the console's own Wi-Fi form.
 CONFIG_HTTPD_WS_SUPPORT=y
 
+# Board health: let FreeRTOS keep each task's run time and list the tasks, for
+# the health readings in the log and the web console. It costs a clock
+# reading at every task switch. Without these the readings lack the processor
+# load and the table of tasks, and everything else still works.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
 # Flash layout: partitions.csv. 2 MB for the firmware, which with Wi-Fi is
 # about 1 MB, and the rest of the 16 MB for clips.
 CONFIG_PARTITION_TABLE_CUSTOM=y

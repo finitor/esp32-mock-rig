@@ -871,3 +871,126 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_f(&o, "}");
     return out_done(&o);
 }
+
+/* ---- the board's health ---------------------------------------------------------------- */
+
+void console_cost_init(console_cost_t *c)
+{
+    c->sum_us = c->max_us = c->samples = c->blocks = 0;
+    atomic_store(&c->avg_us, 0u);
+    atomic_store(&c->peak_us, 0u);
+    atomic_store(&c->load_permille, 0u);
+    atomic_store(&c->block_samples, 0u);
+    atomic_store(&c->worst_us, 0u);
+    atomic_store(&c->total_blocks, 0u);
+    atomic_store(&c->windows, 0u);
+}
+
+void console_cost_add(console_cost_t *c, uint32_t us, size_t n)
+{
+    if (n == 0) return;
+    c->sum_us = us > UINT32_MAX - c->sum_us ? UINT32_MAX : c->sum_us + us;
+    if (us > c->max_us) c->max_us = us;
+    c->samples += (uint32_t)n;
+    c->blocks++;
+    if (us > atomic_load(&c->worst_us)) atomic_store(&c->worst_us, us);
+    atomic_store(&c->block_samples, (uint32_t)n);
+    atomic_fetch_add(&c->total_blocks, 1u);
+
+    if (c->samples >= CONSOLE_COST_WINDOW) {
+        /* The samples last samples / 48 ms: the load is the time taken over that. */
+        uint64_t load = (uint64_t)c->sum_us * 48u / c->samples;
+        atomic_store(&c->avg_us, c->sum_us / c->blocks);
+        atomic_store(&c->peak_us, c->max_us);
+        atomic_store(&c->load_permille, load > 9999u ? 9999u : (uint32_t)load);
+        atomic_fetch_add(&c->windows, 1u);
+        c->sum_us = c->max_us = c->samples = c->blocks = 0;
+    }
+}
+
+void console_cost_read(console_cost_t *c, console_health_t *out)
+{
+    out->cost_blocks = atomic_load(&c->total_blocks);
+    out->cost_block_samples = atomic_load(&c->block_samples);
+    out->cost_avg_us = atomic_load(&c->avg_us);
+    out->cost_peak_us = atomic_load(&c->peak_us);
+    out->cost_worst_us = atomic_load(&c->worst_us);
+    out->cost_load_permille = atomic_load(&c->load_permille);
+    out->has_cost = atomic_load(&c->windows) > 0;
+}
+
+size_t console_health_json(const console_health_t *h, char *buf, size_t cap)
+{
+    out_t o;
+    out_init(&o, buf, cap);
+    out_f(&o, "{\"t\":%lu,\"reset\":", (unsigned long)h->uptime_ms);
+    if (h->reset) {
+        out_str(&o, h->reset);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"heap\":{\"free\":%lu,\"min\":%lu,\"largest\":%lu},\"psram\":", (unsigned long)h->heap_free,
+          (unsigned long)h->heap_min, (unsigned long)h->heap_largest);
+    if (h->has_psram) {
+        out_f(&o, "%lu", (unsigned long)h->psram_free);
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"audio\":");
+    if (h->has_cost) {
+        out_f(&o, "{\"blocks\":%lu,\"block\":%lu,\"avg\":%lu,\"max\":%lu,\"worst\":%lu,\"load\":",
+              (unsigned long)h->cost_blocks, (unsigned long)h->cost_block_samples, (unsigned long)h->cost_avg_us,
+              (unsigned long)h->cost_peak_us, (unsigned long)h->cost_worst_us);
+        out_scaled(&o, (int32_t)h->cost_load_permille, 10);
+        out_f(&o, "}");
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"wifi\":");
+    if (h->has_wifi) {
+        out_f(&o, "{\"drops\":%lu}", (unsigned long)h->wifi_drops);
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"cpu\":");
+    if (h->n_cores) {
+        unsigned cores = h->n_cores < CONSOLE_HEALTH_CORES ? h->n_cores : CONSOLE_HEALTH_CORES;
+        for (unsigned i = 0; i < cores; i++) {
+            out_f(&o, "%s", i ? "," : "[");
+            out_scaled(&o, (int32_t)h->busy_permille[i], 10);
+        }
+        out_f(&o, "]");
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"running\":%lu,\"tasks\":", (unsigned long)h->running);
+    if (h->has_tasks) {
+        out_f(&o, "{\"age\":%lu,\"took\":%lu,\"missed\":%lu,\"list\":[", (unsigned long)h->tasks_age_ms,
+              (unsigned long)h->tasks_took_us, (unsigned long)h->tasks_missed);
+        size_t n = h->n_tasks < CONSOLE_HEALTH_TASKS ? h->n_tasks : CONSOLE_HEALTH_TASKS;
+        for (size_t i = 0; i < n; i++) {
+            const console_task_t *t = &h->tasks[i];
+            char name[CONSOLE_TASK_NAME_MAX + 1];
+            memcpy(name, t->name, CONSOLE_TASK_NAME_MAX); /* may fill its field, with no zero after it */
+            name[CONSOLE_TASK_NAME_MAX] = '\0';
+            out_f(&o, "%s{\"name\":", i ? "," : "");
+            out_str(&o, name);
+            out_f(&o, ",\"stack\":%lu,\"cpu\":", (unsigned long)t->stack_free);
+            if (t->has_cpu) {
+                out_scaled(&o, (int32_t)t->cpu_permille, 10);
+            } else {
+                out_f(&o, "null");
+            }
+            out_f(&o, "}");
+        }
+        out_f(&o, "]}");
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, "}");
+    return out_done(&o);
+}

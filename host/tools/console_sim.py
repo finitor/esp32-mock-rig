@@ -119,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             with open(PAGE, "rb") as f:
                 self.reply(200, f.read(), "text/html; charset=utf-8")
-        elif path in ("/api/info", "/api/settings", "/api/telemetry"):
+        elif path in ("/api/info", "/api/settings", "/api/telemetry", "/api/health"):
             self.reply(*self.ask(path[5:]))
         elif path == "/api/wifi":
             self.reply(200, json.dumps({"name": "mockradio-sim" + self.board, "mode": "simulator, no Wi-Fi",
@@ -139,13 +139,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        with_body = {"/api/settings": "apply ", "/api/rig": "rig ", "/api/clip": "clip "}
+        with_body = {"/api/settings": "apply ", "/api/rig": "rig ", "/api/clip": "clip ", "/api/tasks": "tasks"}
         if self.path in with_body:
             # As in the firmware: a cross-site form cannot send this type.
             if not (self.headers.get("Content-Type") or "").startswith("application/json"):
-                self.error(415, "send the settings as application/json")
+                self.error(415, "send the request as application/json")
                 return
-            self.reply(*self.ask(with_body[self.path] + body))
+            command = with_body[self.path]
+            self.reply(*self.ask(command + body if command.endswith(" ") else command))
         elif self.path in ("/api/reset", "/api/replay", "/api/keep", "/api/forget"):
             self.reply(*self.ask(self.path[5:]))
         elif self.path == "/api/wifi":
@@ -331,6 +332,18 @@ def check(port, port_b, sim):
     expect("refuse a radio the mock is not", status == 409 and "2028" in json.loads(body)["error"])
     status, body = call("POST", "/api/rig", '{"hamlib":3085}')
     expect("and an IC-705 again", status == 200 and json.loads(call("GET", "/api/info")[1])["hamlib"] == 3085)
+
+    # The board's health. The simulator's numbers are made up; this checks the reading's layout.
+    status, body = call("GET", "/api/health")
+    h = json.loads(body)
+    expect("health is reported, without the tasks until they are asked for",
+           status == 200 and h["heap"]["free"] > 0 and len(h["cpu"]) == 2 and h["tasks"] is None)
+    status, body = call("POST", "/api/tasks", "{}", "text/plain")
+    expect("refuse a reading of the tasks not sent as JSON", status == 415)
+    status, body = call("POST", "/api/tasks", "{}")
+    h = json.loads(body)
+    expect("the tasks are read on request", status == 200 and h["tasks"]["list"] and "stack" in h["tasks"]["list"][0])
+    soon("and the reading ages", lambda: json.loads(call("GET", "/api/health")[1])["tasks"]["age"] > 0)
 
     # Two boards in the link route: what one transmits, the other hears.
     base_b = "http://127.0.0.1:%d" % port_b

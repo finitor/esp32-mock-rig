@@ -15,7 +15,9 @@
  * telemetry. The radio imitated is an Icom IC-705 or a Xiegu G90, chosen over
  * either control path and remembered in flash, as are the settings when
  * asked, and recordings kept as clips. Before USB starts, a short self-check
- * proves the portable modules run on the target.
+ * proves the portable modules run on the target. The board's own health
+ * (memory, processor, the time the audio work takes) goes to the log and to
+ * the console.
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -35,6 +37,7 @@
 #include "audio_dsp.h"
 #include "audio_engine.h"
 #include "cat_civ.h"
+#include "health.h"
 #include "mock_ctl.h"
 #include "rig_g90.h"
 #include "rig_ic705.h"
@@ -297,6 +300,7 @@ static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
 static void audio_to_host(void *ctx, int16_t *samples, size_t n)
 {
     (void)ctx;
+    int64_t began = esp_timer_get_time();
     bool have_audio = false;
     if (!s_loop_primed && dsp_fifo_level(&s_loop) >= LOOP_TARGET) s_loop_primed = true;
     if (s_loop_primed) {
@@ -316,6 +320,9 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_meter_add(&s_rx_meter, samples, n);
 #endif
+    /* Everything the receive side costs: the engine, and in the link route
+     * the packets sent and taken. */
+    health_block((uint32_t)(esp_timer_get_time() - began), n);
 }
 
 /* The parrot records into PSRAM. Without it the parrot route is refused. */
@@ -579,6 +586,14 @@ static void console_sample(void *ctx, console_sample_t *out)
 #endif
 }
 
+/* Only the console's task comes here, so one reader's memory will do. */
+static void console_health(void *ctx, console_health_t *out, bool scan_tasks)
+{
+    static health_reader_t reader;
+    (void)ctx;
+    health_read(&reader, out, scan_tasks);
+}
+
 static void console_start(void)
 {
     const web_console_config_t cfg = {
@@ -586,6 +601,7 @@ static void console_start(void)
         .lock = cat_lock,
         .unlock = cat_unlock,
         .sample = console_sample,
+        .health = console_health,
     };
     esp_err_t err = web_console_start(&cfg);
     if (err != ESP_OK) ESP_LOGE(TAG, "web console failed to start: %s", esp_err_to_name(err));
@@ -611,6 +627,7 @@ void app_main(void)
 
     engine_start();
     status_start();
+    health_start();
     s_cat_lock = xSemaphoreCreateMutex();
     if (!s_cat_lock) ESP_LOGW(TAG, "no lock for the CAT state: settings may collide between CAT and the web console");
 #ifdef CONFIG_MOCK_WEB_CONSOLE

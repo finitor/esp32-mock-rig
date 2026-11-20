@@ -167,6 +167,97 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
  * digits. out holds at least 12 characters. */
 void console_mode_name(uint8_t mode, bool data, char *out, size_t cap);
 
+/* ---- the board's health ------------------------------------------------------------
+ *
+ * What a first bring-up asks about the board and not about the radio: is
+ * there memory left, how busy is each processor core, how much of its time
+ * does the audio work take, does Wi-Fi keep dropping, is a task's stack
+ * about to run out. It is asked for on its own (GET /api/health) and is not
+ * part of the telemetry, so that the five-times-a-second stream stays small.
+ *
+ * The table of tasks is the one part that costs something to read: the board
+ * holds everything else up while it looks through every stack. It is read
+ * only when asked for, and a reading says how long that took and how old the
+ * table is.
+ *
+ * The cost of the audio work: the time each block took, averaged and at its
+ * longest over every CONSOLE_COST_WINDOW samples (1 s), and the longest ever.
+ * One audio task adds; any number of others read, since reading changes
+ * nothing.
+ */
+#define CONSOLE_COST_WINDOW 48000u
+
+typedef struct {
+    uint32_t sum_us, max_us, samples, blocks; /* the audio task's, this window */
+    _Atomic uint32_t avg_us;        /* per block, over the last whole window */
+    _Atomic uint32_t peak_us;       /* the longest block in it */
+    _Atomic uint32_t load_permille; /* time taken / time the samples last */
+    _Atomic uint32_t block_samples; /* the length of the latest block */
+    _Atomic uint32_t worst_us;      /* the longest block since start */
+    _Atomic uint32_t total_blocks;
+    _Atomic uint32_t windows;       /* whole windows measured so far */
+} console_cost_t;
+
+void console_cost_init(console_cost_t *c);
+
+/* One block of n samples took us microseconds. */
+void console_cost_add(console_cost_t *c, uint32_t us, size_t n);
+
+#define CONSOLE_HEALTH_CORES 2
+#define CONSOLE_HEALTH_TASKS 32
+#define CONSOLE_TASK_NAME_MAX 16
+
+typedef struct {
+    char name[CONSOLE_TASK_NAME_MAX];
+    uint32_t stack_free;   /* bytes of its stack never used so far */
+    bool has_cpu;
+    uint16_t cpu_permille; /* of one processor core, between the last two readings of the table */
+} console_task_t;
+
+typedef struct {
+    uint32_t uptime_ms;
+    const char *reset; /* why the board last restarted, in plain words; NULL if unknown */
+
+    uint32_t heap_free;    /* internal memory, bytes: free now, */
+    uint32_t heap_min;     /* the least there has been since start, */
+    uint32_t heap_largest; /* and the largest single piece free now */
+    bool has_psram;
+    uint32_t psram_free;
+
+    bool has_cost; /* the audio work has been timed for at least one window */
+    uint32_t cost_blocks, cost_block_samples;
+    uint32_t cost_avg_us, cost_peak_us, cost_worst_us, cost_load_permille;
+
+    bool has_wifi;       /* built with Wi-Fi */
+    uint32_t wifi_drops; /* times a joined network was lost */
+
+    /* How busy each core was since the reader last asked. 0 cores: not
+     * measured (the first reading, or a build without run-time statistics). */
+    unsigned n_cores;
+    uint16_t busy_permille[CONSOLE_HEALTH_CORES];
+
+    uint32_t running; /* tasks that exist now */
+
+    bool has_tasks;         /* the table has been read at least once */
+    uint32_t tasks_age_ms;  /* how long ago */
+    uint32_t tasks_took_us; /* how long the board was held up for it */
+    uint32_t tasks_missed;  /* tasks there was no room for */
+    size_t n_tasks;
+    console_task_t tasks[CONSOLE_HEALTH_TASKS];
+} console_health_t;
+
+/* The cost's part of a health reading. */
+void console_cost_read(console_cost_t *c, console_health_t *out);
+
+/* {"t":...,"reset":...,"heap":{"free":...,"min":...,"largest":...},"psram":...,
+ *  "audio":{"blocks":...,"block":...,"avg":...,"max":...,"worst":...,"load":...},
+ *  "wifi":{"drops":...},"cpu":[12.5,3.0],"running":21,
+ *  "tasks":{"age":...,"took":...,"missed":0,"list":[{"name":...,"stack":...,"cpu":...}, ...]}}
+ * with null for what the board does not have or has not measured. Times are
+ * in microseconds (age in milliseconds), memory in bytes, cpu and load in
+ * percent. */
+size_t console_health_json(const console_health_t *h, char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

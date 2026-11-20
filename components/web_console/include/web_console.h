@@ -17,6 +17,8 @@
  *   POST /api/replay      play the parrot's recording again
  *   GET  /api/telemetry   one snapshot of the telemetry
  *   GET  /ws              WebSocket: the same snapshot, pushed 5 times a second
+ *   GET  /api/health      the board's health: memory, processor, audio timing
+ *   POST /api/tasks       the same, with the table of tasks read afresh: {}
  *   GET  /api/wifi        how the board is connected
  *   POST /api/wifi        {"ssid":..., "password":...}: save, then restart
  *
@@ -46,6 +48,11 @@ typedef struct {
     /* Fill in everything but the Wi-Fi signal strength. Called from the
      * HTTP server's task, 5 times a second, without the lock. */
     void (*sample)(void *ctx, console_sample_t *out);
+
+    /* The board's health, or NULL for a console that does not show it. With
+     * scan_tasks the table of tasks is to be read afresh, which holds the
+     * board up for a moment. Called from the HTTP server's task. */
+    void (*health)(void *ctx, console_health_t *out, bool scan_tasks);
 
     void *ctx;
 } web_console_config_t;

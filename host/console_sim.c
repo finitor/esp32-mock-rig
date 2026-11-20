@@ -8,6 +8,7 @@
  * a space, and the JSON body. Commands for one board start with its letter:
  *
  *   a info | a settings | a telemetry | a reset | a replay
+ *   a health | a tasks  the board's health; tasks reads the table of tasks first
  *   a apply <json>      change settings
  *   a rig <json>        change the radio imitated: {"hamlib":3088}
  *   a keep | a forget   keep the settings for power-up, or forget them
@@ -22,6 +23,10 @@
  * code. The path between the boards delivers at once, the audio FIFO's
  * numbers are made up, and the flash is memory: kept settings and clips last
  * as long as the simulator runs, and a clip operation is done at once.
+ *
+ * The board's health is made up from end to end, and says so where the page
+ * shows why the board last restarted: there is no ESP32 here to measure.
+ * Only the layout of the reading is the firmware's.
  */
 #include <math.h>
 #include <stdio.h>
@@ -66,6 +71,8 @@ typedef struct {
     bool playing;
     bool recording;
     float phase;
+    bool tasks_read;
+    uint64_t tasks_at;
 } board_t;
 
 static board_t g_board[BOARDS];
@@ -280,6 +287,67 @@ static void telemetry(board_t *b)
     printf("200 %s\n", g_json);
 }
 
+/* Numbers of about the size a board might give, so that the page has
+ * something to lay out. None of them is measured. */
+static void health(board_t *b, bool scan_tasks)
+{
+    static const struct {
+        const char *name;
+        uint32_t stack;
+        uint16_t cpu;
+    } made_up[] = {
+        {"IDLE0", 1100, 870},  {"IDLE1", 1100, 955},   {"usb_audio", 2200, 68}, {"tinyusb", 2600, 21},
+        {"wifi", 3900, 18},    {"httpd", 3300, 9},     {"status", 2500, 6},     {"esp_timer", 2900, 4},
+        {"tiT", 1800, 3},      {"sys_evt", 1400, 1},   {"console_push", 1500, 1}, {"clips", 5600, 0},
+        {"health", 1900, 0},   {"ipc0", 600, 0},       {"ipc1", 180, 0},
+    };
+    enum { N = sizeof made_up / sizeof made_up[0] };
+    static console_health_t h;
+    uint32_t now = (uint32_t)(g_samples / 48u);
+
+    memset(&h, 0, sizeof h);
+    h.uptime_ms = now;
+    h.reset = "simulated board: every number in this section is made up";
+    h.heap_free = 214000u + (uint32_t)(rand() % 2000);
+    h.heap_min = 201500;
+    h.heap_largest = 131072;
+    h.has_psram = true;
+    h.psram_free = 8u * 1024u * 1024u - PARROT_SECONDS * AE_PARROT_FS_HZ * 2u;
+    if (b->recording) {
+        h.has_cost = true;
+        h.cost_blocks = now / 10u;
+        h.cost_block_samples = 480;
+        h.cost_avg_us = 610u + (uint32_t)(rand() % 40);
+        h.cost_peak_us = h.cost_avg_us + 240u;
+        h.cost_worst_us = 1830;
+        h.cost_load_permille = h.cost_avg_us / 10u;
+    }
+    h.has_wifi = true;
+    h.wifi_drops = (uint32_t)b->index; /* board B has lost its network once, to show what that looks like */
+    h.n_cores = 2;
+    h.busy_permille[0] = (uint16_t)(120 + rand() % 20);
+    h.busy_permille[1] = (uint16_t)(40 + rand() % 10);
+    h.running = N;
+    if (scan_tasks) {
+        b->tasks_read = true;
+        b->tasks_at = g_samples;
+    }
+    if (b->tasks_read) {
+        h.has_tasks = true;
+        h.tasks_age_ms = (uint32_t)((g_samples - b->tasks_at) / 48u);
+        h.tasks_took_us = 740;
+        h.n_tasks = N;
+        for (size_t i = 0; i < N; i++) {
+            snprintf(h.tasks[i].name, sizeof h.tasks[i].name, "%s", made_up[i].name);
+            h.tasks[i].stack_free = made_up[i].stack;
+            h.tasks[i].has_cpu = true;
+            h.tasks[i].cpu_permille = made_up[i].cpu;
+        }
+    }
+    console_health_json(&h, g_json, sizeof g_json);
+    printf("200 %s\n", g_json);
+}
+
 static int hexval(char ch)
 {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -373,6 +441,8 @@ static void board_command(board_t *b, char *line)
         }
     } else if (strcmp(line, "telemetry") == 0) {
         telemetry(b);
+    } else if (strcmp(line, "health") == 0 || strcmp(line, "tasks") == 0) {
+        health(b, line[0] == 't');
     } else if (strcmp(line, "play") == 0) {
         b->playing = strcmp(arg, "on") == 0;
         printf("200 {}\n");

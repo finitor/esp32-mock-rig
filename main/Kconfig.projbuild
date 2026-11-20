@@ -212,3 +212,27 @@ menu "Mock radio: status LED"
         depends on MOCK_LED
 
 endmenu
+
+menu "Mock radio: board health"
+
+    config MOCK_HEALTH_LOG_S
+        int "Log the board's health every this many seconds (0 = never)"
+        range 0 3600
+        default 30
+        help
+            A few lines in the log on the COM jack: free memory, how busy
+            each processor core is and how long the audio work takes. The
+            web console shows the same and more; this is for a build without
+            it, and for a record of a long run.
+
+    config MOCK_HEALTH_LOG_TASKS
+        bool "List the tasks in the log too"
+        default n
+        depends on MOCK_HEALTH_LOG_S > 0
+        help
+            Each task's stack headroom and share of a processor core. Reading
+            them holds the whole board up for a millisecond or so each time,
+            which can disturb USB audio: leave this off while judging audio.
+            The web console reads the same table when its button is pressed.
+
+endmenu

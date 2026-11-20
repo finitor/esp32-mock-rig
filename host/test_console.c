@@ -939,6 +939,139 @@ static void test_telemetry(void)
     CHECK(n < CONSOLE_JSON_MAX / 2);
 }
 
+static void test_cost(void)
+{
+    static console_cost_t c;
+    console_health_t h;
+
+    console_cost_init(&c);
+    memset(&h, 0, sizeof h);
+    console_cost_read(&c, &h);
+    CHECK(!h.has_cost && h.cost_blocks == 0);
+
+    /* 99 blocks of 10 ms: not yet a whole second, so nothing but the counts. */
+    for (int i = 0; i < 99; i++) console_cost_add(&c, i == 40 ? 900u : 500u, 480);
+    console_cost_read(&c, &h);
+    CHECK(!h.has_cost);
+    CHECK(h.cost_blocks == 99 && h.cost_block_samples == 480 && h.cost_worst_us == 900);
+
+    /* The hundredth completes it: 504 us on average, 5.0 % of the 10 ms a block lasts. */
+    console_cost_add(&c, 500u, 480);
+    console_cost_read(&c, &h);
+    CHECK(h.has_cost);
+    CHECK(h.cost_avg_us == 504 && h.cost_peak_us == 900 && h.cost_load_permille == 50);
+
+    /* The next second is judged afresh; the longest ever stays. */
+    for (int i = 0; i < 100; i++) console_cost_add(&c, 2000u, 480);
+    console_cost_read(&c, &h);
+    CHECK(h.cost_avg_us == 2000 && h.cost_peak_us == 2000 && h.cost_load_permille == 200);
+    CHECK(h.cost_worst_us == 2000 && h.cost_blocks == 200);
+    for (int i = 0; i < 100; i++) console_cost_add(&c, 100u, 480);
+    console_cost_read(&c, &h);
+    CHECK(h.cost_avg_us == 100 && h.cost_peak_us == 100 && h.cost_worst_us == 2000);
+
+    /* Blocks of another length, and work slower than the audio it makes. */
+    console_cost_init(&c);
+    for (int i = 0; i < 1000; i++) console_cost_add(&c, 3000u, 48);
+    console_cost_read(&c, &h);
+    CHECK(h.has_cost && h.cost_block_samples == 48 && h.cost_load_permille == 3000);
+
+    /* Nothing sensible, but nothing that wraps or divides by zero either. */
+    console_cost_init(&c);
+    console_cost_add(&c, 123u, 0);
+    console_cost_read(&c, &h);
+    CHECK(h.cost_blocks == 0);
+    for (int i = 0; i < 3; i++) console_cost_add(&c, UINT32_MAX, 100);
+    console_cost_add(&c, UINT32_MAX, 100000);
+    console_cost_read(&c, &h);
+    CHECK(h.has_cost && h.cost_peak_us == UINT32_MAX && h.cost_load_permille == 9999);
+}
+
+static void test_health(void)
+{
+    static console_health_t h;
+
+    /* A board that has measured nothing yet. */
+    memset(&h, 0, sizeof h);
+    h.uptime_ms = 5000;
+    h.heap_free = 200000;
+    h.heap_min = 190000;
+    h.heap_largest = 100000;
+    h.running = 3;
+    size_t n = console_health_json(&h, g_buf, sizeof g_buf);
+    CHECK(n > 0 && n == strlen(g_buf));
+    CHECK(json_valid(g_buf));
+    CHECK_STR(g_buf, "{\"t\":5000,\"reset\":null,\"heap\":{\"free\":200000,\"min\":190000,\"largest\":100000},"
+                     "\"psram\":null,\"audio\":null,\"wifi\":null,\"cpu\":null,\"running\":3,\"tasks\":null}");
+
+    /* Everything there is. */
+    h.reset = "crash (panic)";
+    h.has_psram = true;
+    h.psram_free = 7000000;
+    h.has_cost = true;
+    h.cost_blocks = 1234;
+    h.cost_block_samples = 480;
+    h.cost_avg_us = 610;
+    h.cost_peak_us = 850;
+    h.cost_worst_us = 1830;
+    h.cost_load_permille = 61;
+    h.has_wifi = true;
+    h.wifi_drops = 2;
+    h.n_cores = 2;
+    h.busy_permille[0] = 125;
+    h.busy_permille[1] = 1000;
+    h.has_tasks = true;
+    h.tasks_age_ms = 1500;
+    h.tasks_took_us = 740;
+    h.n_tasks = 2;
+    memcpy(h.tasks[0].name, "IDLE0", 6);
+    h.tasks[0].stack_free = 1100;
+    h.tasks[0].has_cpu = true;
+    h.tasks[0].cpu_permille = 875;
+    memcpy(h.tasks[1].name, "a \"long\" name!!", CONSOLE_TASK_NAME_MAX); /* fills the field: no zero after it */
+    h.tasks[1].stack_free = 96;
+    CHECK(console_health_json(&h, g_buf, sizeof g_buf) > 0);
+    CHECK(json_valid(g_buf));
+    CHECK_STR(g_buf, "{\"t\":5000,\"reset\":\"crash (panic)\",\"heap\":{\"free\":200000,\"min\":190000,\"largest\":100000},"
+                     "\"psram\":7000000,"
+                     "\"audio\":{\"blocks\":1234,\"block\":480,\"avg\":610,\"max\":850,\"worst\":1830,\"load\":6.1},"
+                     "\"wifi\":{\"drops\":2},\"cpu\":[12.5,100.0],\"running\":3,"
+                     "\"tasks\":{\"age\":1500,\"took\":740,\"missed\":0,\"list\":["
+                     "{\"name\":\"IDLE0\",\"stack\":1100,\"cpu\":87.5},"
+                     "{\"name\":\"a \\\"long\\\" name!!\",\"stack\":96,\"cpu\":null}]}}");
+
+    /* One core, and a table read with nothing in it. */
+    h.n_cores = 1;
+    h.n_tasks = 0;
+    h.tasks_missed = 41;
+    CHECK(console_health_json(&h, g_buf, sizeof g_buf) > 0);
+    CHECK(json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"cpu\":[12.5],");
+    CHECK_HAS(g_buf, "\"tasks\":{\"age\":1500,\"took\":740,\"missed\":41,\"list\":[]}}");
+
+    /* Counts beyond what the reading holds are not followed off its end. */
+    h.n_cores = 7;
+    h.n_tasks = CONSOLE_HEALTH_TASKS + 5;
+    for (size_t i = 0; i < CONSOLE_HEALTH_TASKS; i++) {
+        memset(&h.tasks[i], 0, sizeof h.tasks[i]);
+        memset(h.tasks[i].name, 'w', CONSOLE_TASK_NAME_MAX);
+        h.tasks[i].stack_free = UINT32_MAX;
+        h.tasks[i].has_cpu = true;
+        h.tasks[i].cpu_permille = 1000;
+    }
+    n = console_health_json(&h, g_buf, sizeof g_buf);
+    CHECK(n > 0 && json_valid(g_buf));
+    CHECK_HAS(g_buf, "\"cpu\":[12.5,100.0],");
+    size_t listed = 0;
+    for (const char *p = g_buf; (p = strstr(p, "{\"name\":")) != NULL; p++) listed++;
+    CHECK(listed == CONSOLE_HEALTH_TASKS);
+    CHECK(n < CONSOLE_JSON_MAX - 1000); /* the fullest reading fits the server's buffer, with room */
+
+    /* Too small a buffer gives nothing, not a cut-off reading. */
+    CHECK(console_health_json(&h, g_buf, 300) == 0);
+    CHECK(g_buf[0] == '\0');
+}
+
 int main(void)
 {
     test_settings_read();
@@ -953,6 +1086,8 @@ int main(void)
     test_meter();
     test_mode_names();
     test_telemetry();
+    test_cost();
+    test_health();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

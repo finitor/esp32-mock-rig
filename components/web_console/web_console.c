@@ -36,6 +36,7 @@ static httpd_handle_t s_server;
 static char s_json[CONSOLE_JSON_MAX];
 static char s_body[BODY_MAX];
 static char s_telemetry[2048];
+static console_health_t s_health;
 static size_t s_telemetry_len;
 static atomic_bool s_push_queued;
 
@@ -248,6 +249,31 @@ static esp_err_t get_telemetry(httpd_req_t *req)
     return send_json(req, "200 OK", s_telemetry, s_telemetry_len);
 }
 
+/* ---- the board's health -----------------------------------------------------------------
+ *
+ * Asked for by the page while its health section is open, not pushed. Reading
+ * the table of tasks holds the board up for a moment, so it is its own
+ * request, and one a page on another site cannot make a browser send.
+ */
+static esp_err_t send_health(httpd_req_t *req, bool scan_tasks)
+{
+    if (!s_cfg.health) return send_error(req, "404 Not Found", "this board does not report its health");
+    s_cfg.health(s_cfg.ctx, &s_health, scan_tasks);
+    size_t len = console_health_json(&s_health, s_json, sizeof s_json);
+    return send_json(req, "200 OK", s_json, len);
+}
+
+static esp_err_t get_health(httpd_req_t *req)
+{
+    return send_health(req, false);
+}
+
+static esp_err_t post_tasks(httpd_req_t *req)
+{
+    if (!read_json_body(req)) return ESP_OK;
+    return send_health(req, true);
+}
+
 /* The page only listens. Whatever it sends is read and dropped. */
 static esp_err_t ws_handler(httpd_req_t *req)
 {
@@ -336,6 +362,8 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/reset", .method = HTTP_POST, .handler = post_reset},
         {.uri = "/api/replay", .method = HTTP_POST, .handler = post_replay},
         {.uri = "/api/telemetry", .method = HTTP_GET, .handler = get_telemetry},
+        {.uri = "/api/health", .method = HTTP_GET, .handler = get_health},
+        {.uri = "/api/tasks", .method = HTTP_POST, .handler = post_tasks},
         {.uri = "/api/wifi", .method = HTTP_GET, .handler = get_wifi},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = post_wifi},
         {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true},

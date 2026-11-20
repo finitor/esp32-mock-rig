@@ -41,6 +41,7 @@ static char s_ip[16];
 static EventGroupHandle_t s_events;
 static volatile bool s_hosting;
 static volatile bool s_connected;
+static volatile uint32_t s_drops; /* written by the event task only */
 static void (*volatile s_on_restart)(void);
 
 bool wifi_net_hosting(void)
@@ -51,6 +52,11 @@ bool wifi_net_hosting(void)
 void wifi_net_on_restart(void (*fn)(void))
 {
     s_on_restart = fn;
+}
+
+uint32_t wifi_net_drops(void)
+{
+    return s_drops;
 }
 
 const char *wifi_net_name(void)
@@ -99,7 +105,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_connected) ESP_LOGW(TAG, "lost \"%s\", joining again", s_join);
+        if (s_connected) {
+            s_drops = s_drops + 1;
+            ESP_LOGW(TAG, "lost \"%s\", joining again", s_join);
+        }
         s_connected = false;
         if (!s_hosting) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {

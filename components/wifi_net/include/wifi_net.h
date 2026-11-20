@@ -7,6 +7,7 @@
 #define WIFI_NET_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -41,6 +42,9 @@ void wifi_net_on_restart(void (*fn)(void));
 const char *wifi_net_name(void);
 
 void wifi_net_status(wifi_net_status_t *st);
+
+/* How many times a network the board had joined was lost since start. */
+uint32_t wifi_net_drops(void);
 
 /* Store the network to join from the next start. An empty ssid means host
  * one. Does not change the running connection. */
