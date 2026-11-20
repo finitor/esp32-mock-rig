@@ -360,6 +360,23 @@ static void test_external_ptt(void)
     EXPECT(&c, "fe fe a4 e0 1c 00 fd", "fe fe e0 a4 1c 00 01 fd");
     civ_set_ptt(&c, false);
     EXPECT(&c, "fe fe a4 e0 1c 00 fd", "fe fe e0 a4 1c 00 00 fd");
+
+    /* CAT's own PTT is kept apart: keying over CAT while another source
+     * holds the radio in transmit still reaches the callback, and neither
+     * source clears the other. */
+    civ_set_ptt(&c, true);
+    EXPECT(&c, "fe fe a4 e0 1c 00 01 fd", "fe fe e0 a4 fb fd");
+    CHECK(g_ptt_events == 1 && g_ptt_last);
+    civ_set_ptt(&c, false);
+    CHECK(civ_ptt(&c));
+    EXPECT(&c, "fe fe a4 e0 1c 00 fd", "fe fe e0 a4 1c 00 01 fd");
+    civ_set_ptt(&c, true);
+    EXPECT(&c, "fe fe a4 e0 1c 00 00 fd", "fe fe e0 a4 fb fd");
+    CHECK(g_ptt_events == 2 && !g_ptt_last);
+    EXPECT(&c, "fe fe a4 e0 1c 00 fd", "fe fe e0 a4 1c 00 01 fd");
+    civ_set_ptt(&c, false);
+    CHECK(!civ_ptt(&c));
+    CHECK(g_ptt_events == 2); /* the other source never calls back */
 }
 
 int main(void)

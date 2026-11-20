@@ -41,9 +41,15 @@
  *                   state: 00 idle, 01 recording, 02 waiting, 03 playing
  *                   flags: 01 the buffer filled, the recording is cut short
  *                   recorded, capacity: tenths of a second
+ *   50 <00..02>   control-line PTT: 00 off, 01 RTS keys, 02 DTR keys
+ *   51 <00|01>    VOX off / on
+ *   52 <2>        VOX threshold, tenths of a dB below full scale, 6.0 .. 80.0
+ *   53 <2>        VOX hang time, ms, 0 .. 5000
+ *   54            PTT status, read only: <sources keying the radio now>
+ *                   01 CAT, 02 control line, 04 VOX; 00 = receiving
  *
  * Reserved for parts that do not exist yet, answered FA: 31 (play a stored
- * clip), 40 (link mode), 50 (PTT source), 60 (personality).
+ * clip), 40 (link mode), 60 (personality).
  */
 #ifndef MOCK_CTL_H
 #define MOCK_CTL_H
@@ -77,6 +83,11 @@ enum {
     MOCK_CTL_PARROT_DELAY = 0x32,
     MOCK_CTL_PARROT_PERIOD = 0x33,
     MOCK_CTL_PARROT_STATUS = 0x34,
+    MOCK_CTL_PTT_LINE = 0x50,
+    MOCK_CTL_VOX = 0x51,
+    MOCK_CTL_VOX_THRESHOLD = 0x52,
+    MOCK_CTL_VOX_HANG = 0x53,
+    MOCK_CTL_PTT_STATUS = 0x54,
 };
 
 enum {
@@ -86,6 +97,12 @@ enum {
 
 enum {
     MOCK_CTL_PARROT_FLAG_TRUNCATED = 0x01,
+};
+
+enum {
+    MOCK_CTL_PTT_CAT = 0x01,
+    MOCK_CTL_PTT_LINE_KEYED = 0x02,
+    MOCK_CTL_PTT_VOX = 0x04,
 };
 
 typedef struct {

@@ -154,7 +154,8 @@ struct civ {
     uint8_t sel; /* selected VFO, 0 = A */
     bool split;
     uint8_t duplex; /* 0x10 simplex, 0x11 DUP-, 0x12 DUP+ */
-    bool ptt;
+    bool ptt;       /* keyed by CAT (1C 00) */
+    bool ptt_other; /* keyed by something else: civ_set_ptt() */
     bool power;
     uint8_t tuner;
     uint8_t att;
@@ -185,13 +186,16 @@ void civ_set_private(civ_t *c, uint8_t addr, civ_private_fn fn, void *ctx);
 /* Feed received serial bytes. Replies are sent from inside this call. */
 void civ_feed(civ_t *c, const uint8_t *bytes, size_t len);
 
-/* State other modules need. */
+/* State other modules need. civ_ptt() is what 1C 00 reads: transmitting,
+ * whichever source keyed it. */
 bool civ_ptt(const civ_t *c);
 uint64_t civ_rx_freq(const civ_t *c); /* selected VFO */
 uint64_t civ_tx_freq(const civ_t *c); /* the other VFO when split */
 const civ_vfo_t *civ_selected_vfo(const civ_t *c);
 
-/* PTT from a source other than CAT (control line, VOX), so 1C 00 reads true. */
+/* Whether a source other than CAT (control line, VOX) is keying the radio,
+ * so that 1C 00 reads true. It is kept apart from CAT's own PTT: neither
+ * clears the other, and on_ptt is not called. */
 void civ_set_ptt(civ_t *c, bool on);
 
 /* Drive a 15 xx meter (for example the S-meter from the audio engine). */

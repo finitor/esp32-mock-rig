@@ -744,6 +744,203 @@ static void test_parrot_no_delay(void)
     CHECK_RANGE(max_diff(p_out + OFF + TAIL + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
 }
 
+/* ---- PTT sources: CAT, a control line, VOX ---------------------------------- */
+
+static ae_ptt_t ptt_now(ae_t *e)
+{
+    ae_ptt_t p;
+    ae_get_ptt(e, &p);
+    return p;
+}
+
+static ae_line_t g_line;
+static void edit_line(ae_config_t *c)
+{
+    c->route = AE_ROUTE_RADIO;
+    c->turnaround_ms = 0;
+    c->ptt_line = g_line;
+}
+
+/* Whether the radio route lets a block of the source through. */
+static bool rx_open(ae_t *e)
+{
+    sine(g_in, BLOCK, 1500, 8000);
+    ae_rx_process(e, g_in, g_out, BLOCK);
+    return memcmp(g_in, g_out, BLOCK * sizeof(int16_t)) == 0;
+}
+
+static void test_line_ptt(void)
+{
+    ae_t e;
+    ae_init(&e, 30);
+
+    /* Off, as at power-up: a host that raises both lines keys nothing. */
+    g_line = AE_LINE_OFF;
+    configure(&e, edit_line);
+    ae_set_lines(&e, true, true);
+    CHECK(rx_open(&e));
+    CHECK(!ptt_now(&e).line && !ptt_now(&e).cat && !ptt_now(&e).vox);
+
+    /* RTS selected: RTS keys, DTR does not. */
+    g_line = AE_LINE_RTS;
+    configure(&e, edit_line);
+    CHECK(ptt_now(&e).line);
+    CHECK(!rx_open(&e));
+    ae_set_lines(&e, true, false);
+    CHECK(!ptt_now(&e).line);
+    CHECK(rx_open(&e));
+    ae_set_lines(&e, false, true);
+    CHECK(!rx_open(&e));
+
+    /* DTR selected: the other way round. */
+    g_line = AE_LINE_DTR;
+    configure(&e, edit_line);
+    CHECK(!ptt_now(&e).line);
+    CHECK(rx_open(&e));
+    ae_set_lines(&e, true, false);
+    CHECK(ptt_now(&e).line);
+    CHECK(!rx_open(&e));
+
+    /* CAT and the line each key on their own; it takes both off to unkey. */
+    ae_set_ptt(&e, true);
+    ae_set_lines(&e, false, false);
+    CHECK(ptt_now(&e).cat && !ptt_now(&e).line);
+    CHECK(!rx_open(&e));
+    ae_set_ptt(&e, false);
+    CHECK(rx_open(&e));
+}
+
+static float g_vox_dbfs;
+static uint32_t g_vox_hang;
+static void edit_vox(ae_config_t *c)
+{
+    c->vox_on = true;
+    c->vox_threshold_dbfs = g_vox_dbfs;
+    c->vox_hang_ms = g_vox_hang;
+}
+static void edit_vox_off(ae_config_t *c) { c->vox_on = false; }
+static void edit_some_snr(ae_config_t *c) { c->snr_db = 3; }
+
+/* Run p_tx from..to with no CAT keying; returns whether the VOX was open
+ * after every block (all) or after none (none). */
+static void vox_span(ae_t *e, size_t from, size_t to, bool *all, bool *none)
+{
+    *all = true;
+    *none = true;
+    for (size_t i = from; i < to; i += BLOCK) {
+        ae_process(e, p_tx + i, p_out + i, BLOCK);
+        if (ptt_now(e).vox) *none = false;
+        else *all = false;
+    }
+}
+
+static void test_vox(void)
+{
+    enum { ON = FS / 2, OFF = ON + FS, HANG = 100 * (FS / 1000) };
+    ae_t e;
+    bool all, none;
+
+    /* Off, as at power-up: audio keys nothing. */
+    parrot_engine(&e, 500, 0);
+    tx_tone(ON, OFF, 1500, 8000);
+    vox_span(&e, 0, 2 * FS, &all, &none);
+    CHECK(none);
+    CHECK(parrot_status(&e).recorded_ms == 0);
+
+    /* On: open from the block the audio starts in until the hang time after
+     * it stops, and the parrot records and replays just as with CAT. The
+     * last loud sample is the one before OFF, so the VOX closes inside the
+     * block that ends at OFF + HANG. */
+    g_vox_dbfs = -40;
+    g_vox_hang = 100;
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    vox_span(&e, 0, ON, &all, &none);
+    CHECK(none);
+    vox_span(&e, ON, OFF + HANG - BLOCK, &all, &none);
+    CHECK(all);
+    CHECK(parrot_status(&e).state == AE_PARROT_RECORDING);
+    vox_span(&e, OFF + HANG - BLOCK, PN, &all, &none);
+    CHECK(none);
+    size_t play = OFF + HANG - BLOCK + FS / 2;
+    CHECK(all_zero(p_out, play));
+    CHECK_RANGE(max_diff(p_out + play + 240, p_tx + ON + 240, FS - 480), 0, REPLAY_TOL);
+
+    /* With no audio arriving at all (NULL) the hang time still runs out. */
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    vox_span(&e, 0, OFF, &all, &none);
+    CHECK(ptt_now(&e).vox);
+    for (size_t i = 0; i < HANG - BLOCK; i += BLOCK) ae_process(&e, NULL, p_out, BLOCK);
+    CHECK(ptt_now(&e).vox);
+    ae_process(&e, NULL, p_out, BLOCK);
+    CHECK(!ptt_now(&e).vox);
+
+    /* A gap shorter than the hang time does not unkey: one transmission. */
+    enum { GAP = 50 * (FS / 1000) };
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    tx_tone(ON, OFF, 1500, 8000);
+    memset(p_tx + ON + FS / 2, 0, GAP * sizeof(int16_t));
+    vox_span(&e, ON, OFF, &all, &none);
+    CHECK(all);
+    vox_span(&e, OFF, PN, &all, &none);
+    CHECK(parrot_status(&e).recorded_ms == 1000 + 100 - 10 + AE_PARROT_TAIL_MS);
+
+    /* A gap longer than it does: the second burst is a new transmission. */
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    tx_tone(ON, OFF, 1500, 8000);
+    memset(p_tx + ON + FS / 4, 0, (FS / 2) * sizeof(int16_t)); /* 250 ms on, 500 off, 250 on */
+    vox_span(&e, 0, PN, &all, &none);
+    CHECK(parrot_status(&e).recorded_ms == 250 + 100 - 10 + AE_PARROT_TAIL_MS);
+
+    /* The threshold: audio under it keys nothing until it is lowered. */
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    tx_tone(0, PN, 1500, 100); /* peaks at -50 dBFS */
+    vox_span(&e, 0, FS, &all, &none);
+    CHECK(none);
+    g_vox_dbfs = -60;
+    configure(&e, edit_vox);
+    vox_span(&e, FS, 2 * FS, &all, &none);
+    CHECK(all);
+
+    /* Changing some other setting mid-transmission does not drop it. */
+    configure(&e, edit_some_snr);
+    vox_span(&e, 2 * FS, 3 * FS, &all, &none);
+    CHECK(all);
+    CHECK(parrot_status(&e).recorded_ms == 2000);
+
+    /* Turning the VOX off does, at once. */
+    configure(&e, edit_vox_off);
+    vox_span(&e, 3 * FS, 4 * FS, &all, &none);
+    CHECK(none);
+
+    /* In the monitor route the VOX still says the radio is transmitting,
+     * and the audio comes back all the same. */
+    ae_init(&e, 31);
+    g_vox_dbfs = -40;
+    configure(&e, edit_vox);
+    tx_tone(0, PN, 1500, 8000);
+    vox_span(&e, 0, FS, &all, &none);
+    CHECK(all);
+    CHECK(memcmp(p_out, p_tx, FS * sizeof(int16_t)) == 0);
+
+    /* CAT and VOX together: either keeps the radio keyed. */
+    parrot_engine(&e, 500, 0);
+    configure(&e, edit_vox);
+    tx_tone(ON, OFF, 1500, 8000);
+    ae_set_ptt(&e, true);
+    vox_span(&e, 0, OFF, &all, &none);
+    ae_set_ptt(&e, false); /* CAT lets go while the VOX is still open */
+    vox_span(&e, OFF, OFF + BLOCK, &all, &none);
+    CHECK(all);
+    CHECK(parrot_status(&e).state == AE_PARROT_RECORDING);
+    vox_span(&e, OFF + BLOCK, PN, &all, &none);
+    CHECK(parrot_status(&e).recorded_ms == 500 + 1000 + 100 - 10 + AE_PARROT_TAIL_MS); /* from CAT key-on */
+}
+
 static void test_config_clamping(void)
 {
     ae_t e;
@@ -774,6 +971,24 @@ static void test_config_clamping(void)
     ae_configure(&e, &c);
     ae_get_config(&e, &c);
     CHECK_RANGE(c.snr_db, -12.341, -12.339);
+
+    /* The parrot's and the PTT sources' settings. */
+    CHECK(c.parrot_delay_ms == 1000 && c.parrot_period_ms == 0);
+    CHECK(c.ptt_line == AE_LINE_OFF && !c.vox_on && c.vox_threshold_dbfs == -40.0f && c.vox_hang_ms == 100);
+    c.route = (ae_route_t)7;
+    c.parrot_delay_ms = 70000;
+    c.parrot_period_ms = 400000;
+    c.ptt_line = (ae_line_t)9;
+    c.vox_threshold_dbfs = 0.0f;
+    c.vox_hang_ms = 6000;
+    ae_configure(&e, &c);
+    ae_get_config(&e, &c);
+    CHECK(c.route == AE_ROUTE_MONITOR && c.parrot_delay_ms == 60000 && c.parrot_period_ms == 300000);
+    CHECK(c.ptt_line == AE_LINE_OFF && c.vox_threshold_dbfs == -6.0f && c.vox_hang_ms == 5000);
+    c.vox_threshold_dbfs = -200.0f;
+    ae_configure(&e, &c);
+    ae_get_config(&e, &c);
+    CHECK(c.vox_threshold_dbfs == -80.0f);
 }
 
 /* A change made between blocks applies from the next block. */
@@ -829,6 +1044,8 @@ int main(void)
     test_parrot_replay_again();
     test_parrot_through_channel();
     test_parrot_no_delay();
+    test_line_ptt();
+    test_vox();
     test_config_clamping();
     test_reconfigure_mid_stream();
     test_determinism();

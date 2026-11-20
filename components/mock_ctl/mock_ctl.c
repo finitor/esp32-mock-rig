@@ -22,6 +22,8 @@ static const num_t nums[] = {
     {MOCK_CTL_TURNAROUND, 2, false, 0, (int32_t)AE_TURNAROUND_MAX_MS},
     {MOCK_CTL_PARROT_DELAY, 2, false, 0, (int32_t)(AE_PARROT_DELAY_MAX_MS / 100)},
     {MOCK_CTL_PARROT_PERIOD, 2, false, 0, (int32_t)(AE_PARROT_PERIOD_MAX_MS / 100)},
+    {MOCK_CTL_VOX_THRESHOLD, 2, false, (int32_t)(-AE_VOX_MAX_DBFS * 10), (int32_t)(-AE_VOX_MIN_DBFS * 10)},
+    {MOCK_CTL_VOX_HANG, 2, false, 0, (int32_t)AE_VOX_HANG_MAX_MS},
 };
 
 static int32_t tenths(float db)
@@ -50,6 +52,10 @@ static int32_t get_wire(const ae_config_t *cfg, uint8_t cmd)
         return tenths_of_s(cfg->parrot_delay_ms);
     case MOCK_CTL_PARROT_PERIOD:
         return tenths_of_s(cfg->parrot_period_ms);
+    case MOCK_CTL_VOX_THRESHOLD:
+        return tenths(-cfg->vox_threshold_dbfs);
+    case MOCK_CTL_VOX_HANG:
+        return (int32_t)cfg->vox_hang_ms;
     default:
         return (int32_t)cfg->turnaround_ms;
     }
@@ -75,6 +81,12 @@ static void put_wire(ae_config_t *cfg, uint8_t cmd, int32_t w)
         break;
     case MOCK_CTL_PARROT_PERIOD:
         cfg->parrot_period_ms = (uint32_t)w * 100u;
+        break;
+    case MOCK_CTL_VOX_THRESHOLD:
+        cfg->vox_threshold_dbfs = (float)-w / 10.0f;
+        break;
+    case MOCK_CTL_VOX_HANG:
+        cfg->vox_hang_ms = (uint32_t)w;
         break;
     default:
         cfg->turnaround_ms = (uint32_t)w;
@@ -125,32 +137,62 @@ static void cmd_num(mock_ctl_t *m, civ_t *c, const civ_frame_t *f, const num_t *
     civ_reply_ok(c, f);
 }
 
-/* 10 and 11: a setting with a few named values, numbered from 00. */
+/* A setting with a few named values, numbered from 00. */
 static void cmd_choice(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
 {
     ae_config_t cfg;
     ae_get_config(m->engine, &cfg);
-    bool route = f->cmd == MOCK_CTL_ROUTE;
+
+    uint8_t now, highest;
+    switch (f->cmd) {
+    case MOCK_CTL_ROUTE:
+        now = (uint8_t)cfg.route;
+        highest = AE_ROUTE_PARROT;
+        break;
+    case MOCK_CTL_PTT_LINE:
+        now = (uint8_t)cfg.ptt_line;
+        highest = AE_LINE_DTR;
+        break;
+    case MOCK_CTL_VOX:
+        now = cfg.vox_on ? 1 : 0;
+        highest = 1;
+        break;
+    default:
+        now = cfg.noise_on ? 1 : 0;
+        highest = 1;
+        break;
+    }
 
     if (f->len == 0) {
-        const uint8_t p[2] = {f->cmd, (uint8_t)(route ? (int)cfg.route : cfg.noise_on ? 1 : 0)};
+        const uint8_t p[2] = {f->cmd, now};
         civ_reply(c, f, p, 2);
         return;
     }
-    if (f->len != 1 || f->data[0] > (route ? AE_ROUTE_PARROT : 0x01)) {
+    if (f->len != 1 || f->data[0] > highest) {
         civ_reply_ng(c, f);
         return;
     }
-    if (route) {
+    uint8_t v = f->data[0];
+    switch (f->cmd) {
+    case MOCK_CTL_ROUTE: {
         ae_parrot_status_t par;
         ae_get_parrot_status(m->engine, &par);
-        if (f->data[0] == AE_ROUTE_PARROT && par.capacity_ms == 0) {
+        if (v == AE_ROUTE_PARROT && par.capacity_ms == 0) {
             civ_reply_ng(c, f); /* nowhere to record */
             return;
         }
-        cfg.route = (ae_route_t)f->data[0];
-    } else {
-        cfg.noise_on = f->data[0] == 0x01;
+        cfg.route = (ae_route_t)v;
+        break;
+    }
+    case MOCK_CTL_PTT_LINE:
+        cfg.ptt_line = (ae_line_t)v;
+        break;
+    case MOCK_CTL_VOX:
+        cfg.vox_on = v == 1;
+        break;
+    default:
+        cfg.noise_on = v == 1;
+        break;
     }
     ae_configure(m->engine, &cfg);
     civ_reply_ok(c, f);
@@ -232,8 +274,21 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
         break;
     case MOCK_CTL_ROUTE:
     case MOCK_CTL_NOISE:
+    case MOCK_CTL_PTT_LINE:
+    case MOCK_CTL_VOX:
         cmd_choice(m, c, f);
         return;
+    case MOCK_CTL_PTT_STATUS:
+        if (f->len == 0) {
+            ae_ptt_t ptt;
+            ae_get_ptt(m->engine, &ptt);
+            const uint8_t p[2] = {MOCK_CTL_PTT_STATUS,
+                                  (uint8_t)((ptt.cat ? MOCK_CTL_PTT_CAT : 0) | (ptt.line ? MOCK_CTL_PTT_LINE_KEYED : 0) |
+                                            (ptt.vox ? MOCK_CTL_PTT_VOX : 0))};
+            civ_reply(c, f, p, 2);
+            return;
+        }
+        break;
     case MOCK_CTL_PARROT_REPLAY:
         if (f->len == 0 && ae_parrot_replay(m->engine)) {
             civ_reply_ok(c, f);

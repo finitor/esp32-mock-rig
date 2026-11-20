@@ -414,6 +414,71 @@ static void test_parrot(void)
     EXPECT("fe fe f0 e0 34 fd", "fe fe e0 f0 34 00 01 00 40 00 40 fd");
 }
 
+static void test_ptt_sources(void)
+{
+    fresh();
+    /* Power-up: no control line, VOX off at -40.0 dBFS and 100 ms, receiving. */
+    EXPECT("fe fe f0 e0 50 fd", "fe fe e0 f0 50 00 fd");
+    EXPECT("fe fe f0 e0 51 fd", "fe fe e0 f0 51 00 fd");
+    EXPECT("fe fe f0 e0 52 fd", "fe fe e0 f0 52 04 00 fd");
+    EXPECT("fe fe f0 e0 53 fd", "fe fe e0 f0 53 01 00 fd");
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
+
+    /* The control line. Hosts raise both on open; nothing keys until one is chosen. */
+    ae_set_lines(&g_engine, true, true);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
+    EXPECT("fe fe f0 e0 50 01 fd", OK);
+    CHECK(config().ptt_line == AE_LINE_RTS);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 02 fd");
+    ae_set_lines(&g_engine, true, false);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
+    EXPECT("fe fe f0 e0 50 02 fd", OK);
+    CHECK(config().ptt_line == AE_LINE_DTR);
+    EXPECT("fe fe f0 e0 50 fd", "fe fe e0 f0 50 02 fd");
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 02 fd");
+    EXPECT("fe fe f0 e0 50 03 fd", NG);
+    EXPECT("fe fe f0 e0 50 00 fd", OK);
+
+    /* CAT. */
+    ae_set_ptt(&g_engine, true);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 01 fd");
+    ae_set_ptt(&g_engine, false);
+
+    /* VOX: its settings, then keyed by audio. */
+    EXPECT("fe fe f0 e0 52 05 55 fd", OK);
+    CHECK(near(config().vox_threshold_dbfs, -55.5f, 0.001f));
+    EXPECT("fe fe f0 e0 52 00 60 fd", OK); /* -6.0, the highest */
+    EXPECT("fe fe f0 e0 52 00 59 fd", NG);
+    EXPECT("fe fe f0 e0 52 08 00 fd", OK); /* -80.0, the lowest */
+    EXPECT("fe fe f0 e0 52 08 01 fd", NG);
+    EXPECT("fe fe f0 e0 52 04 00 fd", OK);
+    EXPECT("fe fe f0 e0 53 02 50 fd", OK);
+    CHECK(config().vox_hang_ms == 250);
+    EXPECT("fe fe f0 e0 53 50 00 fd", OK);
+    EXPECT("fe fe f0 e0 53 50 01 fd", NG);
+    EXPECT("fe fe f0 e0 53 00 20 fd", OK);
+    CHECK(config().vox_hang_ms == 20);
+
+    radio(4800);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd"); /* VOX is off */
+    EXPECT("fe fe f0 e0 51 01 fd", OK);
+    CHECK(config().vox_on);
+    EXPECT("fe fe f0 e0 51 fd", "fe fe e0 f0 51 01 fd");
+    EXPECT("fe fe f0 e0 51 02 fd", NG);
+    radio(4800);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 04 fd");
+    ae_set_ptt(&g_engine, true);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 05 fd");
+    ae_set_ptt(&g_engine, false);
+    EXPECT("fe fe f0 e0 54 01 fd", NG); /* read only */
+
+    /* Reset turns the VOX off again. */
+    EXPECT("fe fe f0 e0 01 fd", OK);
+    CHECK(!config().vox_on && config().vox_hang_ms == 100 && config().ptt_line == AE_LINE_OFF);
+    radio(480);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
+}
+
 static void test_not_the_radio(void)
 {
     fresh();
@@ -421,7 +486,7 @@ static void test_not_the_radio(void)
     EXPECT("fe fe f0 e0 31 fd", NG);
     EXPECT("fe fe f0 e0 31 01 fd", NG);
     EXPECT("fe fe f0 e0 40 fd", NG);
-    EXPECT("fe fe f0 e0 50 fd", NG);
+    EXPECT("fe fe f0 e0 55 fd", NG);
     EXPECT("fe fe f0 e0 60 fd", NG);
     EXPECT("fe fe f0 e0 17 fd", NG);
     EXPECT("fe fe f0 e0 7f fd", NG);
@@ -452,6 +517,7 @@ int main(void)
     test_reset();
     test_status();
     test_parrot();
+    test_ptt_sources();
     test_not_the_radio();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

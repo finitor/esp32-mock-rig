@@ -24,6 +24,12 @@ Settings:
     delay=S               parrot: seconds from unkeying to the replay, 0 to 60
     period=S              parrot: start the replay a whole number of these
                           after key-on (15 for FT8, 7.5 for FT4); 0 = off
+    line=off|rts|dtr      the serial control line that keys the radio, if any
+    vox=on|off            transmit audio keys the radio
+    voxlevel=DBFS         a sample this large opens the VOX, -80 to -6
+    voxhang=MS            the VOX stays open this long after, 0 to 5000
+
+CAT keying (1C 00) always works; line and vox add to it.
 
 PORT can also come from the MOCK_PORT environment variable. Only one program
 should use the port at a time: a reply read by another program is lost here
@@ -41,7 +47,8 @@ CONTROLLER = 0xE0
 OK, NG = 0xFB, 0xFA
 
 CMD_ID, CMD_RESET, CMD_STATUS = 0x00, 0x01, 0x20
-CMD_REPLAY, CMD_PARROT_STATUS = 0x30, 0x34
+CMD_REPLAY, CMD_PARROT_STATUS, CMD_PTT_STATUS = 0x30, 0x34, 0x54
+PTT_SOURCES = ((0x01, "CAT"), (0x02, "control line"), (0x04, "VOX"))
 FLAG_RX_MUTED, FLAG_GAIN_LIMITED = 0x01, 0x02
 PARROT_STATES = ("idle", "recording", "waiting to replay", "playing")
 PARROT_FLAG_TRUNCATED = 0x01
@@ -55,11 +62,15 @@ NUMBERS = {
     "turnaround": (0x16, 2, False, 1),
     "delay": (0x32, 2, False, 10),    # tenths of a second
     "period": (0x33, 2, False, 10),
+    "voxlevel": (0x52, 2, False, -10),  # sent as dB below full scale
+    "voxhang": (0x53, 2, False, 1),
 }
 # name: (command, the words for 00, 01, ...)
 CHOICES = {
     "route": (0x10, ("monitor", "radio", "parrot")),
     "noise": (0x11, ("off", "on")),
+    "line": (0x50, ("off", "rts", "dtr")),
+    "vox": (0x51, ("off", "on")),
 }
 # What a refusal most likely means, where "out of range" is not it.
 REFUSALS = {
@@ -240,6 +251,14 @@ def show(port):
     else:
         state = "no buffer"
     print("  parrot      delay %.1f s, period %s; %s" % (values["delay"], period, state))
+
+    ptt = ask(port, CMD_PTT_STATUS)
+    if len(ptt) != 1:
+        raise ValueError("unexpected PTT status reply")
+    keyed = [name for bit, name in PTT_SOURCES if ptt[0] & bit]
+    print("  ptt         line %s, vox %s at %.1f dBFS with %d ms hang; %s" % (
+        values["line"], values["vox"], values["voxlevel"], values["voxhang"],
+        "transmitting (%s)" % ", ".join(keyed) if keyed else "receiving"))
 
 
 def apply(port, word):

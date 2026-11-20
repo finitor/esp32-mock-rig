@@ -56,8 +56,13 @@ check 0 "parrot      delay 2.5 s, period 15.0 s; idle"
 check 0 "period 7.5 s"                               period=7.5
 check 1 "delay=61: refused by the mock (out of range?)" delay=61
 check 1 "replay: refused by the mock (needs route=parrot, a recording and PTT off)" replay
+check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
+check 0 "ptt         line rts, vox on at -35.5 dBFS with 250 ms hang; receiving" line=rts vox=on voxlevel=-35.5 voxhang=250
+check 1 "line is off, rts or dtr"                    line=cts
+check 1 "voxlevel=-3: refused by the mock (out of range?)" voxlevel=-3
 check 0 "route       monitor"                        reset
 check 0 "parrot      delay 1.0 s, period off"
+check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
 check 0 "snr         +10.0 dB in 2500 Hz"
 
 [ "$fail" -eq 0 ] && echo "PASS" || echo "FAILED"

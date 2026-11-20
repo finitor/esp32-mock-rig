@@ -83,3 +83,72 @@ menu "Mock radio: receive route and channel at power-up"
             slot then hears itself in the slot between.
 
 endmenu
+
+menu "Mock radio: PTT sources at power-up"
+
+    comment "CAT keying (1C 00) always works. These add to it."
+
+    choice MOCK_PTT_LINE
+        prompt "Serial control line that keys the radio"
+        default MOCK_PTT_LINE_OFF
+        help
+            Hosts raise DTR and RTS when they open the serial port and leave
+            them high unless one is their PTT line, so select a line only for
+            software that keys with it.
+
+        config MOCK_PTT_LINE_OFF
+            bool "None"
+        config MOCK_PTT_LINE_RTS
+            bool "RTS"
+        config MOCK_PTT_LINE_DTR
+            bool "DTR"
+    endchoice
+
+    config MOCK_VOX
+        bool "VOX: transmit audio keys the radio"
+        default n
+
+    config MOCK_VOX_THRESHOLD_DBFS
+        int "VOX threshold in dBFS"
+        range -80 -6
+        default -40
+        help
+            A transmit sample this large opens the VOX.
+
+    config MOCK_VOX_HANG_MS
+        int "VOX hang time, ms"
+        range 0 5000
+        default 100
+        help
+            The VOX stays open this long after the last sample over the
+            threshold.
+
+endmenu
+
+menu "Mock radio: status LED"
+
+    config MOCK_LED
+        bool "Show the radio's state on the board's RGB LED"
+        default y
+        help
+            Dim white: no USB host. Dim blue: receiving. Red: transmitting
+            (recording, in the parrot route). Amber: the parrot is waiting
+            to replay. Green: the parrot is replaying.
+
+    config MOCK_LED_GPIO
+        int "GPIO of the RGB LED"
+        range 0 48
+        default 48
+        depends on MOCK_LED
+        help
+            48 on the ESP32-S3-DevKitC-1 v1.0 and most clones, 38 on v1.1.
+            On some clones the "RGB" solder pad must be bridged first. Not
+            35-37 (octal PSRAM) or 19/20 (USB).
+
+    config MOCK_LED_BRIGHTNESS
+        int "Brightness, percent"
+        range 1 100
+        default 10
+        depends on MOCK_LED
+
+endmenu

@@ -59,6 +59,10 @@ void ae_config_defaults(ae_config_t *cfg)
     cfg->turnaround_ms = 30;
     cfg->parrot_delay_ms = 1000;
     cfg->parrot_period_ms = 0;
+    cfg->ptt_line = AE_LINE_OFF;
+    cfg->vox_on = false;
+    cfg->vox_threshold_dbfs = -40.0f;
+    cfg->vox_hang_ms = 100;
 }
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
@@ -78,6 +82,11 @@ void ae_configure(ae_t *e, const ae_config_t *cfg)
     atomic_store(&e->cfg_turnaround_ms, min_u32(cfg->turnaround_ms, AE_TURNAROUND_MAX_MS));
     atomic_store(&e->cfg_parrot_delay_ms, min_u32(cfg->parrot_delay_ms, AE_PARROT_DELAY_MAX_MS));
     atomic_store(&e->cfg_parrot_period_ms, min_u32(cfg->parrot_period_ms, AE_PARROT_PERIOD_MAX_MS));
+    bool line = cfg->ptt_line == AE_LINE_RTS || cfg->ptt_line == AE_LINE_DTR;
+    atomic_store(&e->cfg_ptt_line, line ? (int32_t)cfg->ptt_line : (int32_t)AE_LINE_OFF);
+    atomic_store(&e->cfg_vox_on, cfg->vox_on ? 1 : 0);
+    atomic_store(&e->cfg_vox_cdb, to_cdb(cfg->vox_threshold_dbfs, AE_VOX_MIN_DBFS, AE_VOX_MAX_DBFS));
+    atomic_store(&e->cfg_vox_hang_ms, min_u32(cfg->vox_hang_ms, AE_VOX_HANG_MAX_MS));
     atomic_fetch_add(&e->cfg_gen, 1u);
 }
 
@@ -92,6 +101,10 @@ void ae_get_config(ae_t *e, ae_config_t *cfg)
     cfg->turnaround_ms = atomic_load(&e->cfg_turnaround_ms);
     cfg->parrot_delay_ms = atomic_load(&e->cfg_parrot_delay_ms);
     cfg->parrot_period_ms = atomic_load(&e->cfg_parrot_period_ms);
+    cfg->ptt_line = (ae_line_t)atomic_load(&e->cfg_ptt_line);
+    cfg->vox_on = atomic_load(&e->cfg_vox_on) != 0;
+    cfg->vox_threshold_dbfs = from_cdb(atomic_load(&e->cfg_vox_cdb));
+    cfg->vox_hang_ms = atomic_load(&e->cfg_vox_hang_ms);
 }
 
 void ae_init(ae_t *e, uint32_t seed)
@@ -108,6 +121,20 @@ void ae_init(ae_t *e, uint32_t seed)
 void ae_set_ptt(ae_t *e, bool keyed)
 {
     atomic_store(&e->ptt, keyed);
+}
+
+void ae_set_lines(ae_t *e, bool dtr, bool rts)
+{
+    atomic_store(&e->dtr, dtr);
+    atomic_store(&e->rts, rts);
+}
+
+void ae_get_ptt(ae_t *e, ae_ptt_t *p)
+{
+    int32_t line = atomic_load(&e->cfg_ptt_line);
+    p->cat = atomic_load(&e->ptt);
+    p->line = line == AE_LINE_RTS ? atomic_load(&e->rts) : line == AE_LINE_DTR ? atomic_load(&e->dtr) : false;
+    p->vox = atomic_load(&e->st_vox);
 }
 
 void ae_get_status(ae_t *e, ae_status_t *st)
@@ -178,6 +205,16 @@ static void load_config(ae_t *e)
         e->was_keyed = false;
         e->mute_left = 0;
     }
+    /* Set the detector up again only if its own settings changed: doing it
+     * for any change would drop the VOX, and the transmission, mid-way. */
+    int32_t vox_cdb = atomic_load(&e->cfg_vox_cdb);
+    if (cfg.vox_on && (!e->vox_enabled || vox_cdb != e->vox_cdb || cfg.vox_hang_ms != e->vox_hang_ms)) {
+        dsp_vox_init(&e->vox, cfg.vox_threshold_dbfs, cfg.vox_hang_ms, AE_FS_HZ);
+        e->vox_cdb = vox_cdb;
+        e->vox_hang_ms = cfg.vox_hang_ms;
+    }
+    e->vox_enabled = cfg.vox_on;
+
     if (e->route != AE_ROUTE_PARROT) {
         /* Whatever the parrot was doing ends here. The recording stays. */
         e->par_state = AE_PARROT_IDLE;
@@ -416,10 +453,30 @@ static bool parrot_block(ae_t *e, bool keyed, const int16_t *tx, int16_t *out, s
     return true;
 }
 
+/* Whether the VOX is open after n samples of transmit audio (silence if tx
+ * is NULL). */
+static bool vox_block(ae_t *e, const int16_t *tx, size_t n)
+{
+    enum { PIECE = 64 };
+    static const int16_t silence[PIECE];
+
+    if (!e->vox_enabled) return false;
+    if (tx) return dsp_vox_process(&e->vox, tx, n);
+    while (n && e->vox.on) {
+        size_t k = n < PIECE ? n : PIECE;
+        dsp_vox_process(&e->vox, silence, k);
+        n -= k;
+    }
+    return e->vox.on;
+}
+
 void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
 {
     sync_config(e);
-    bool keyed = atomic_load(&e->ptt);
+    atomic_store(&e->st_vox, vox_block(e, tx, n));
+    ae_ptt_t ptt;
+    ae_get_ptt(e, &ptt);
+    bool keyed = ptt.cat || ptt.line || ptt.vox;
     const int16_t *src = NULL;
 
     if (e->route == AE_ROUTE_MONITOR) {
@@ -437,5 +494,7 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
 void ae_rx_process(ae_t *e, const int16_t *src, int16_t *out, size_t n)
 {
     sync_config(e);
-    rx_block(e, atomic_load(&e->ptt), src, out, n);
+    ae_ptt_t ptt;
+    ae_get_ptt(e, &ptt);
+    rx_block(e, ptt.cat || ptt.line, src, out, n);
 }

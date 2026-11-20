@@ -14,7 +14,12 @@
  *   - parrot:  the last transmission, recorded while keyed and replayed
  *              after unkeying
  *
- * and the receive channel is applied to it:
+ * The radio transmits while any PTT source keys it: CAT (ae_set_ptt), a
+ * serial control line if one is selected (ae_set_lines), or VOX if it is on,
+ * which opens when the transmit audio reaches a threshold and closes a hang
+ * time after it last did.
+ *
+ * The receive channel is then applied to the receive source:
  *
  *   - receive mute while keyed, and for a turnaround time after unkeying
  *     (every route but monitor)
@@ -31,8 +36,9 @@
  * resampler's delay is taken out: a replayed sample leaves exactly that many
  * periods after it went in.
  *
- * Threads: ae_configure(), ae_get_config(), ae_set_ptt(), ae_get_status(),
- * ae_get_parrot_status() and ae_parrot_replay() may be called from any task.
+ * Threads: ae_configure(), ae_get_config(), ae_set_ptt(), ae_set_lines(),
+ * ae_get_ptt(), ae_get_status(), ae_get_parrot_status() and
+ * ae_parrot_replay() may be called from any task.
  * ae_process() and ae_rx_process() belong to one audio task.
  */
 #ifndef AUDIO_ENGINE_H
@@ -74,6 +80,9 @@ extern "C" {
 #define AE_TURNAROUND_MAX_MS 5000u
 #define AE_PARROT_DELAY_MAX_MS 60000u
 #define AE_PARROT_PERIOD_MAX_MS 300000u
+#define AE_VOX_MIN_DBFS (-80.0f)
+#define AE_VOX_MAX_DBFS (-6.0f)
+#define AE_VOX_HANG_MAX_MS 5000u
 
 /* The parrot stores audio at this rate: a quarter of the memory, and the
  * 0..4.5 kHz it keeps is more than any HF modem uses. */
@@ -90,6 +99,14 @@ typedef enum {
     AE_ROUTE_PARROT,      /* like radio, and receive hears the last transmission replayed */
 } ae_route_t;
 
+/* Which serial control line keys the radio. Off by default: hosts raise
+ * both lines when they open the port. */
+typedef enum {
+    AE_LINE_OFF = 0,
+    AE_LINE_RTS,
+    AE_LINE_DTR,
+} ae_line_t;
+
 typedef struct {
     ae_route_t route;
     bool noise_on;          /* off: the signal passes with atten_db only */
@@ -100,11 +117,16 @@ typedef struct {
     uint32_t turnaround_ms; /* every route but monitor: how long receive stays muted after unkeying */
     uint32_t parrot_delay_ms;  /* parrot: wait this long after unkeying before the replay */
     uint32_t parrot_period_ms; /* parrot: 0, or start the replay a whole number of these after key-on */
+    ae_line_t ptt_line;        /* the control line that keys the radio, if any */
+    bool vox_on;               /* transmit audio keys the radio */
+    float vox_threshold_dbfs;  /* a transmit sample this large opens the VOX (0 dBFS = full scale) */
+    uint32_t vox_hang_ms;      /* the VOX stays open this long after the last such sample */
 } ae_config_t;
 
 /* Monitor route, noise off, no attenuation: audio passes unchanged.
  * SNR 10 dB in 2500 Hz, floor -40 dBFS and 30 ms turnaround once enabled;
- * the parrot replays 1 s after unkeying, with no period. */
+ * the parrot replays 1 s after unkeying, with no period. CAT is the only
+ * PTT source: no control line, VOX off (-40 dBFS and 100 ms once enabled). */
 void ae_config_defaults(ae_config_t *cfg);
 
 typedef struct {
@@ -113,6 +135,13 @@ typedef struct {
     bool gain_limited; /* the source is too quiet to reach the SNR within AE_GAIN_MAX_DB */
     bool rx_muted;     /* the last block was muted, wholly or in part */
 } ae_status_t;
+
+/* Which PTT sources are keying the radio now. It transmits if any is. */
+typedef struct {
+    bool cat;
+    bool line;
+    bool vox;
+} ae_ptt_t;
 
 typedef enum {
     AE_PARROT_IDLE = 0,
@@ -140,7 +169,13 @@ typedef struct {
     _Atomic uint32_t cfg_turnaround_ms;
     _Atomic uint32_t cfg_parrot_delay_ms;
     _Atomic uint32_t cfg_parrot_period_ms;
-    _Atomic bool ptt;
+    _Atomic int32_t cfg_ptt_line;
+    _Atomic int32_t cfg_vox_on;
+    _Atomic int32_t cfg_vox_cdb;
+    _Atomic uint32_t cfg_vox_hang_ms;
+    _Atomic bool ptt; /* CAT */
+    _Atomic bool dtr;
+    _Atomic bool rts;
     _Atomic bool replay_req;
 
     /* status: written by the audio task, read by any task */
@@ -148,6 +183,7 @@ typedef struct {
     _Atomic int32_t st_gain_q24;
     _Atomic bool st_gain_limited;
     _Atomic bool st_rx_muted;
+    _Atomic bool st_vox;
     _Atomic int32_t st_parrot_state;
     _Atomic uint32_t st_parrot_len; /* samples at 12 kHz */
     _Atomic bool st_parrot_truncated;
@@ -167,6 +203,11 @@ typedef struct {
     uint32_t delay_samples;
     uint32_t period_samples;
     bool plan_dirty;
+
+    bool vox_enabled;
+    int32_t vox_cdb; /* the settings the detector was last set up with */
+    uint32_t vox_hang_ms;
+    dsp_vox_t vox;
 
     bool was_keyed;
     uint32_t mute_left; /* samples of turnaround mute still to play */
@@ -203,9 +244,17 @@ void ae_init(ae_t *e, uint32_t seed);
 void ae_configure(ae_t *e, const ae_config_t *cfg);
 void ae_get_config(ae_t *e, ae_config_t *cfg);
 
-/* The radio's transmit state. It is sampled once per block, so the
- * turnaround time can run long by up to one block. */
+/* PTT as commanded over CAT. The transmit state is sampled once per block,
+ * so the turnaround time can run long by up to one block. */
 void ae_set_ptt(ae_t *e, bool keyed);
+
+/* The serial port's control lines, as the host last set them. They key the
+ * radio only if ptt_line selects one. */
+void ae_set_lines(ae_t *e, bool dtr, bool rts);
+
+/* What is keying the radio now. The VOX state is from the last block the
+ * audio task processed. */
+void ae_get_ptt(ae_t *e, ae_ptt_t *p);
 
 void ae_get_status(ae_t *e, ae_status_t *st);
 
@@ -229,8 +278,9 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n);
 /* The receive half alone, for a caller that brings its own receive source:
  * src is the audio arriving at the receiver, or NULL when there is none (the
  * output is then the noise floor, or silence with noise off). The route only
- * decides whether PTT mutes; the parrot does not run. src and out may be the
- * same buffer. Use this or ae_process() on an engine, not both. */
+ * decides whether PTT mutes; the parrot does not run, and neither does the
+ * VOX, which has no transmit audio to hear. src and out may be the same
+ * buffer. Use this or ae_process() on an engine, not both. */
 void ae_rx_process(ae_t *e, const int16_t *src, int16_t *out, size_t n);
 
 #ifdef __cplusplus

@@ -138,16 +138,17 @@ static bool has(const civ_t *c, uint32_t cap)
     return (c->rig->caps & cap) != 0;
 }
 
-static void set_ptt(civ_t *c, bool on, bool notify)
+/* PTT as commanded over CAT. */
+static void set_ptt(civ_t *c, bool on)
 {
     if (c->ptt == on) return;
     c->ptt = on;
-    if (notify && c->on_ptt) c->on_ptt(c->ctx, on);
+    if (c->on_ptt) c->on_ptt(c->ctx, on);
 }
 
-bool civ_ptt(const civ_t *c) { return c->ptt; }
+bool civ_ptt(const civ_t *c) { return c->ptt || c->ptt_other; }
 
-void civ_set_ptt(civ_t *c, bool on) { set_ptt(c, on, false); }
+void civ_set_ptt(civ_t *c, bool on) { c->ptt_other = on; }
 
 const civ_vfo_t *civ_selected_vfo(const civ_t *c) { return &c->vfo[c->sel]; }
 
@@ -435,12 +436,12 @@ static void cmd_1c(civ_t *c, const civ_frame_t *f)
     switch (f->data[0]) {
     case 0x00: /* PTT */
         if (f->len == 1) {
-            const uint8_t p[3] = {0x1C, 0x00, (uint8_t)(c->ptt ? 0x01 : 0x00)};
+            const uint8_t p[3] = {0x1C, 0x00, (uint8_t)(civ_ptt(c) ? 0x01 : 0x00)};
             civ_reply(c, f, p, 3);
             return;
         }
         if (f->len == 2 && f->data[1] <= 0x01) {
-            set_ptt(c, f->data[1] == 0x01, true);
+            set_ptt(c, f->data[1] == 0x01);
             civ_reply_ok(c, f);
             return;
         }

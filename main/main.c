@@ -7,7 +7,9 @@
  * transmission from PSRAM), applies the receive channel (mute while keyed,
  * noise at a set SNR, attenuation) and hands the result back as audio the
  * host can record. With the default settings that is a plain loopback. CI-V
- * frames to the mock's own address change the settings at run time. Before USB starts, a short self-check proves the
+ * frames to the mock's own address change the settings at run time. The
+ * radio transmits while CAT, a selected serial control line or the VOX keys
+ * it, and the RGB LED shows what it is doing. Before USB starts, a short self-check proves the
  * portable modules run on the target.
  */
 #include <inttypes.h>
@@ -17,6 +19,8 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 #include "audio_dsp.h"
@@ -24,6 +28,8 @@
 #include "cat_civ.h"
 #include "mock_ctl.h"
 #include "rig_ic705.h"
+#include "status_led.h"
+#include "ui_led.h"
 #include "usb_composite.h"
 
 static const char *TAG = "mock-radio";
@@ -93,15 +99,21 @@ static void cat_ptt(void *ctx, bool on)
 static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
 {
     (void)ctx;
+    /* A read of 1C 00 in these bytes should say the radio is transmitting
+     * when the line or the VOX is keying it, not only CAT. */
+    ae_ptt_t ptt;
+    ae_get_ptt(&s_engine, &ptt);
+    civ_set_ptt(&s_civ, ptt.line || ptt.vox);
     civ_feed(&s_civ, bytes, len);
 }
 
 static void line_state(void *ctx, bool dtr, bool rts)
 {
     (void)ctx;
-    /* Hosts raise both lines on open. Line keying is a selectable mode that
-     * does not exist yet, so this is information only. */
-    ESP_LOGI(TAG, "serial lines: DTR=%d RTS=%d (not used for PTT)", dtr, rts);
+    /* Hosts raise both lines on open. They key the radio only if the PTT
+     * line setting selects one. */
+    ae_set_lines(&s_engine, dtr, rts);
+    ESP_LOGI(TAG, "serial lines: DTR=%d RTS=%d", dtr, rts);
 }
 
 /* ---- audio ----------------------------------------------------------------
@@ -184,6 +196,16 @@ static void engine_start(void)
     cfg.turnaround_ms = CONFIG_MOCK_TURNAROUND_MS;
     cfg.parrot_delay_ms = CONFIG_MOCK_PARROT_DELAY_MS;
     cfg.parrot_period_ms = CONFIG_MOCK_PARROT_PERIOD_MS;
+#if defined(CONFIG_MOCK_PTT_LINE_RTS)
+    cfg.ptt_line = AE_LINE_RTS;
+#elif defined(CONFIG_MOCK_PTT_LINE_DTR)
+    cfg.ptt_line = AE_LINE_DTR;
+#endif
+#ifdef CONFIG_MOCK_VOX
+    cfg.vox_on = true;
+#endif
+    cfg.vox_threshold_dbfs = (float)CONFIG_MOCK_VOX_THRESHOLD_DBFS;
+    cfg.vox_hang_ms = CONFIG_MOCK_VOX_HANG_MS;
 #ifdef CONFIG_MOCK_NOISE_ON
     cfg.noise_on = true;
     cfg.snr_db = (float)CONFIG_MOCK_SNR_DB;
@@ -204,6 +226,72 @@ static void engine_start(void)
         ESP_LOGI(TAG, "  SNR %d dB in %d Hz, noise floor %d dBFS", (int)cfg.snr_db, (int)cfg.ref_bw_hz,
                  (int)cfg.noise_floor_dbfs);
     }
+    ESP_LOGI(TAG, "PTT: CAT, control line %s, VOX %s",
+             cfg.ptt_line == AE_LINE_RTS ? "RTS" : cfg.ptt_line == AE_LINE_DTR ? "DTR" : "off",
+             cfg.vox_on ? "on" : "off");
+}
+
+/* ---- status: LED and PTT log ------------------------------------------------
+ *
+ * A slow task watches the engine and the USB connection. It logs the control
+ * line and the VOX keying and unkeying (CAT keying is logged where it
+ * happens) and keeps the LED on the colour ui_led picks.
+ */
+#define STATUS_PERIOD_MS 20
+
+#ifdef CONFIG_MOCK_LED
+#if (CONFIG_MOCK_LED_GPIO >= 35 && CONFIG_MOCK_LED_GPIO <= 37) || CONFIG_MOCK_LED_GPIO == 19 || CONFIG_MOCK_LED_GPIO == 20
+#error "MOCK_LED_GPIO: GPIO35-37 belong to the octal PSRAM and GPIO19/20 to USB"
+#endif
+#endif
+
+static void status_task(void *arg)
+{
+    (void)arg;
+    ae_ptt_t was = {0};
+    int shown = -1;
+
+    for (;;) {
+        ae_ptt_t ptt;
+        ae_parrot_status_t parrot;
+        ae_get_ptt(&s_engine, &ptt);
+        ae_get_parrot_status(&s_engine, &parrot);
+
+        if (ptt.line != was.line) ESP_LOGI(TAG, "PTT %s (control line)", ptt.line ? "on" : "off");
+        if (ptt.vox != was.vox) ESP_LOGI(TAG, "PTT %s (VOX)", ptt.vox ? "on" : "off");
+        was = ptt;
+
+        const ui_led_input_t in = {
+            .host = usb_composite_mounted(),
+            .transmitting = ptt.cat || ptt.line || ptt.vox || parrot.state == AE_PARROT_RECORDING,
+            .replay_waiting = parrot.state == AE_PARROT_WAITING,
+            .replaying = parrot.state == AE_PARROT_PLAYING,
+        };
+        int state = (int)ui_led_state(&in);
+        if (state != shown) {
+            shown = state;
+#ifdef CONFIG_MOCK_LED
+            ui_rgb_t c = ui_led_color((ui_led_state_t)state, CONFIG_MOCK_LED_BRIGHTNESS);
+            status_led_set(c.r, c.g, c.b);
+#endif
+        }
+        vTaskDelay(pdMS_TO_TICKS(STATUS_PERIOD_MS));
+    }
+}
+
+static void status_start(void)
+{
+#ifdef CONFIG_MOCK_LED
+    esp_err_t err = status_led_start(CONFIG_MOCK_LED_GPIO);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "status LED on GPIO%d", CONFIG_MOCK_LED_GPIO);
+    } else {
+        ESP_LOGW(TAG, "status LED on GPIO%d failed to start: %s", CONFIG_MOCK_LED_GPIO, esp_err_to_name(err));
+    }
+#endif
+    if (xTaskCreate(status_task, "status", 3072, NULL, 2, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "status task failed to start: no LED updates, no line or VOX PTT log");
+    }
 }
 
 void app_main(void)
@@ -222,6 +310,7 @@ void app_main(void)
     ESP_LOGI(TAG, "self-check: CAT %s, DSP %s", cat_ok ? "ok" : "FAILED", dsp_ok ? "ok" : "FAILED");
 
     engine_start();
+    status_start();
     civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
