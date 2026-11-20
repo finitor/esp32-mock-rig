@@ -943,6 +943,18 @@ static void test_vox(void)
 
 static void test_config_clamping(void)
 {
+    /* The generation moves with every ae_configure() and with nothing else. */
+    {
+        ae_t g;
+        ae_config_t c;
+        ae_init(&g, 1u);
+        uint32_t gen = ae_config_gen(&g);
+        ae_get_config(&g, &c);
+        CHECK(ae_config_gen(&g) == gen);
+        ae_configure(&g, &c);
+        CHECK(ae_config_gen(&g) != gen);
+    }
+
     ae_t e;
     ae_config_t c;
     ae_init(&e, 1);

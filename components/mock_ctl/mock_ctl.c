@@ -5,16 +5,19 @@
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
-/* A numeric setting as it travels: nbytes of BCD, then a sign byte if signed.
- * lo and hi are in wire units (tenths of a dB, Hz, ms or tenths of a second). */
+/* A setting as it travels. A number is nbytes of BCD, then a sign byte if
+ * signed; lo and hi are in wire units (tenths of a dB, Hz, ms or tenths of a
+ * second). A choice (nbytes 0) is one plain byte, 00..hi. */
 typedef struct {
     uint8_t cmd;
     uint8_t nbytes;
     bool is_signed;
     int32_t lo, hi;
-} num_t;
+} setting_t;
 
-static const num_t nums[] = {
+static const setting_t settings[] = {
+    {MOCK_CTL_ROUTE, 0, false, 0, AE_ROUTE_PARROT},
+    {MOCK_CTL_NOISE, 0, false, 0, 1},
     {MOCK_CTL_SNR, 2, true, (int32_t)(AE_SNR_MIN_DB * 10), (int32_t)(AE_SNR_MAX_DB * 10)},
     {MOCK_CTL_REF_BW, 3, false, (int32_t)AE_REF_BW_MIN_HZ, (int32_t)AE_REF_BW_MAX_HZ},
     {MOCK_CTL_FLOOR, 2, false, (int32_t)(-AE_FLOOR_MAX_DBFS * 10), (int32_t)(-AE_FLOOR_MIN_DBFS * 10)},
@@ -22,9 +25,19 @@ static const num_t nums[] = {
     {MOCK_CTL_TURNAROUND, 2, false, 0, (int32_t)AE_TURNAROUND_MAX_MS},
     {MOCK_CTL_PARROT_DELAY, 2, false, 0, (int32_t)(AE_PARROT_DELAY_MAX_MS / 100)},
     {MOCK_CTL_PARROT_PERIOD, 2, false, 0, (int32_t)(AE_PARROT_PERIOD_MAX_MS / 100)},
+    {MOCK_CTL_PTT_LINE, 0, false, 0, AE_LINE_DTR},
+    {MOCK_CTL_VOX, 0, false, 0, 1},
     {MOCK_CTL_VOX_THRESHOLD, 2, false, (int32_t)(-AE_VOX_MAX_DBFS * 10), (int32_t)(-AE_VOX_MIN_DBFS * 10)},
     {MOCK_CTL_VOX_HANG, 2, false, 0, (int32_t)AE_VOX_HANG_MAX_MS},
 };
+
+static const setting_t *find_setting(uint8_t cmd)
+{
+    for (size_t i = 0; i < ARRAY_LEN(settings); i++) {
+        if (settings[i].cmd == cmd) return &settings[i];
+    }
+    return NULL;
+}
 
 static int32_t tenths(float db)
 {
@@ -37,9 +50,22 @@ static int32_t tenths_of_s(uint32_t ms)
     return (int32_t)((ms + 50) / 100);
 }
 
-static int32_t get_wire(const ae_config_t *cfg, uint8_t cmd)
+bool mock_ctl_setting_range(uint8_t cmd, int32_t *lo, int32_t *hi)
+{
+    const setting_t *s = find_setting(cmd);
+    if (!s) return false;
+    *lo = s->lo;
+    *hi = s->hi;
+    return true;
+}
+
+int32_t mock_ctl_setting_get(const ae_config_t *cfg, uint8_t cmd)
 {
     switch (cmd) {
+    case MOCK_CTL_ROUTE:
+        return (int32_t)cfg->route;
+    case MOCK_CTL_NOISE:
+        return cfg->noise_on ? 1 : 0;
     case MOCK_CTL_SNR:
         return tenths(cfg->snr_db);
     case MOCK_CTL_REF_BW:
@@ -48,22 +74,42 @@ static int32_t get_wire(const ae_config_t *cfg, uint8_t cmd)
         return tenths(-cfg->noise_floor_dbfs);
     case MOCK_CTL_ATTEN:
         return tenths(cfg->atten_db);
+    case MOCK_CTL_TURNAROUND:
+        return (int32_t)cfg->turnaround_ms;
     case MOCK_CTL_PARROT_DELAY:
         return tenths_of_s(cfg->parrot_delay_ms);
     case MOCK_CTL_PARROT_PERIOD:
         return tenths_of_s(cfg->parrot_period_ms);
+    case MOCK_CTL_PTT_LINE:
+        return (int32_t)cfg->ptt_line;
+    case MOCK_CTL_VOX:
+        return cfg->vox_on ? 1 : 0;
     case MOCK_CTL_VOX_THRESHOLD:
         return tenths(-cfg->vox_threshold_dbfs);
     case MOCK_CTL_VOX_HANG:
         return (int32_t)cfg->vox_hang_ms;
     default:
-        return (int32_t)cfg->turnaround_ms;
+        return 0;
     }
 }
 
-static void put_wire(ae_config_t *cfg, uint8_t cmd, int32_t w)
+mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd, int32_t w)
 {
+    const setting_t *s = find_setting(cmd);
+    if (!s) return MOCK_CTL_SET_UNKNOWN;
+    if (w < s->lo || w > s->hi) return MOCK_CTL_SET_RANGE;
+
     switch (cmd) {
+    case MOCK_CTL_ROUTE: {
+        ae_parrot_status_t par;
+        ae_get_parrot_status(m->engine, &par);
+        if (w == AE_ROUTE_PARROT && par.capacity_ms == 0) return MOCK_CTL_SET_UNAVAILABLE; /* nowhere to record */
+        cfg->route = (ae_route_t)w;
+        break;
+    }
+    case MOCK_CTL_NOISE:
+        cfg->noise_on = w == 1;
+        break;
     case MOCK_CTL_SNR:
         cfg->snr_db = (float)w / 10.0f;
         break;
@@ -76,11 +122,20 @@ static void put_wire(ae_config_t *cfg, uint8_t cmd, int32_t w)
     case MOCK_CTL_ATTEN:
         cfg->atten_db = (float)w / 10.0f;
         break;
+    case MOCK_CTL_TURNAROUND:
+        cfg->turnaround_ms = (uint32_t)w;
+        break;
     case MOCK_CTL_PARROT_DELAY:
         cfg->parrot_delay_ms = (uint32_t)w * 100u;
         break;
     case MOCK_CTL_PARROT_PERIOD:
         cfg->parrot_period_ms = (uint32_t)w * 100u;
+        break;
+    case MOCK_CTL_PTT_LINE:
+        cfg->ptt_line = (ae_line_t)w;
+        break;
+    case MOCK_CTL_VOX:
+        cfg->vox_on = w == 1;
         break;
     case MOCK_CTL_VOX_THRESHOLD:
         cfg->vox_threshold_dbfs = (float)-w / 10.0f;
@@ -89,9 +144,14 @@ static void put_wire(ae_config_t *cfg, uint8_t cmd, int32_t w)
         cfg->vox_hang_ms = (uint32_t)w;
         break;
     default:
-        cfg->turnaround_ms = (uint32_t)w;
-        break;
+        return MOCK_CTL_SET_UNKNOWN;
     }
+    return MOCK_CTL_SET_OK;
+}
+
+void mock_ctl_reset(mock_ctl_t *m)
+{
+    ae_configure(m->engine, &m->power_up);
 }
 
 /* Append a number to a reply: magnitude, then the sign byte if signed. */
@@ -103,96 +163,50 @@ static size_t put_num(uint8_t *p, int32_t w, size_t nbytes, bool is_signed)
     return nbytes + (is_signed ? 1u : 0u);
 }
 
-static void cmd_num(mock_ctl_t *m, civ_t *c, const civ_frame_t *f, const num_t *n)
+/* Read or set one setting. */
+static void cmd_setting(mock_ctl_t *m, civ_t *c, const civ_frame_t *f, const setting_t *s)
 {
     ae_config_t cfg;
     ae_get_config(m->engine, &cfg);
 
     if (f->len == 0) {
         uint8_t p[5] = {f->cmd};
-        size_t len = 1 + put_num(&p[1], get_wire(&cfg, f->cmd), n->nbytes, n->is_signed);
+        int32_t now = mock_ctl_setting_get(&cfg, f->cmd);
+        size_t len = 2;
+        if (s->nbytes == 0) {
+            p[1] = (uint8_t)now;
+        } else {
+            len = 1 + put_num(&p[1], now, s->nbytes, s->is_signed);
+        }
         civ_reply(c, f, p, len);
         return;
     }
 
-    uint16_t mag;
-    if (f->len != (size_t)n->nbytes + (n->is_signed ? 1u : 0u) || !civ_bcd_be_to_u16(f->data, n->nbytes, &mag)) {
-        civ_reply_ng(c, f);
-        return;
-    }
-    int32_t w = mag;
-    if (n->is_signed) {
-        if (f->data[n->nbytes] > 0x01) {
+    int32_t w;
+    if (s->nbytes == 0) {
+        if (f->len != 1) {
             civ_reply_ng(c, f);
             return;
         }
-        if (f->data[n->nbytes] == 0x01) w = -w;
-    }
-    if (w < n->lo || w > n->hi) {
-        civ_reply_ng(c, f);
-        return;
-    }
-    put_wire(&cfg, f->cmd, w);
-    ae_configure(m->engine, &cfg);
-    civ_reply_ok(c, f);
-}
-
-/* A setting with a few named values, numbered from 00. */
-static void cmd_choice(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
-{
-    ae_config_t cfg;
-    ae_get_config(m->engine, &cfg);
-
-    uint8_t now, highest;
-    switch (f->cmd) {
-    case MOCK_CTL_ROUTE:
-        now = (uint8_t)cfg.route;
-        highest = AE_ROUTE_PARROT;
-        break;
-    case MOCK_CTL_PTT_LINE:
-        now = (uint8_t)cfg.ptt_line;
-        highest = AE_LINE_DTR;
-        break;
-    case MOCK_CTL_VOX:
-        now = cfg.vox_on ? 1 : 0;
-        highest = 1;
-        break;
-    default:
-        now = cfg.noise_on ? 1 : 0;
-        highest = 1;
-        break;
-    }
-
-    if (f->len == 0) {
-        const uint8_t p[2] = {f->cmd, now};
-        civ_reply(c, f, p, 2);
-        return;
-    }
-    if (f->len != 1 || f->data[0] > highest) {
-        civ_reply_ng(c, f);
-        return;
-    }
-    uint8_t v = f->data[0];
-    switch (f->cmd) {
-    case MOCK_CTL_ROUTE: {
-        ae_parrot_status_t par;
-        ae_get_parrot_status(m->engine, &par);
-        if (v == AE_ROUTE_PARROT && par.capacity_ms == 0) {
-            civ_reply_ng(c, f); /* nowhere to record */
+        w = f->data[0];
+    } else {
+        uint16_t mag;
+        if (f->len != (size_t)s->nbytes + (s->is_signed ? 1u : 0u) || !civ_bcd_be_to_u16(f->data, s->nbytes, &mag)) {
+            civ_reply_ng(c, f);
             return;
         }
-        cfg.route = (ae_route_t)v;
-        break;
+        w = mag;
+        if (s->is_signed) {
+            if (f->data[s->nbytes] > 0x01) {
+                civ_reply_ng(c, f);
+                return;
+            }
+            if (f->data[s->nbytes] == 0x01) w = -w;
+        }
     }
-    case MOCK_CTL_PTT_LINE:
-        cfg.ptt_line = (ae_line_t)v;
-        break;
-    case MOCK_CTL_VOX:
-        cfg.vox_on = v == 1;
-        break;
-    default:
-        cfg.noise_on = v == 1;
-        break;
+    if (mock_ctl_setting_put(m, &cfg, f->cmd, w) != MOCK_CTL_SET_OK) {
+        civ_reply_ng(c, f);
+        return;
     }
     ae_configure(m->engine, &cfg);
     civ_reply_ok(c, f);
@@ -248,11 +262,10 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
 {
     mock_ctl_t *m = ctx;
 
-    for (size_t i = 0; i < ARRAY_LEN(nums); i++) {
-        if (nums[i].cmd == f->cmd) {
-            cmd_num(m, c, f, &nums[i]);
-            return;
-        }
+    const setting_t *s = find_setting(f->cmd);
+    if (s) {
+        cmd_setting(m, c, f, s);
+        return;
     }
 
     switch (f->cmd) {
@@ -267,17 +280,11 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
         break;
     case MOCK_CTL_RESET:
         if (f->len == 0) {
-            ae_configure(m->engine, &m->power_up);
+            mock_ctl_reset(m);
             civ_reply_ok(c, f);
             return;
         }
         break;
-    case MOCK_CTL_ROUTE:
-    case MOCK_CTL_NOISE:
-    case MOCK_CTL_PTT_LINE:
-    case MOCK_CTL_VOX:
-        cmd_choice(m, c, f);
-        return;
     case MOCK_CTL_PTT_STATUS:
         if (f->len == 0) {
             ae_ptt_t ptt;

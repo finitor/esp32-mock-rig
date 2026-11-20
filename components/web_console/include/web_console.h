@@ -1,0 +1,58 @@
+/*
+ * web_console: the mock radio's control and telemetry console over Wi-Fi.
+ *
+ * ESP-IDF only. Brings up Wi-Fi (joins a network, or hosts one when there is
+ * none to join), names the board on the network, and serves one page with a
+ * JSON interface and a WebSocket that pushes telemetry:
+ *
+ *   GET  /                the page
+ *   GET  /api/info        who this is and the list of settings
+ *   GET  /api/settings    every setting
+ *   POST /api/settings    change settings: a JSON object, any subset
+ *   POST /api/reset       back to the power-up settings
+ *   POST /api/replay      play the parrot's recording again
+ *   GET  /api/telemetry   one snapshot of the telemetry
+ *   GET  /ws              WebSocket: the same snapshot, pushed 5 times a second
+ *   GET  /api/wifi        how the board is connected
+ *   POST /api/wifi        {"ssid":..., "password":...}: save, then restart
+ *
+ * The JSON is console_api's; this is the transport. No USB endpoint is
+ * involved. There is no login: it is a bench device on a private network.
+ */
+#ifndef WEB_CONSOLE_H
+#define WEB_CONSOLE_H
+
+#include "esp_err.h"
+
+#include "console_api.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    mock_ctl_t *ctl; /* the settings, shared with the CI-V controls */
+    const char *rig; /* the personality's name and Hamlib model, for the page */
+    int hamlib_model;
+
+    /* Held around every change of settings, so that it cannot interleave
+     * with a change arriving over CAT. Must not block for long. */
+    void (*lock)(void *ctx);
+    void (*unlock)(void *ctx);
+
+    /* Fill in everything but the Wi-Fi signal strength. Called from the
+     * HTTP server's task, 5 times a second, without the lock. */
+    void (*sample)(void *ctx, console_sample_t *out);
+
+    void *ctx;
+} web_console_config_t;
+
+/* Start Wi-Fi and the server. config is copied; what it points to must stay.
+ * Returns once both are started, which is before the network is joined. */
+esp_err_t web_console_start(const web_console_config_t *config);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* WEB_CONSOLE_H */

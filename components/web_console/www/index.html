@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mock radio</title>
+<!--
+  The mock radio's control and telemetry console. One file, nothing loaded
+  from anywhere else: the board may be on a network with no internet.
+  Served from flash by web_console.c, and by host/tools/console_sim.py.
+  The settings form is built from /api/info, so a setting added in
+  console_api.c appears here without an edit.
+-->
+<style>
+:root {
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --line: #e1e0d9; --axis: #c3c2b7; --field: #ffffff;
+  --rx: #2a78d6; --tx: #eb6834; --red: #d03b3b; --amber: #fab219; --green: #0ca30c; --idle: #898781;
+  --accent: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --line: #2c2c2a; --axis: #383835; --field: #0d0d0d;
+    --rx: #3987e5; --tx: #d95926; --accent: #3987e5;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 13px; margin: 0 0 10px; color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
+.sub { color: var(--ink2); }
+.link { margin-left: auto; color: var(--ink2); white-space: nowrap; }
+.link::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 6px; background: var(--idle); }
+.link.live::before { background: var(--green); }
+section { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.stale #status, .stale #chartbox { opacity: .45; }
+.num { font-variant-numeric: tabular-nums; }
+
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+.pill { display: inline-flex; align-items: center; min-width: 190px; padding: 8px 16px; border-radius: 999px;
+  font-size: 18px; font-weight: 650; color: #fff; background: var(--idle); }
+.pill.rx { background: var(--rx); } .pill.tx { background: var(--red); }
+.pill.wait { background: var(--amber); color: #0b0b0b; } .pill.play { background: var(--green); }
+.freq { font-size: 26px; font-weight: 600; }
+.freq small { font-size: 15px; font-weight: 400; color: var(--ink2); margin-left: 8px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px 26px; margin-top: 14px; }
+.card h3 { font-size: 13px; margin: 0 0 4px; color: var(--ink2); font-weight: 600; }
+.kv { display: flex; justify-content: space-between; gap: 10px; }
+.kv span:first-child { color: var(--ink2); }
+.warn { color: var(--red); font-weight: 600; }
+
+.meter { display: grid; grid-template-columns: 26px 1fr 150px; align-items: center; gap: 10px; margin: 6px 0; }
+.bar { position: relative; height: 12px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 0 4px 4px 0; }
+.bar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); left: 0; display: none; }
+.meter .val { text-align: right; color: var(--ink2); white-space: nowrap; }
+#mtx i { background: var(--tx); } #mrx i { background: var(--rx); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--ink2); font-size: 13px; margin-bottom: 4px; }
+.legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.legend i.band { height: 8px; }
+#chartbox { position: relative; }
+canvas { display: block; width: 100%; height: 190px; }
+#tip { position: absolute; top: 4px; pointer-events: none; display: none; background: var(--surface);
+  border: 1px solid var(--axis); border-radius: 6px; padding: 4px 8px; font-size: 13px; white-space: nowrap; }
+
+.groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 7px 0;
+  border-top: 1px solid var(--line); }
+.row:first-of-type { border-top: 0; }
+.row label, .row .name { font-weight: 550; }
+.row .hint, .row .err { grid-column: 1 / -1; font-size: 13px; color: var(--ink2); }
+.row .err { color: var(--red); font-weight: 600; }
+.row .err:empty { display: none; }
+.ctl { display: flex; align-items: center; gap: 6px; }
+.ctl .unit { color: var(--ink2); min-width: 34px; }
+input[type=number], input[type=text], input[type=password] { font: inherit; color: var(--ink); background: var(--field);
+  border: 1px solid var(--axis); border-radius: 6px; padding: 5px 8px; }
+input[type=number] { width: 96px; text-align: right; }
+input:focus-visible, button:focus-visible, .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 6px; overflow: hidden; }
+.seg label { font-weight: 400; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; }
+.seg span { display: block; padding: 5px 11px; border-left: 1px solid var(--axis); }
+.seg label:first-child span { border-left: 0; }
+.seg input:checked + span { background: var(--accent); color: #fff; }
+button { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--axis);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.msg { color: var(--ink2); } .msg.bad { color: var(--red); font-weight: 600; }
+details summary { cursor: pointer; font-weight: 600; }
+.wifi { display: grid; gap: 8px; max-width: 420px; margin-top: 10px; }
+.wifi label { display: grid; gap: 3px; color: var(--ink2); }
+@media (max-width: 520px) { .meter { grid-template-columns: 26px 1fr; } .meter .val { grid-column: 1 / -1; text-align: left; } }
+</style>
+</head>
+<body>
+<main id="app" class="stale">
+  <header>
+    <h1 id="name">Mock radio</h1>
+    <span class="sub" id="rig"></span>
+    <span class="link" id="link">connecting</span>
+  </header>
+
+  <section id="status" aria-label="Status">
+    <div class="top">
+      <span class="pill" id="pill">No data yet</span>
+      <span class="sub" id="pttsrc"></span>
+      <span class="freq num" id="freq"></span>
+    </div>
+    <div class="meter" id="mtx"><span>TX</span><div class="bar"><i></i><b></b></div><span class="val num"></span></div>
+    <div class="meter" id="mrx"><span>RX</span><div class="bar"><i></i><b></b></div><span class="val num"></span></div>
+    <div class="cards">
+      <div class="card"><h3>Receive channel</h3>
+        <div class="kv"><span>Source level</span><span class="num" id="chlevel"></span></div>
+        <div class="kv"><span>Gain applied</span><span class="num" id="chgain"></span></div>
+        <div class="kv"><span>Receive</span><span id="chmute"></span></div>
+      </div>
+      <div class="card"><h3>Parrot</h3>
+        <div class="kv"><span>State</span><span id="pstate"></span></div>
+        <div class="kv"><span>Recorded</span><span class="num" id="prec"></span></div>
+      </div>
+      <div class="card"><h3>Audio buffer</h3>
+        <div class="kv"><span>Fill / target</span><span class="num" id="fifo"></span></div>
+        <div class="kv"><span>Underruns / overruns</span><span class="num" id="fifoerr"></span></div>
+        <div class="kv"><span>Dropped / repeated</span><span class="num" id="fifosteer"></span></div>
+      </div>
+      <div class="card"><h3>CAT and board</h3>
+        <div class="kv"><span>CAT frames</span><span class="num" id="frames"></span></div>
+        <div class="kv"><span>Wi-Fi signal</span><span class="num" id="rssi"></span></div>
+        <div class="kv"><span>Up</span><span class="num" id="up"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-label="Level history">
+    <h2>Last 60 seconds</h2>
+    <div class="legend">
+      <span><i style="background:var(--tx)"></i>TX level: audio the host plays</span>
+      <span><i style="background:var(--rx)"></i>RX level: audio the host records</span>
+      <span><i class="band" style="background:var(--red)"></i>Transmitting</span>
+      <span>RMS, dBFS</span>
+    </div>
+    <div id="chartbox"><canvas id="chart" role="img" aria-label="Transmit and receive level over the last 60 seconds"></canvas><div id="tip"></div></div>
+  </section>
+
+  <section aria-label="Settings">
+    <h2>Settings</h2>
+    <div class="groups" id="groups"></div>
+    <div class="actions">
+      <button id="replay" type="button">Replay the parrot's recording</button>
+      <button id="reset" type="button">Reset to power-up values</button>
+      <span class="msg" id="actmsg" role="status"></span>
+    </div>
+  </section>
+
+  <section aria-label="Wi-Fi">
+    <details>
+      <summary>Wi-Fi: <span id="wifinow">unknown</span></summary>
+      <form class="wifi" id="wifiform">
+        <span class="sub">The board joins this network at start-up. If it cannot within a short time, or the name is empty, it hosts its own network instead. Saving restarts the board, which drops its USB connection for a few seconds.</span>
+        <label>Network name (SSID)<input type="text" id="ssid" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <label>Password<input type="password" id="pass" maxlength="63" autocomplete="off"></label>
+        <div class="actions"><button type="submit">Save and restart</button><span class="msg" id="wifimsg" role="status"></span></div>
+      </form>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const app = $("app");
+let info = null, gen = null, last = null, lastAt = 0, ws = null;
+const hist = [];              // {t, tx, rx, ptt}, t in ms of board uptime
+const SPAN = 60000, FLOOR = -80;
+
+async function api(method, path, body) {
+  const opt = { method };
+  if (body !== undefined) { opt.headers = { "Content-Type": "application/json" }; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let j = {};
+  try { j = await r.json(); } catch (e) { /* no body */ }
+  if (!r.ok) throw new Error(j.error || ("the board answered " + r.status));
+  return j;
+}
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const db = v => (v == null ? "" : (v <= -119.9 ? "silent" : v.toFixed(1) + " dBFS"));
+
+/* ---- settings form, built from /api/info ---- */
+const controls = {};          // name -> {set(value), err}
+
+function buildSettings() {
+  const groups = {};
+  for (const s of info.settings) {
+    let g = groups[s.group];
+    if (!g) { g = groups[s.group] = el("div"); g.appendChild(el("h2", null, s.group)); $("groups").appendChild(g); }
+    const row = el("div", "row"), ctl = el("div", "ctl"), err = el("div", "err");
+    err.setAttribute("role", "alert");
+    const id = "s-" + s.name;
+    let set;
+    if (s.choices) {
+      row.appendChild(el("span", "name", s.label));
+      const seg = el("div", "seg"); seg.setAttribute("role", "radiogroup"); seg.setAttribute("aria-label", s.label);
+      const radios = s.choices.map(c => {
+        const lab = el("label"), inp = el("input");
+        inp.type = "radio"; inp.name = id; inp.value = c;
+        inp.addEventListener("change", () => change(s.name, c));
+        lab.append(inp, el("span", null, c)); seg.appendChild(lab);
+        return inp;
+      });
+      ctl.appendChild(seg);
+      set = v => radios.forEach(r => { r.checked = r.value === v; });
+    } else {
+      const lab = el("label", null, s.label); lab.htmlFor = id; row.appendChild(lab);
+      const inp = el("input");
+      inp.type = "number"; inp.id = id; inp.min = s.min; inp.max = s.max; inp.step = s.step; inp.inputMode = "decimal";
+      inp.title = s.min + " to " + s.max + " " + s.unit;
+      inp.addEventListener("change", () => {
+        const v = Number(inp.value);
+        if (inp.value.trim() === "" || !Number.isFinite(v)) { loadSettings(); return; }
+        change(s.name, v);
+      });
+      ctl.append(inp, el("span", "unit", s.unit));
+      set = (v, force) => { if (force || document.activeElement !== inp) inp.value = v; };
+    }
+    row.appendChild(ctl);
+    if (s.hint) row.appendChild(el("div", "hint", s.hint));
+    row.appendChild(err);
+    g.appendChild(row);
+    controls[s.name] = { set, err };
+  }
+}
+
+/* A field being typed in is left alone, except the one just sent: it shows
+   what the board kept, which may be rounded. */
+function showSettings(values, sent) {
+  for (const name in controls) if (name in values) controls[name].set(values[name], name === sent);
+}
+async function loadSettings() {
+  try { showSettings(await api("GET", "/api/settings")); } catch (e) { /* the link indicator says so */ }
+}
+async function change(name, value) {
+  const c = controls[name];
+  try {
+    const values = await api("POST", "/api/settings", { [name]: value });
+    c.err.textContent = "";
+    showSettings(values, name);
+  } catch (e) {
+    c.err.textContent = e.message;
+    try { showSettings(await api("GET", "/api/settings"), name); } catch (e2) { /* the link indicator says so */ }
+  }
+}
+async function action(path, done) {
+  const msg = $("actmsg");
+  try { const r = await api("POST", path); msg.className = "msg"; msg.textContent = done; if (path === "/api/reset") showSettings(r); }
+  catch (e) { msg.className = "msg bad"; msg.textContent = e.message; }
+  setTimeout(() => { msg.textContent = ""; }, 5000);
+}
+$("replay").addEventListener("click", () => action("/api/replay", "Replaying."));
+$("reset").addEventListener("click", () => action("/api/reset", "Settings are back to their power-up values."));
+
+/* ---- live status ---- */
+function meter(id, lvl, idle) {
+  const m = $(id), fill = m.querySelector("i"), peak = m.querySelector("b"), val = m.querySelector(".val");
+  const pos = v => Math.max(0, Math.min(100, (v - FLOOR) / -FLOOR * 100));
+  if (!lvl) { fill.style.width = "0"; peak.style.display = "none"; val.textContent = idle; return; }
+  fill.style.width = pos(lvl.rms) + "%";
+  peak.style.display = lvl.peak > FLOOR ? "block" : "none";
+  peak.style.left = "calc(" + pos(lvl.peak) + "% - 2px)";
+  val.textContent = lvl.rms <= -119.9 ? "silent" : lvl.rms.toFixed(1) + " dBFS, peak " + lvl.peak.toFixed(1);
+}
+function fmtFreq(hz) {
+  const s = String(hz).padStart(7, "0");
+  return s.slice(0, -6) + "." + s.slice(-6, -3) + "." + s.slice(-3) + " MHz";
+}
+function fmtUp(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return (h ? h + " h " : "") + m + " min " + (s % 60) + " s";
+}
+
+function update(t) {
+  if (last && t.t < last.t) hist.length = 0;      // the board restarted
+  last = t; lastAt = Date.now();
+  app.classList.remove("stale");
+
+  const pill = $("pill"), p = t.parrot.state;
+  let cls = "rx", text = "Receiving";
+  if (!t.host) { cls = ""; text = "No USB host"; }
+  else if (t.ptt.on || p === "recording") { cls = "tx"; text = "Transmitting"; }
+  else if (p === "playing") { cls = "play"; text = "Replaying"; }
+  else if (p === "waiting") { cls = "wait"; text = "Waiting to replay"; }
+  pill.className = "pill " + cls; pill.textContent = text;
+  const src = ["cat", "line", "vox"].filter(k => t.ptt[k]).map(k => ({ cat: "CAT", line: "control line", vox: "VOX" })[k]);
+  $("pttsrc").textContent = src.length ? "keyed by " + src.join(" and ") : "";
+
+  const f = $("freq"); f.textContent = fmtFreq(t.cat.freq);
+  f.appendChild(el("small", null, t.cat.mode + (t.cat.split ? ", split, TX " + fmtFreq(t.cat.txfreq) : "")));
+
+  meter("mtx", t.audio.tx, "host is not playing");
+  meter("mrx", t.audio.rx, "host is not recording");
+
+  $("chlevel").textContent = t.channel.level == null ? "nothing measured" : db(t.channel.level);
+  const g = $("chgain"); g.textContent = t.channel.gain.toFixed(1) + " dB" + (t.channel.limited ? ", at its limit" : "");
+  g.className = "num" + (t.channel.limited ? " warn" : "");
+  $("chmute").textContent = t.channel.muted ? "muted" : "open";
+
+  $("pstate").textContent = { idle: "idle", recording: "recording", waiting: "waiting to replay", playing: "replaying" }[p] || p;
+  const pr = $("prec");
+  pr.textContent = t.parrot.capacity ? t.parrot.recorded.toFixed(1) + " of " + t.parrot.capacity.toFixed(1) + " s" + (t.parrot.truncated ? ", cut short" : "") : "no buffer";
+  pr.className = "num" + (t.parrot.truncated ? " warn" : "");
+  $("replay").disabled = !(t.parrot.recorded > 0 && !t.ptt.on);
+
+  const q = t.audio.fifo, ms = n => (n / 48).toFixed(1);
+  $("fifo").textContent = ms(q.level) + " / " + ms(q.target) + " ms";
+  $("fifoerr").textContent = q.under + " / " + q.over;
+  $("fifosteer").textContent = q.dropped + " / " + q.repeated;
+  $("frames").textContent = t.cat.ok + " OK, " + t.cat.ng + " refused, " + t.cat.dropped + " bad";
+  $("rssi").textContent = t.rssi == null ? "own network" : t.rssi + " dBm";
+  $("up").textContent = fmtUp(t.t);
+
+  hist.push({ t: t.t, tx: t.audio.tx ? t.audio.tx.rms : null, rx: t.audio.rx ? t.audio.rx.rms : null, ptt: t.ptt.on });
+  while (hist.length && hist[0].t < t.t - SPAN) hist.shift();
+  draw();
+
+  if (t.gen !== gen) { gen = t.gen; loadSettings(); }   // changed here, over CAT, or by another browser
+}
+
+/* ---- level history: two lines on one dBFS axis, transmit as a band below ---- */
+const cv = $("chart"), tip = $("tip");
+let hover = null;             // x in CSS pixels, or null
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function draw() {
+  const w = cv.clientWidth, h = cv.clientHeight, r = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); }
+  const c = cv.getContext("2d");
+  c.setTransform(r, 0, 0, r, 0, 0);
+  c.clearRect(0, 0, w, h);
+  const L = 34, R = 6, T = 6, B = 30, pw = w - L - R, ph = h - T - B;
+  const now = last ? last.t : 0;
+  const x = t => L + pw * (1 - (now - t) / SPAN);
+  const y = v => T + ph * (Math.min(0, Math.max(FLOOR, v)) / FLOOR);
+
+  c.font = "12px system-ui, sans-serif"; c.textBaseline = "middle"; c.lineWidth = 1;
+  for (let v = 0; v >= FLOOR; v -= 20) {
+    c.strokeStyle = css(v === FLOOR ? "--axis" : "--line");
+    c.beginPath(); c.moveTo(L, Math.round(y(v)) + .5); c.lineTo(w - R, Math.round(y(v)) + .5); c.stroke();
+    c.fillStyle = css("--muted"); c.textAlign = "right"; c.fillText(v, L - 6, y(v));
+  }
+  c.textAlign = "center";
+  for (let s = 0; s <= 60; s += 15) c.fillText(s ? "-" + s + " s" : "now", Math.max(L + 14, Math.min(w - R - 12, L + pw * (1 - s / 60))), h - 7);
+
+  c.fillStyle = css("--red");
+  for (let i = 0; i < hist.length; i++) {
+    if (!hist[i].ptt) continue;
+    const x0 = Math.max(L, Math.floor(i ? x(hist[i - 1].t) : x(hist[i].t) - 1)), x1 = Math.ceil(x(hist[i].t));
+    c.fillRect(x0, T + ph + 5, Math.max(1, x1 - x0), 8);
+  }
+  for (const [key, color] of [["tx", "--tx"], ["rx", "--rx"]]) {
+    c.strokeStyle = css(color); c.lineWidth = 2; c.lineJoin = "round"; c.beginPath();
+    let pen = false;
+    for (const p of hist) {
+      if (p[key] == null) { pen = false; continue; }
+      if (pen) c.lineTo(x(p.t), y(p[key])); else c.moveTo(x(p.t), y(p[key]));
+      pen = true;
+    }
+    c.stroke();
+  }
+
+  if (hover == null || !hist.length) { tip.style.display = "none"; return; }
+  const tAt = now - (1 - (hover - L) / pw) * SPAN;
+  let near = hist[0];
+  for (const p of hist) if (Math.abs(p.t - tAt) < Math.abs(near.t - tAt)) near = p;
+  const hx = x(near.t);
+  c.strokeStyle = css("--muted"); c.lineWidth = 1;
+  c.beginPath(); c.moveTo(Math.round(hx) + .5, T); c.lineTo(Math.round(hx) + .5, T + ph); c.stroke();
+  tip.textContent = ((now - near.t) / 1000).toFixed(1) + " s ago: TX " + (near.tx == null ? "none" : db(near.tx)) +
+    ", RX " + (near.rx == null ? "none" : db(near.rx)) + (near.ptt ? ", transmitting" : "");
+  tip.style.display = "block";
+  tip.style.left = Math.max(0, Math.min(w - tip.offsetWidth, hx + 10)) + "px";
+}
+cv.addEventListener("pointermove", e => { hover = e.clientX - cv.getBoundingClientRect().left; draw(); });
+cv.addEventListener("pointerleave", () => { hover = null; draw(); });
+window.addEventListener("resize", draw);
+
+/* ---- the live link: a WebSocket the board pushes telemetry down ---- */
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onmessage = e => { try { update(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+  ws.onclose = () => { ws = null; setTimeout(connect, 2000); };
+}
+setInterval(() => {
+  const live = Date.now() - lastAt < 2000;
+  app.classList.toggle("stale", !live);
+  $("link").className = "link" + (live ? " live" : "");
+  $("link").textContent = live ? "live" : (last ? "connection lost, retrying" : "connecting");
+}, 500);
+
+/* ---- Wi-Fi ---- */
+async function loadWifi() {
+  try {
+    const w = await api("GET", "/api/wifi");
+    $("wifinow").textContent = w.mode === "station" ? "joined to " + w.ssid + ", " + w.ip
+      : w.mode === "ap" ? "hosting its own network " + w.ssid + ", " + w.ip : w.mode;
+    if (document.activeElement !== $("ssid")) $("ssid").value = w.join || "";
+  } catch (e) { $("wifinow").textContent = "unknown"; }
+}
+$("wifiform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const msg = $("wifimsg");
+  try {
+    await api("POST", "/api/wifi", { ssid: $("ssid").value, password: $("pass").value });
+    msg.className = "msg"; msg.textContent = "Saved. The board is restarting; this page may need its new address.";
+    $("pass").value = "";
+  } catch (err) { msg.className = "msg bad"; msg.textContent = err.message; }
+});
+
+(async function start() {
+  for (;;) {
+    try { info = await api("GET", "/api/info"); break; }
+    catch (e) { await new Promise(r => setTimeout(r, 2000)); }
+  }
+  $("name").textContent = info.name;
+  document.title = info.name;
+  $("rig").textContent = "Mock " + info.rig + ", Hamlib model " + info.hamlib;
+  buildSettings();
+  await loadSettings();
+  loadWifi();
+  connect();
+  draw();
+})();
+</script>
+</body>
+</html>

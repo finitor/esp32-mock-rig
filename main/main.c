@@ -9,8 +9,9 @@
  * host can record. With the default settings that is a plain loopback. CI-V
  * frames to the mock's own address change the settings at run time. The
  * radio transmits while CAT, a selected serial control line or the VOX keys
- * it, and the RGB LED shows what it is doing. Before USB starts, a short self-check proves the
- * portable modules run on the target.
+ * it, and the RGB LED shows what it is doing. A web console over Wi-Fi
+ * changes the same settings and shows live telemetry. Before USB starts, a
+ * short self-check proves the portable modules run on the target.
  */
 #include <inttypes.h>
 #include <string.h>
@@ -19,7 +20,9 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -31,6 +34,10 @@
 #include "status_led.h"
 #include "ui_led.h"
 #include "usb_composite.h"
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+#include "console_api.h"
+#include "web_console.h"
+#endif
 
 static const char *TAG = "mock-radio";
 
@@ -83,6 +90,23 @@ static civ_t s_civ;
 static ae_t s_engine;
 static mock_ctl_t s_ctl;
 
+/* The CI-V parser's state and the settings have two users: the USB task,
+ * which feeds the parser (and through it the mock's own controls), and the
+ * web console's task. Each holds this while it works on them. */
+static SemaphoreHandle_t s_cat_lock;
+
+static void cat_lock(void *ctx)
+{
+    (void)ctx;
+    if (s_cat_lock) xSemaphoreTake(s_cat_lock, portMAX_DELAY);
+}
+
+static void cat_unlock(void *ctx)
+{
+    (void)ctx;
+    if (s_cat_lock) xSemaphoreGive(s_cat_lock);
+}
+
 static void cat_tx(void *ctx, const uint8_t *bytes, size_t len)
 {
     (void)ctx;
@@ -103,8 +127,10 @@ static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
      * when the line or the VOX is keying it, not only CAT. */
     ae_ptt_t ptt;
     ae_get_ptt(&s_engine, &ptt);
+    cat_lock(NULL);
     civ_set_ptt(&s_civ, ptt.line || ptt.vox);
     civ_feed(&s_civ, bytes, len);
+    cat_unlock(NULL);
 }
 
 static void line_state(void *ctx, bool dtr, bool rts)
@@ -137,10 +163,19 @@ static int16_t s_loop_store[LOOP_CAPACITY];
 static dsp_fifo_t s_loop;
 static bool s_loop_primed;
 
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+/* Levels for the web console: what the host plays and what it records. */
+static console_meter_t s_tx_meter;
+static console_meter_t s_rx_meter;
+#endif
+
 static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
 {
     (void)ctx;
     dsp_fifo_write(&s_loop, samples, n);
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+    console_meter_add(&s_tx_meter, samples, n);
+#endif
 }
 
 static void audio_to_host(void *ctx, int16_t *samples, size_t n)
@@ -155,6 +190,9 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
         have_audio = true;
     }
     ae_process(&s_engine, have_audio ? samples : NULL, samples, n);
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+    console_meter_add(&s_rx_meter, samples, n);
+#endif
 }
 
 /* The parrot records into PSRAM. Without it the parrot route is refused. */
@@ -294,6 +332,59 @@ static void status_start(void)
     }
 }
 
+/* ---- web console -----------------------------------------------------------
+ *
+ * The console's server asks for this five times a second: everything it
+ * shows that the engine does not know. The FIFO's counters each belong to
+ * one audio task and are read here without a lock; a 32-bit read is whole on
+ * this CPU, and a count that is one behind does not matter on a display.
+ */
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+static void console_sample(void *ctx, console_sample_t *out)
+{
+    static uint32_t tx_seen, rx_seen; /* only the console's task comes here */
+    (void)ctx;
+
+    out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    out->host = usb_composite_mounted();
+
+    cat_lock(NULL);
+    const civ_vfo_t *vfo = civ_selected_vfo(&s_civ);
+    out->freq_hz = civ_rx_freq(&s_civ);
+    out->tx_freq_hz = civ_tx_freq(&s_civ);
+    out->mode = vfo->mode;
+    out->data = vfo->data;
+    out->split = s_civ.split;
+    out->frames_ok = s_civ.frames_ok;
+    out->frames_ng = s_civ.frames_ng;
+    out->frames_dropped = s_civ.frames_dropped;
+    cat_unlock(NULL);
+
+    console_meter_read(&s_tx_meter, &tx_seen, &out->tx);
+    console_meter_read(&s_rx_meter, &rx_seen, &out->rx);
+    out->fifo_level = dsp_fifo_level(&s_loop);
+    out->fifo_target = LOOP_TARGET;
+    out->fifo_overruns = s_loop.overruns;
+    out->fifo_underruns = s_loop.underruns;
+    out->fifo_dropped = s_loop.dropped;
+    out->fifo_repeated = s_loop.repeated;
+}
+
+static void console_start(void)
+{
+    const web_console_config_t cfg = {
+        .ctl = &s_ctl,
+        .rig = rig_ic705.name,
+        .hamlib_model = rig_ic705.hamlib_model,
+        .lock = cat_lock,
+        .unlock = cat_unlock,
+        .sample = console_sample,
+    };
+    esp_err_t err = web_console_start(&cfg);
+    if (err != ESP_OK) ESP_LOGE(TAG, "web console failed to start: %s", esp_err_to_name(err));
+}
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "USB mock radio: %s personality (Hamlib model %d)", rig_ic705.name, rig_ic705.hamlib_model);
@@ -311,6 +402,12 @@ void app_main(void)
 
     engine_start();
     status_start();
+    s_cat_lock = xSemaphoreCreateMutex();
+    if (!s_cat_lock) ESP_LOGW(TAG, "no lock for the CAT state: settings may collide between CAT and the web console");
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+    console_meter_init(&s_tx_meter);
+    console_meter_init(&s_rx_meter);
+#endif
     civ_init(&s_civ, &rig_ic705, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
@@ -328,4 +425,12 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "USB device failed to start: %s", esp_err_to_name(err));
     }
+
+    /* After USB, so that nothing about Wi-Fi can keep the radio from
+     * appearing to the host. */
+#ifdef CONFIG_MOCK_WEB_CONSOLE
+    console_start();
+#else
+    ESP_LOGI(TAG, "web console is switched off (menuconfig); Wi-Fi stays off");
+#endif
 }

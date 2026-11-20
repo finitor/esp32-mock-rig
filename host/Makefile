@@ -4,12 +4,15 @@
 #   make test       run the unit tests
 #   make rigctl     run real Hamlib (rigctl) against the parser over a pty
 #   make mockctl    run tools/mockctl.py against the mock's own controls over a pty
+#   make console    run the web console's API through tools/console_sim.py and check it
+#   make console-sim  serve the web console on http://localhost:8080 with a simulated radio
 
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
 CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/audio_dsp/include \
-           -I../components/audio_engine/include -I../components/mock_ctl/include -I../components/ui/include
+           -I../components/audio_engine/include -I../components/mock_ctl/include -I../components/ui/include \
+           -I../components/web_console/include
 
 BUILD = build
 CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c
@@ -22,11 +25,14 @@ CTL   = ../components/mock_ctl/mock_ctl.c
 CTL_H = ../components/mock_ctl/include/mock_ctl.h
 UI    = ../components/ui/ui_led.c
 UI_H  = ../components/ui/include/ui_led.h
+CON   = ../components/web_console/console_api.c
+CON_H = ../components/web_console/include/console_api.h
 # everything the mock's own controls are built from
 CTL_ALL   = $(CORE) $(CTL) $(ENG) $(DSP)
 CTL_ALL_H = $(HDRS) $(CTL_H) $(ENG_H) $(DSP_H)
 
-all: $(BUILD)/civ_pty $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui
+all: $(BUILD)/civ_pty $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
+     $(BUILD)/test_console $(BUILD)/console_sim
 
 $(BUILD)/civ_pty: civ_pty.c $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ civ_pty.c $(CTL_ALL) -lm
@@ -46,15 +52,23 @@ $(BUILD)/test_ctl: test_ctl.c $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 $(BUILD)/test_ui: test_ui.c $(UI) $(UI_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_ui.c $(UI)
 
+$(BUILD)/test_console: test_console.c $(CON) $(CON_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_console.c $(CON) $(CTL_ALL) -lm
+
+$(BUILD)/console_sim: console_sim.c $(CON) $(CON_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ console_sim.c $(CON) $(CTL_ALL) -lm
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
-test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui
+test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
+      $(BUILD)/test_console
 	./$(BUILD)/test_civ
 	./$(BUILD)/test_dsp
 	./$(BUILD)/test_engine
 	./$(BUILD)/test_ctl
 	./$(BUILD)/test_ui
+	./$(BUILD)/test_console
 
 rigctl: $(BUILD)/civ_pty
 	./rigctl_check.sh
@@ -62,7 +76,13 @@ rigctl: $(BUILD)/civ_pty
 mockctl: $(BUILD)/civ_pty
 	./mockctl_check.sh
 
+console: $(BUILD)/console_sim
+	python3 tools/console_sim.py --check
+
+console-sim: $(BUILD)/console_sim
+	python3 tools/console_sim.py
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test rigctl mockctl clean
+.PHONY: all test rigctl mockctl console console-sim clean

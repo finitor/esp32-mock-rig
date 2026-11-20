@@ -90,6 +90,11 @@ void ae_configure(ae_t *e, const ae_config_t *cfg)
     atomic_fetch_add(&e->cfg_gen, 1u);
 }
 
+uint32_t ae_config_gen(ae_t *e)
+{
+    return atomic_load(&e->cfg_gen);
+}
+
 void ae_get_config(ae_t *e, ae_config_t *cfg)
 {
     cfg->route = (ae_route_t)atomic_load(&e->cfg_route);

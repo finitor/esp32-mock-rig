@@ -14,11 +14,12 @@ Last updated: Nov 19, 2026.
 - The parrot (step 10) exists in `audio_engine` as a third receive route, with host unit tests: it records each transmission at 12 kHz and replays it after unkeying, after a delay or aligned to a slot period, to the sample. The firmware gives it a buffer in PSRAM. Not run on a board.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 280 KB image) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 950 KB image, of which Wi-Fi and the web console are about 670 KB) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The first pass emulates an Icom IC-705. A Xiegu G90 personality (the operator's own radio, used through a DE-19) is planned as a later swap-in module; the G90 and DE-19 are not accessible during this project.
-- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). Milestone 2 is under way meanwhile: steps 10 to 13 are written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain.
-- The radio plan for the later milestones is decided: ESP-NOW carries the audio between two boards, and Wi-Fi on the same radio carries control. A web control and telemetry console is on the roadmap as Milestone 3, ahead of the link. None of it is written.
+- Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board.
+- The radio plan for the link is decided: ESP-NOW carries the audio between two boards, and Wi-Fi on the same radio carries control (the web console). The link is not written.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
 - Data2G's Android USB code has been read (fork at v0.5.2+8) and fits this design; see [Data2G target](#data2g-target).
 
@@ -92,14 +93,14 @@ Firmware modules:
 - `rig_ic705`: the IC-705 personality (first pass); `rig_g90` joins it later behind the same interface
 - `audio_dsp`: the signal processing itself, with no hardware dependencies: 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
 - `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. The link will join as a further route. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
-- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings and status now; link mode, PTT source and personality later
+- `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, PTT sources and status now; link mode and personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
 - `link`: one interface with loopback, ESP-NOW and UART backends; jitter buffer and drift correction
-- `web_console`: Wi-Fi, a small HTTP server, the control page and live telemetry; see [Web control and telemetry console](#web-control-and-telemetry-console)
+- `web_console`: the settings and telemetry as JSON (`console_api`, portable), and around it Wi-Fi, a small HTTP server, the control page and a WebSocket for live telemetry; see [Web control and telemetry console](#web-control-and-telemetry-console)
 - `ui`: which colour the RGB LED shows for the radio's state; the firmware drives the LED
 
-`cat_civ`, the personalities, `audio_dsp`, `audio_engine`, `mock_ctl` and `ui` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
+`cat_civ`, the personalities, `audio_dsp`, `audio_engine`, `mock_ctl`, `ui` and the `console_api` part of `web_console` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
 
-Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB, the audio engine and the link layer each get a task; `cat_civ` is passive and runs in whichever task delivers serial bytes.
+Runtime: FreeRTOS, as bundled with ESP-IDF (the S3 runs its dual-core SMP build). No separate RTOS choice is needed; the Arduino fallback runs on the same kernel. TinyUSB, the audio engine and the link layer each get a task; `cat_civ` is passive and runs in whichever task delivers serial bytes. The web console's HTTP server has a task of its own at a lower priority than the USB and audio tasks. Because it changes the same settings as the CI-V controls, one mutex in `main/` is held around the CI-V parser and around each settings change from the console.
 
 Repository layout:
 
@@ -111,10 +112,11 @@ Repository layout:
 | `components/audio_engine/` | Receive routes (monitor, radio, parrot), the parrot's recording and replay, and the receive channel: mute and turnaround, SNR, attenuation |
 | `components/mock_ctl/` | The mock's own controls on CI-V address `F0` |
 | `components/ui/` | LED policy: the state to show and its colour |
+| `components/web_console/` | Web console: `console_api.c` (settings and telemetry as JSON, portable), `web_console.c` (HTTP and WebSocket server), `wifi_net.c` (joining or hosting a network, the board's name), `www/index.html` (the page, embedded in the firmware), `Kconfig` (the console switch and the Wi-Fi settings) |
 | `components/usb_composite/` | USB device: descriptors, TinyUSB configuration, serial and audio callbacks |
-| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring and the status task; `status_led.c` drives the RGB LED through RMT; `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
+| `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl` and `test_ui` (unit tests), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui` and `test_console` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with a simulated radio, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` (filter generator), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -400,13 +402,41 @@ Behavior:
 
 A browser on a laptop or phone reaches each board over Wi-Fi to change its settings and watch what it is doing while it runs. It exists because the other control path, the mock-only CI-V controls, shares the CAT serial port: a modem application holding that port (always on a phone, and WSJT-X on a PC) leaves no way to send them. The two-board acceptance test needs exactly that, stepping the SNR down while two phones hold a session.
 
-Planned, nothing written:
+As built (steps 16 to 19). The settings and telemetry code is host-tested and the page has been used in a desktop browser against a simulator; the Wi-Fi and server code has only been compiled, and nothing has run on a board.
 
-- **Network.** Each board joins a configured Wi-Fi network, or hosts its own access point when there is none. Each has its own name on the network so two boards can be told apart. Power save is off (see [Two-board link](#two-board-link)).
-- **Control.** Everything the mock-only controls can do: route, noise, SNR, reference bandwidth, noise floor, attenuation, turnaround, the parrot's delay, period and replay, reset to power-up values. The console calls the same engine settings functions as `mock_ctl`, with the same ranges, so the two paths cannot disagree and a change made in one shows in the other.
-- **Telemetry.** Live, pushed to the page: PTT and its source, the CAT frequency and mode, transmit and receive levels and the channel's gain, the parrot's state, the audio FIFO's fill level with its underrun, overrun and drift-steering counts, CI-V frame counts, and later the link's packet loss and jitter-buffer depth.
-- **Shape.** A small HTTP server with a JSON settings interface, one page served from flash, and a WebSocket for telemetry. No USB endpoint is involved, so the endpoint budget is untouched.
-- **Limits.** No login: it is a bench device on a private network. Wi-Fi traffic shares the radio with ESP-NOW link audio, so the console keeps its traffic light.
+**Network.** At start-up the board joins the Wi-Fi network it has been given. If it has none, or has not joined within 20 s, it hosts its own network until the next restart: WPA2 with the password `mockradio` (a menuconfig setting, as is the channel, 1), and the console at `http://192.168.4.1/`. It is a station or an access point, never both: a station that keeps scanning for a missing network drags an access point on the same radio from channel to channel. The network to join comes from the console's own Wi-Fi form, which stores it in flash (NVS) and restarts the board, or failing that from menuconfig. Each board names itself `mockradio-xxxx` from its MAC address. That is the name of its own network, its DHCP hostname and its mDNS name, so the console is also at `http://mockradio-xxxx.local/`. Power save is off (see [Two-board link](#two-board-link)).
+
+**Interface.** JSON over HTTP, and one WebSocket:
+
+| Request | Does |
+| --- | --- |
+| `GET /` | The page |
+| `GET /api/info` | The board's name, the personality, and the list of settings: each one's name, label, group, and either its choices or its unit, range and step |
+| `GET /api/settings` | Every setting: `{"route":"monitor","noise":"off","snr":10.0,"bw":2500, ...}` |
+| `POST /api/settings` | Change any subset: `{"noise":"on","snr":-12.5}`. Answers with every setting, or with `{"error":"snr: must be between -60.0 and 80.0 dB"}` |
+| `POST /api/reset` | Back to the power-up settings |
+| `POST /api/replay` | Play the parrot's recording again |
+| `GET /api/telemetry` | One telemetry snapshot |
+| `GET /ws` | WebSocket: the same snapshot, pushed five times a second |
+| `GET /api/wifi`, `POST /api/wifi` | How the board is connected; save a network to join (`{"ssid":...,"password":...}`) and restart |
+
+**Settings.** The names and units are the ones `mockctl.py` uses (`snr=-12.5` there, `"snr":-12.5` here). `console_api` holds only the names: for each it names the `mock_ctl` command that carries the setting, and it reads, range-checks and writes the value through `mock_ctl`'s own functions. So there is one table of ranges and one set of power-up values, a change made on either path shows on the other, and values keep the CI-V controls' steps (tenths of a dB and of a second). A value out of range is refused, not clamped, and a request with one refused value changes nothing.
+
+**Telemetry.** A snapshot holds: PTT and which sources key it; the CAT frequency, mode and split, and the CI-V frame counts; the level (RMS and peak over 0.1 s) of the audio the host plays and of the audio it records, each absent when the host is not streaming that way; the audio FIFO's fill, target and its overrun, underrun and drift-steering counts; the receive channel's measured source level, gain and mute; the parrot's state and recording length; the Wi-Fi signal strength; and a number that changes when the settings do, however they were changed, so the page knows to read them again. The link's statistics will join it.
+
+**Page.** One file of about 22 KB, embedded in the firmware, with nothing loaded from anywhere else, because the board may be on a network with no internet. It builds its settings form from `/api/info`, so a setting added in `console_api.c` appears without an edit to the page. A status line shows the same states as the LED; a strip chart shows the last 60 seconds of both levels and of PTT, kept in the browser only.
+
+**On the host.** `make -C host console-sim` serves the page at `http://localhost:8080` with a simulated radio behind it: `console_api`, `mock_ctl` and the audio engine as compiled for the host, with a pretend host that keys and plays a tone for 6 s in every 15. `make -C host console` checks the interface through the same simulator. The simulator's HTTP layer is a Python stand-in for `web_console.c`, so neither tests that file.
+
+**Limits.**
+
+- No login and no encryption: it is a bench device on a private network. A Wi-Fi password typed into the form crosses that network in the clear. Requests that change anything must be sent as `application/json`, which a page on another site cannot make a browser do, so such a page cannot change settings behind the operator's back.
+- Once the board has fallen back to hosting its own network it stays there until restarted, even if the configured network returns.
+- Settings are still not stored (step 14); only the Wi-Fi network is.
+- The page's history is 60 seconds and lives in the browser; nothing is recorded on the board.
+- Telemetry is sampled five times a second, so a transmission shorter than 0.2 s can fall between two snapshots.
+- Wi-Fi traffic shares the radio with ESP-NOW link audio, so the console keeps its traffic light: about 3 KB per second per open page.
+- The console is on by default and can be switched off in menuconfig, which keeps Wi-Fi off altogether.
 
 ## Data2G target
 
@@ -493,10 +523,10 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 
 **Milestone 3: web control and telemetry console**
 
-16. Wi-Fi bring-up beside USB: join a configured network or host an access point, a name per board, power save off.
-17. HTTP server with a JSON interface to the settings, calling the same engine functions as `mock_ctl`.
-18. Control page served from flash: every setting, parrot replay, reset.
-19. Live telemetry over a WebSocket: PTT, frequency and mode, levels and gain, parrot state, audio FIFO and CI-V counters.
+16. Written, compiled only: Wi-Fi bring-up beside USB: join a configured network or host an access point, a name per board (`mockradio-xxxx`, also by mDNS), power save off.
+17. Written: a JSON interface to the settings in `console_api`, through `mock_ctl`'s own settings functions, with host tests; the HTTP server around it is compiled only.
+18. Written, tried in a desktop browser against the host simulator: control page embedded in the firmware: every setting, parrot replay, reset, and the Wi-Fi form.
+19. Written: live telemetry over a WebSocket, five snapshots a second: PTT, frequency and mode, levels and gain, parrot state, audio FIFO and CI-V counters. The snapshot is host-tested; the push is compiled only.
 20. Acceptance: change the SNR from a browser while WSJT-X or a phone app holds the CAT port, and watch levels and PTT live, with no added audio underruns.
 
 **Milestone 4: two-board link**
@@ -550,6 +580,16 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 19, 2026 | The LED is driven with ESP-IDF's RMT driver directly, and its colours are decided in a portable module. | One LED needs a few lines of RMT, not another managed component; the policy can be host-tested. |
 | Nov 19, 2026 | Link audio goes over ESP-NOW and control over Wi-Fi, both on the S3's one radio. Bluetooth is not used. | Control has to reach a board while a modem application holds its CAT port, and Wi-Fi is the obvious way; ESP-NOW runs alongside Wi-Fi on the same channel, so the link need not move. The S3's Bluetooth is LE only, slower and less even in timing, and would share the same radio anyway. |
 | Nov 19, 2026 | Add a web control and telemetry console over Wi-Fi, as its own milestone ahead of the two-board link. | The link's acceptance test steps the SNR while two phones hold the CAT ports, which the CI-V controls cannot do; building it first also settles the Wi-Fi channel before ESP-NOW has to share it. It works on one board. |
+| Nov 19, 2026 | The web console reaches the settings through `mock_ctl`: it maps each setting's name to its command number and uses `mock_ctl`'s range table and its get and put functions. | One table of ranges and one set of power-up values, so the two control paths cannot drift apart, and a value keeps the same steps on both. |
+| Nov 19, 2026 | The console's JSON is written and read by a small flat-object reader and writer in `console_api`, not a JSON library. | A setting is never nested, so little is needed; the code is the same on the host and the board and is tested there with sanitizers; numbers are printed from integers, so the text does not depend on the C library's floating-point printing. |
+| Nov 19, 2026 | Wi-Fi: join the configured network, and after 20 s without it host one, as a station or an access point but never both. The network comes from the console's Wi-Fi form (stored in NVS, then a restart) or from menuconfig. | A board must be reachable with no router and no rebuild; a station that keeps scanning disturbs an access point on the same radio; a restart is the simplest change of network to get right without a board to test on. No password goes into a committed file. |
+| Nov 19, 2026 | Each board is named `mockradio-xxxx` from its MAC address, announced by mDNS (Espressif's `mdns` component). | Two boards built from one image must be told apart, and a name is easier to reach than an address read from the log. |
+| Nov 19, 2026 | The page is one self-contained file that builds its settings form from `/api/info`. | It must work on a network with no internet, and a new setting should need no edit to the page. |
+| Nov 19, 2026 | Telemetry is a JSON snapshot pushed five times a second over a WebSocket; history is kept only in the browser. | Light on a radio that will also carry link audio, and fast enough to watch levels and PTT by eye. Recording on the board would need storage and a reason. |
+| Nov 19, 2026 | The console has no login; requests that change anything must be `application/json`. | A bench device on a private network. The content type costs nothing and stops other sites' pages from posting to it through the operator's browser. |
+| Nov 19, 2026 | One mutex in `main/` is held around the CI-V parser and around each settings change from the console. | Both paths read, change and write back the settings; without it two changes at the same moment could lose one. It also lets the console read the parser's frequency and mode whole. |
+| Nov 19, 2026 | The firmware uses the partition table with a 1.5 MB application partition. | With Wi-Fi the image no longer fits the default 1 MB. The flash has 16 MB. |
+| Nov 19, 2026 | The web console is on by default, with a menuconfig switch that keeps Wi-Fi off. | It is how the board is meant to be used, and its telemetry (FIFO counts, levels, whether the host is recording) helps the first bring-up; the switch is there for when Wi-Fi must be ruled out. |
 | Nov 19, 2026 | The parrot's delay and period travel in tenths of a second. | Two BCD bytes reach 300 s, within the core's 16-bit BCD helpers, and 7.5 s (FT4) is still exact. |
 
 ## Open questions
@@ -565,9 +605,12 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] FT8 self-decode with the parrot's period at 15 s: when does WSJT-X key relative to the slot start, and how far from zero is the DT it reports for its own replay? (step 15)
 - [x] How to change the mock's settings while a modem application holds the CAT port (always the case on a phone, and with WSJT-X on a PC). The web console over Wi-Fi (Milestone 3), decided Nov 19, 2026. Until it exists, set them before the application opens the port, or at build time. A line console on the UART jack remains a simpler fallback.
 - [ ] Does ESP-NOW link audio keep its timing while the same radio serves the web console over Wi-Fi? If not, the wired UART link takes over. (step 23)
-- [ ] How does a board get its Wi-Fi settings (menuconfig, a setup page on its own access point, or both), and which board hosts the access point when there is no router? (step 16)
+- [x] How does a board get its Wi-Fi settings, and which board hosts the access point when there is no router? Both ways: the console's Wi-Fi form (stored in flash) or menuconfig. A board that cannot join a network hosts its own, so with no router one board is left to host and the other is pointed at its network through the form. Decided Nov 19, 2026; not tried.
+- [ ] Does the web console work on a board: joining a network, falling back to its own, the `.local` name, the WebSocket push, and the page on an Android phone's browser? Compiled only. (step 20)
+- [ ] Is the default password of the board's own network (`mockradio`) acceptable, or should each board get its own?
+- [ ] Are five telemetry snapshots a second enough to follow ARQ turnarounds, or does PTT need to be counted or timestamped on the board? (step 26)
 - [ ] Does Wi-Fi running beside USB audio cause underruns or audible glitches on the S3? (step 20)
-- [ ] Which telemetry is worth recording over time rather than only showing live, and where it is kept (the browser, or a file the page can download)? (step 19)
+- [ ] Which telemetry is worth recording over time rather than only showing live, and where it is kept (the browser, or a file the page can download)? The page keeps 60 seconds of levels and PTT in the browser; nothing longer yet. (after step 20)
 - [ ] Do the mock-only controls work on a board, and does a setting change mid-stream sound clean? Host-tested only. (after step 9)
 - [x] Default reference bandwidth for the SNR setting: 2500 Hz. Data2G reports its SNR in 2500 Hz (`SNR_REF_BW_HZ` in `native/core/generated/config.hpp`), as does WSJT-X; 3000 Hz remains a setting for VARA.
 - [ ] Are the channel defaults right for real modems: noise floor −40 dBFS, turnaround 30 ms, and silence (not a low noise floor) on receive while keyed? To be judged with WSJT-X, FT8AF and Data2G on a board. (after step 9)

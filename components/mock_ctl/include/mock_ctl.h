@@ -118,6 +118,36 @@ void mock_ctl_init(mock_ctl_t *m, ae_t *engine, const ae_config_t *power_up);
  * Runs on the task that feeds the CI-V parser. */
 void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx);
 
+/* ---- the settings by number, for other control paths -----------------------
+ *
+ * The web console changes the same settings through these, so it cannot
+ * disagree with the CI-V commands about a range or a power-up value. A
+ * setting is named by its command number. Its value is the number the
+ * command carries: 0, 1, 2 for a choice, and wire units for the rest (tenths
+ * of a dB, Hz, ms or tenths of a second; the noise floor and the VOX
+ * threshold as tenths of a dB below full scale; the SNR may be negative).
+ */
+typedef enum {
+    MOCK_CTL_SET_OK = 0,
+    MOCK_CTL_SET_UNKNOWN,     /* no setting has this number */
+    MOCK_CTL_SET_RANGE,       /* outside the setting's range */
+    MOCK_CTL_SET_UNAVAILABLE, /* in range but not possible: the parrot route without a buffer */
+} mock_ctl_set_t;
+
+/* The range of a setting. False if cmd is not a setting. */
+bool mock_ctl_setting_range(uint8_t cmd, int32_t *lo, int32_t *hi);
+
+/* A setting's value in cfg. 0 if cmd is not a setting. */
+int32_t mock_ctl_setting_get(const ae_config_t *cfg, uint8_t cmd);
+
+/* Put a value into cfg, a copy of the engine's settings; nothing changes
+ * until the caller hands cfg to ae_configure(). cfg is untouched unless the
+ * result is MOCK_CTL_SET_OK. */
+mock_ctl_set_t mock_ctl_setting_put(mock_ctl_t *m, ae_config_t *cfg, uint8_t cmd, int32_t value);
+
+/* Put every setting back to its power-up value: what command 01 does. */
+void mock_ctl_reset(mock_ctl_t *m);
+
 #ifdef __cplusplus
 }
 #endif

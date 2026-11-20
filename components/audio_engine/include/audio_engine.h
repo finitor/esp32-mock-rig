@@ -36,8 +36,8 @@
  * resampler's delay is taken out: a replayed sample leaves exactly that many
  * periods after it went in.
  *
- * Threads: ae_configure(), ae_get_config(), ae_set_ptt(), ae_set_lines(),
- * ae_get_ptt(), ae_get_status(), ae_get_parrot_status() and
+ * Threads: ae_configure(), ae_get_config(), ae_config_gen(), ae_set_ptt(),
+ * ae_set_lines(), ae_get_ptt(), ae_get_status(), ae_get_parrot_status() and
  * ae_parrot_replay() may be called from any task.
  * ae_process() and ae_rx_process() belong to one audio task.
  */
@@ -243,6 +243,10 @@ void ae_init(ae_t *e, uint32_t seed);
  * next block the audio task processes. */
 void ae_configure(ae_t *e, const ae_config_t *cfg);
 void ae_get_config(ae_t *e, ae_config_t *cfg);
+
+/* A number that changes each time ae_configure() is called, so a display
+ * can tell that the settings may have changed without comparing them. */
+uint32_t ae_config_gen(ae_t *e);
 
 /* PTT as commanded over CAT. The transmit state is sampled once per block,
  * so the turnaround time can run long by up to one block. */
