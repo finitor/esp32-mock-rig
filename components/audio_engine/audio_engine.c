@@ -172,6 +172,11 @@ void ae_set_ptt(ae_t *e, bool keyed)
     atomic_store(&e->ptt, keyed);
 }
 
+void ae_set_panel_ptt(ae_t *e, bool keyed)
+{
+    atomic_store(&e->ptt_panel, keyed);
+}
+
 void ae_set_lines(ae_t *e, bool dtr, bool rts)
 {
     atomic_store(&e->dtr, dtr);
@@ -184,6 +189,7 @@ void ae_get_ptt(ae_t *e, ae_ptt_t *p)
     p->cat = atomic_load(&e->ptt);
     p->line = line == AE_LINE_RTS ? atomic_load(&e->rts) : line == AE_LINE_DTR ? atomic_load(&e->dtr) : false;
     p->vox = atomic_load(&e->st_vox);
+    p->panel = atomic_load(&e->ptt_panel);
 }
 
 void ae_get_status(ae_t *e, ae_status_t *st)
@@ -260,7 +266,7 @@ void ae_get_parrot_status(ae_t *e, ae_parrot_status_t *st)
 
 bool ae_parrot_replay(ae_t *e)
 {
-    if (atomic_load(&e->cfg_route) != AE_ROUTE_PARROT || atomic_load(&e->ptt)) return false;
+    if (atomic_load(&e->cfg_route) != AE_ROUTE_PARROT || atomic_load(&e->ptt) || atomic_load(&e->ptt_panel)) return false;
     if (atomic_load(&e->st_parrot_len) == 0 || atomic_load(&e->st_parrot_state) == AE_PARROT_RECORDING) return false;
     if (atomic_load(&e->par_hold)) return false; /* the buffer is with another task */
     atomic_store(&e->replay_req, true);
@@ -654,7 +660,7 @@ void ae_process(ae_t *e, const int16_t *tx, int16_t *out, size_t n)
     atomic_store(&e->st_vox, vox_block(e, tx, n));
     ae_ptt_t ptt;
     ae_get_ptt(e, &ptt);
-    bool keyed = ptt.cat || ptt.line || ptt.vox;
+    bool keyed = ae_ptt_keyed(&ptt);
     const int16_t *src = NULL;
 
     /* The buffer lent to another task, and taken back. */
@@ -703,5 +709,5 @@ void ae_rx_process(ae_t *e, const int16_t *src, int16_t *out, size_t n)
     sync_config(e);
     ae_ptt_t ptt;
     ae_get_ptt(e, &ptt);
-    rx_block(e, ptt.cat || ptt.line, src, out, n);
+    rx_block(e, ptt.cat || ptt.line || ptt.panel, src, out, n);
 }

@@ -474,6 +474,12 @@ static void test_ptt_sources(void)
     ae_set_ptt(&g_engine, false);
     EXPECT("fe fe f0 e0 54 01 fd", NG); /* read only */
 
+    /* The key on the front panel, with the VOX still open. */
+    ae_set_panel_ptt(&g_engine, true);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 0c fd");
+    ae_set_panel_ptt(&g_engine, false);
+    EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 04 fd");
+
     /* Reset turns the VOX off again. */
     EXPECT("fe fe f0 e0 01 fd", OK);
     CHECK(!config().vox_on && config().vox_hang_ms == 100 && config().ptt_line == AE_LINE_OFF);
@@ -954,6 +960,17 @@ static void test_personality(void)
     EXPECT("fe fe f0 e0 01 fd", OK);
     CHECK(mock_ctl_rig(&g_ctl) == &rig_g90 && near(config().snr_db, 10.0f, 0.001f));
     CHECK(!mock_ctl_select_rig(&g_ctl, 3073) && mock_ctl_rig(&g_ctl) == &rig_g90);
+
+    /* The new radio starts in receive: its front panel's key is released.
+     * Choosing the radio it already is changes nothing. */
+    ae_ptt_t ptt;
+    ae_set_panel_ptt(&g_engine, true);
+    CHECK(mock_ctl_select_rig(&g_ctl, 3088));
+    ae_get_ptt(&g_engine, &ptt);
+    CHECK(ptt.panel);
+    CHECK(mock_ctl_select_rig(&g_ctl, 3085));
+    ae_get_ptt(&g_engine, &ptt);
+    CHECK(!ptt.panel);
 }
 
 static void test_not_the_radio(void)

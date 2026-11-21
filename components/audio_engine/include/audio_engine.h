@@ -18,9 +18,10 @@
  *              audio over (ae_set_link); how it travels is not its business
  *
  * The radio transmits while any PTT source keys it: CAT (ae_set_ptt), a
- * serial control line if one is selected (ae_set_lines), or VOX if it is on,
+ * serial control line if one is selected (ae_set_lines), VOX if it is on,
  * which opens when the transmit audio reaches a threshold and closes a hang
- * time after it last did.
+ * time after it last did, or the key on the radio's own front panel
+ * (ae_set_panel_ptt).
  *
  * The receive channel is then applied to the receive source:
  *
@@ -204,7 +205,14 @@ typedef struct {
     bool cat;
     bool line;
     bool vox;
+    bool panel; /* the key on the front panel */
 } ae_ptt_t;
+
+/* Whether any source is keying. */
+static inline bool ae_ptt_keyed(const ae_ptt_t *p)
+{
+    return p->cat || p->line || p->vox || p->panel;
+}
 
 typedef enum {
     AE_PARROT_IDLE = 0,
@@ -260,6 +268,7 @@ typedef struct {
     _Atomic uint32_t fc_seed;
     _Atomic uint32_t fc_ms;
     _Atomic bool ptt; /* CAT */
+    _Atomic bool ptt_panel;
     _Atomic bool dtr;
     _Atomic bool rts;
     _Atomic bool replay_req;
@@ -366,6 +375,11 @@ void ae_fade_clock(ae_t *e, uint32_t seed, uint32_t clock_ms);
 /* PTT as commanded over CAT. The transmit state is sampled once per block,
  * so the turnaround time can run long by up to one block. */
 void ae_set_ptt(ae_t *e, bool keyed);
+
+/* The key on the radio's front panel: an operator keying at the radio, which
+ * CAT can see (the radio is transmitting) and cannot undo. Released at
+ * power-up. */
+void ae_set_panel_ptt(ae_t *e, bool keyed);
 
 /* The serial port's control lines, as the host last set them. They key the
  * radio only if ptt_line selects one. */

@@ -519,3 +519,70 @@ size_t dsp_fifo_read_steered(dsp_fifo_t *f, int16_t *out, size_t n, uint32_t tar
     }
     return dsp_fifo_read(f, out, n);
 }
+
+/* ---- spectrum ----------------------------------------------------------- */
+
+#define SPEC_PI 3.14159265358979f
+
+void dsp_spec_init(dsp_spec_t *s)
+{
+    memset(s, 0, sizeof *s);
+    for (int k = 0; k < DSP_SPEC_N / 2; k++) {
+        float a = 2.0f * SPEC_PI * (float)k / (float)DSP_SPEC_N;
+        s->cos_t[k] = cosf(a);
+        s->sin_t[k] = sinf(a);
+    }
+    for (int i = 0; i < DSP_SPEC_N; i++) {
+        s->window[i] = 0.5f - 0.5f * cosf(2.0f * SPEC_PI * (float)i / (float)DSP_SPEC_N);
+        unsigned r = 0;
+        for (unsigned bit = 1, v = (unsigned)i; bit < DSP_SPEC_N; bit <<= 1, v >>= 1) r = (r << 1) | (v & 1u);
+        s->rev[i] = (uint16_t)r;
+    }
+}
+
+/* Radix-2 FFT in place, on input already in bit-reversed order. */
+static void spec_fft(dsp_spec_t *s)
+{
+    float *re = s->re, *im = s->im;
+    for (int len = 2; len <= DSP_SPEC_N; len <<= 1) {
+        int half = len / 2, step = DSP_SPEC_N / len;
+        for (int i = 0; i < DSP_SPEC_N; i += len) {
+            for (int j = 0, k = 0; j < half; j++, k += step) {
+                float wr = s->cos_t[k], wi = -s->sin_t[k];
+                int a = i + j, b = a + half;
+                float xr = re[b] * wr - im[b] * wi;
+                float xi = re[b] * wi + im[b] * wr;
+                re[b] = re[a] - xr;
+                im[b] = im[a] - xi;
+                re[a] += xr;
+                im[a] += xi;
+            }
+        }
+    }
+}
+
+void dsp_spec_run(dsp_spec_t *s, const int16_t *in, float *db)
+{
+    /* A filter started afresh, so that a spectrum depends on nothing but
+     * its own samples; what it gives while it fills is left out. */
+    dsp_decim4_init(&s->decim);
+    size_t n = dsp_decim4(&s->decim, in, DSP_SPEC_INPUT, s->low);
+    const int16_t *x = &s->low[n - DSP_SPEC_N];
+
+    for (int i = 0; i < DSP_SPEC_N; i++) {
+        s->re[s->rev[i]] = (float)x[i] * s->window[i];
+        s->im[s->rev[i]] = 0.0f;
+    }
+    spec_fft(s);
+
+    /* A sine of amplitude A in the middle of a bin gives |X| = A N / 4 under
+     * this window, and its RMS is A / sqrt 2. At 0 Hz there is one bin where
+     * elsewhere there are two, k and N - k: a steady level A gives
+     * |X| = A N / 2, and its RMS is A. */
+    const float full = 32768.0f * (float)DSP_SPEC_N / 4.0f;
+    const float floor_pow = 1e-12f; /* DSP_SILENCE_DBFS */
+    for (int k = 0; k < DSP_SPEC_BINS; k++) {
+        float p = (s->re[k] * s->re[k] + s->im[k] * s->im[k]) / (full * full) / (k == 0 ? 4.0f : 2.0f);
+        db[k] = p > floor_pow ? 10.0f * log10f(p) : DSP_SILENCE_DBFS;
+    }
+}

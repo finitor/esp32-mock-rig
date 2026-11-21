@@ -25,6 +25,7 @@
 static const char *TAG = "console";
 
 #define PUSH_PERIOD_MS 200
+#define SCOPE_PERIOD_MS (1000 / CONSOLE_SCOPE_ROWS_PER_S)
 #define MAX_SOCKETS 7 /* LWIP allows 10 and the server keeps 3 for itself */
 #define BODY_MAX 512
 
@@ -37,8 +38,24 @@ static char s_json[CONSOLE_JSON_MAX];
 static char s_body[BODY_MAX];
 static char s_telemetry[2048];
 static console_health_t s_health;
+static civ_t s_radio; /* a copy of the parser, so the lock is not held while it is written out */
 static size_t s_telemetry_len;
 static atomic_bool s_push_queued;
+
+/* The waterfall. A connection to /ws/scope carries s_scope_mark as its
+ * session's context, which is how a row finds the pages that want it and how
+ * the telemetry leaves them alone. The count lets the push task ask for no
+ * work at all while no page has the waterfall open. */
+static console_scope_work_t s_scope_work;
+static uint8_t s_scope_row[CONSOLE_SCOPE_ROW_MAX];
+static const char s_scope_mark = 0;
+static atomic_int s_scope_clients;
+static atomic_bool s_scope_queued;
+
+static bool is_scope_client(int fd)
+{
+    return httpd_sess_get_ctx(s_server, fd) == &s_scope_mark;
+}
 
 /* ---- replies ------------------------------------------------------------------ */
 
@@ -154,6 +171,37 @@ static esp_err_t post_clip(httpd_req_t *req)
     return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
 }
 
+/* ---- the front panel ------------------------------------------------------------------ */
+
+static esp_err_t send_radio(httpd_req_t *req)
+{
+    if (!s_cfg.ctl->civ) return send_error(req, "404 Not Found", "this mock has no radio to show");
+    s_cfg.lock(s_cfg.ctx);
+    s_radio = *s_cfg.ctl->civ;
+    s_cfg.unlock(s_cfg.ctx);
+    size_t len = console_radio_json(&s_radio, s_json, sizeof s_json);
+    return send_json(req, "200 OK", s_json, len);
+}
+
+static esp_err_t get_radio(httpd_req_t *req)
+{
+    return send_radio(req);
+}
+
+static esp_err_t post_radio(httpd_req_t *req)
+{
+    char err[CONSOLE_ERR_MAX];
+    if (!read_json_body(req)) return ESP_OK;
+
+    s_cfg.lock(s_cfg.ctx);
+    console_result_t r = console_radio_apply(s_cfg.ctl, s_body, err, sizeof err);
+    if (r == CONSOLE_OK && s_cfg.radio_changed) s_cfg.radio_changed(s_cfg.ctx);
+    s_cfg.unlock(s_cfg.ctx);
+
+    if (r == CONSOLE_OK) return send_radio(req);
+    return send_error(req, r == CONSOLE_UNAVAILABLE ? "409 Conflict" : "400 Bad Request", err);
+}
+
 /* Keep the settings for power-up, or forget the kept ones. */
 static esp_err_t post_keep(httpd_req_t *req)
 {
@@ -218,7 +266,7 @@ static void push_work(void *arg)
     if (s_telemetry_len == 0 || httpd_get_client_list(s_server, &n, fds) != ESP_OK) return;
 
     for (size_t i = 0; i < n; i++) {
-        if (httpd_ws_get_fd_info(s_server, fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET) continue;
+        if (httpd_ws_get_fd_info(s_server, fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET || is_scope_client(fds[i])) continue;
         httpd_ws_frame_t frame = {
             .type = HTTPD_WS_TYPE_TEXT,
             .payload = (uint8_t *)s_telemetry,
@@ -230,14 +278,52 @@ static void push_work(void *arg)
     }
 }
 
+/* One row of the waterfall to every page that has it open. The transforms
+ * are done here, in the server's task, and only if some page wants them. */
+static void scope_work(void *arg)
+{
+    (void)arg;
+    int fds[MAX_SOCKETS];
+    size_t n = MAX_SOCKETS;
+    size_t len = 0;
+
+    atomic_store(&s_scope_queued, false);
+    if (httpd_get_client_list(s_server, &n, fds) != ESP_OK) return;
+
+    for (size_t i = 0; i < n; i++) {
+        if (httpd_ws_get_fd_info(s_server, fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET || !is_scope_client(fds[i])) continue;
+        if (len == 0) {
+            ae_ptt_t ptt;
+            ae_get_ptt(s_cfg.ctl->engine, &ptt);
+            len = console_scope_row(&s_scope_work, s_cfg.rx_scope, s_cfg.tx_scope, ae_ptt_keyed(&ptt), s_scope_row,
+                                    sizeof s_scope_row);
+            if (len == 0) return;
+        }
+        httpd_ws_frame_t frame = {
+            .type = HTTPD_WS_TYPE_BINARY,
+            .payload = s_scope_row,
+            .len = len,
+        };
+        if (httpd_ws_send_frame_async(s_server, fds[i], &frame) != ESP_OK) {
+            httpd_sess_trigger_close(s_server, fds[i]); /* gone, or too slow to keep up */
+        }
+    }
+}
+
 /* Asks the server's task for a push, unless the last one is still waiting:
- * a client that stalls the server must not pile up work behind itself. */
+ * a client that stalls the server must not pile up work behind itself. The
+ * waterfall's rows are asked for twice as often as the telemetry, and not at
+ * all while no page shows it. */
 static void push_task(void *arg)
 {
     (void)arg;
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(PUSH_PERIOD_MS));
-        if (!atomic_exchange(&s_push_queued, true)) {
+    _Static_assert(PUSH_PERIOD_MS == 2 * SCOPE_PERIOD_MS, "the telemetry goes with every second row");
+    for (bool telemetry = true;; telemetry = !telemetry) {
+        vTaskDelay(pdMS_TO_TICKS(SCOPE_PERIOD_MS));
+        if (atomic_load(&s_scope_clients) > 0 && !atomic_exchange(&s_scope_queued, true)) {
+            if (httpd_queue_work(s_server, scope_work, NULL) != ESP_OK) atomic_store(&s_scope_queued, false);
+        }
+        if (telemetry && !atomic_exchange(&s_push_queued, true)) {
             if (httpd_queue_work(s_server, push_work, NULL) != ESP_OK) atomic_store(&s_push_queued, false);
         }
     }
@@ -289,6 +375,26 @@ static esp_err_t ws_handler(httpd_req_t *req)
         err = httpd_ws_recv_frame(req, &frame, sizeof buf);
     }
     return err;
+}
+
+/* Called by the server when a waterfall's connection closes. The mark is
+ * not memory to free; without this the server would call free() on it. */
+static void scope_closed(void *ctx)
+{
+    (void)ctx;
+    atomic_fetch_sub(&s_scope_clients, 1);
+}
+
+/* The waterfall's WebSocket: the same, and its connection is marked. */
+static esp_err_t ws_scope_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET && req->sess_ctx != &s_scope_mark) {
+        if (!s_cfg.rx_scope && !s_cfg.tx_scope) return ESP_FAIL; /* this board has no waterfall: close */
+        req->sess_ctx = (void *)&s_scope_mark;
+        req->free_ctx = scope_closed;
+        atomic_fetch_add(&s_scope_clients, 1);
+    }
+    return ws_handler(req);
 }
 
 /* ---- Wi-Fi ----------------------------------------------------------------------------- */
@@ -356,6 +462,8 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/settings", .method = HTTP_GET, .handler = get_settings},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = post_settings},
         {.uri = "/api/rig", .method = HTTP_POST, .handler = post_rig},
+        {.uri = "/api/radio", .method = HTTP_GET, .handler = get_radio},
+        {.uri = "/api/radio", .method = HTTP_POST, .handler = post_radio},
         {.uri = "/api/clip", .method = HTTP_POST, .handler = post_clip},
         {.uri = "/api/keep", .method = HTTP_POST, .handler = post_keep},
         {.uri = "/api/forget", .method = HTTP_POST, .handler = post_forget},
@@ -367,11 +475,13 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/wifi", .method = HTTP_GET, .handler = get_wifi},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = post_wifi},
         {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true},
+        {.uri = "/ws/scope", .method = HTTP_GET, .handler = ws_scope_handler, .is_websocket = true},
     };
 
     if (!config || !config->ctl || !config->sample) return ESP_ERR_INVALID_ARG;
     s_cfg = *config;
     if (!s_cfg.lock || !s_cfg.unlock) s_cfg.lock = s_cfg.unlock = no_lock;
+    console_scope_work_init(&s_scope_work);
 
     esp_err_t err = wifi_net_start();
     if (err != ESP_OK) return err;

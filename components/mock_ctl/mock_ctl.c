@@ -433,7 +433,7 @@ mock_ctl_clip_result_t mock_ctl_clip(mock_ctl_t *m, mock_ctl_clip_op_t op, unsig
         break;
     case MOCK_CTL_CLIP_PLAY:
         if (st.length_ms[slot - 1] == 0) return MOCK_CTL_CLIP_NOTHING;
-        if (cfg.route != AE_ROUTE_PARROT || ptt.cat || ptt.line || ptt.vox || par.state == AE_PARROT_RECORDING) {
+        if (cfg.route != AE_ROUTE_PARROT || ae_ptt_keyed(&ptt) || par.state == AE_PARROT_RECORDING) {
             return MOCK_CTL_CLIP_STATE;
         }
         break;
@@ -497,6 +497,7 @@ bool mock_ctl_select_rig(mock_ctl_t *m, int hamlib_model)
         if (m->rigs[i]->hamlib_model != hamlib_model) continue;
         if (m->civ->rig != m->rigs[i]) {
             civ_set_rig(m->civ, m->rigs[i]);
+            ae_set_panel_ptt(m->engine, false); /* the new radio starts in receive */
             if (m->rig_changed) m->rig_changed(m->rig_ctx, m->rigs[i]);
         }
         return true;
@@ -593,7 +594,7 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
             ae_get_ptt(m->engine, &ptt);
             const uint8_t p[2] = {MOCK_CTL_PTT_STATUS,
                                   (uint8_t)((ptt.cat ? MOCK_CTL_PTT_CAT : 0) | (ptt.line ? MOCK_CTL_PTT_LINE_KEYED : 0) |
-                                            (ptt.vox ? MOCK_CTL_PTT_VOX : 0))};
+                                            (ptt.vox ? MOCK_CTL_PTT_VOX : 0) | (ptt.panel ? MOCK_CTL_PTT_PANEL : 0))};
             civ_reply(c, f, p, 2);
             return;
         }

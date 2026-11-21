@@ -227,6 +227,8 @@ size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, s
     }
     out_f(&o, "],\"parrot_capacity\":");
     out_scaled(&o, (int32_t)((par.capacity_ms + 50) / 100), 10);
+    out_f(&o, ",\"scope\":{\"fs\":%d,\"n\":%d,\"bins\":%d,\"rows\":%d}", DSP_SPEC_FS_HZ, DSP_SPEC_N, DSP_SPEC_BINS,
+          CONSOLE_SCOPE_ROWS_PER_S);
     out_f(&o, ",\"settings\":[");
     for (size_t i = 0; i < ARRAY_LEN(csets); i++) {
         const cset_t *s = &csets[i];
@@ -641,6 +643,428 @@ console_result_t console_clip_apply(mock_ctl_t *m, const char *json, char *err, 
     }
 }
 
+/* ---- the front panel ---------------------------------------------------------------- */
+
+static const char *const w_duplex[] = {"simplex", "dup-", "dup+"};
+
+static bool rig_has(const civ_t *c, uint32_t cap)
+{
+    return (c->rig->caps & cap) != 0;
+}
+
+/* The n-th name in "off|fast|mid|slow". NULL past the end. */
+static const char *choice_at(const char *choices, size_t n, size_t *len)
+{
+    const char *p = choices;
+    for (;;) {
+        const char *e = strchr(p, '|');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (n == 0) {
+            *len = l;
+            return p;
+        }
+        if (!e) return NULL;
+        p = e + 1;
+        n--;
+    }
+}
+
+/* The highest value the panel offers for a function. */
+static unsigned func_max(const civ_item_t *it)
+{
+    unsigned n = 0;
+    size_t len;
+    if (!it->choices) return 1;
+    while (choice_at(it->choices, n, &len)) n++;
+    return n - 1;
+}
+
+static bool func_offers(const civ_item_t *it, unsigned value)
+{
+    size_t len;
+    if (!it->choices) return value <= 1;
+    return choice_at(it->choices, value, &len) && len > 0;
+}
+
+static void out_vfo(out_t *o, const civ_vfo_t *v)
+{
+    char mode[16];
+    console_mode_name(v->mode, false, mode, sizeof mode);
+    out_f(o, "{\"freq\":%llu,\"mode\":\"%s\",\"data\":", (unsigned long long)v->freq, mode);
+    out_bool(o, v->data);
+    out_f(o, ",\"filter\":%u}", (unsigned)v->filter);
+}
+
+static void out_ranges(out_t *o, const civ_range_t *r, size_t n)
+{
+    out_f(o, "[");
+    for (size_t i = 0; i < n; i++) {
+        out_f(o, "%s[%llu,%llu]", i ? "," : "", (unsigned long long)r[i].lo_hz, (unsigned long long)r[i].hi_hz);
+    }
+    out_f(o, "]");
+}
+
+/* The items of one table that have a name. */
+static void out_items(out_t *o, uint8_t cmd, const civ_item_t *items, size_t n, size_t cap_n, const uint16_t *values)
+{
+    bool first = true;
+    out_f(o, "[");
+    for (size_t i = 0; i < n && i < cap_n; i++) {
+        const civ_item_t *it = &items[i];
+        if (!it->name) continue;
+        out_f(o, "%s{\"id\":\"%02X.%02X\",\"name\":", first ? "" : ",", cmd, it->sub);
+        first = false;
+        out_str(o, it->name);
+        out_f(o, ",\"value\":%u", (unsigned)values[i]);
+        if (cmd == 0x15) {
+            out_f(o, ",\"max\":%d", civ_meter_is_status(it->sub) ? 1 : 255);
+        } else if (cmd == 0x16 && it->choices) {
+            /* A name per value; an empty one is a value the panel does not offer. */
+            size_t len;
+            const char *ch;
+            out_f(o, ",\"choices\":[");
+            for (size_t k = 0; (ch = choice_at(it->choices, k, &len)) != NULL; k++) {
+                out_f(o, "%s\"%.*s\"", k ? "," : "", (int)len, ch);
+            }
+            out_f(o, "]");
+        }
+        out_f(o, "}");
+    }
+    out_f(o, "]");
+}
+
+size_t console_radio_json(const civ_t *c, char *buf, size_t cap)
+{
+    out_t o;
+    const civ_rig_t *rig = c->rig;
+
+    out_init(&o, buf, cap);
+    out_f(&o, "{\"rig\":");
+    out_str(&o, rig->name);
+    out_f(&o, ",\"hamlib\":%d,\"gen\":%lu,\"vfo\":\"%c\",\"split\":", rig->hamlib_model,
+          (unsigned long)civ_state_hash(c), c->sel ? 'B' : 'A');
+    out_bool(&o, c->split);
+    out_f(&o, ",\"a\":");
+    out_vfo(&o, &c->vfo[0]);
+    out_f(&o, ",\"b\":");
+    out_vfo(&o, &c->vfo[1]);
+
+    out_f(&o, ",\"modes\":[");
+    for (size_t i = 0; i < rig->n_modes; i++) {
+        char mode[16];
+        console_mode_name(rig->modes[i], false, mode, sizeof mode);
+        out_f(&o, "%s\"%s\"", i ? "," : "", mode);
+    }
+    out_f(&o, "],\"filters\":%u,\"can\":{\"data\":", (unsigned)rig->max_filter);
+    out_bool(&o, rig_has(c, CIV_CAP_DATA_MODE));
+    out_f(&o, ",\"equal\":");
+    out_bool(&o, rig_has(c, CIV_CAP_VFO_EQUAL));
+
+    out_f(&o, "},\"duplex\":");
+    if (rig_has(c, CIV_CAP_DUPLEX) && c->duplex >= 0x10 && c->duplex <= 0x12) {
+        out_f(&o, "\"%s\"", w_duplex[c->duplex - 0x10]);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"rit\":");
+    if (rig_has(c, CIV_CAP_RIT)) {
+        out_f(&o, "{\"on\":");
+        out_bool(&o, c->rit_on);
+        out_f(&o, ",\"hz\":%d}", (int)c->rit_hz);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"tuner\":");
+    if (rig_has(c, CIV_CAP_TUNER)) {
+        out_bool(&o, c->tuner != 0);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"att\":");
+    if (rig_has(c, CIV_CAP_ATT)) {
+        out_f(&o, "{\"on\":");
+        out_bool(&o, c->att != 0);
+        out_f(&o, ",\"byte\":\"%02X\",\"set\":", c->att);
+        out_bool(&o, rig->att_on != 0);
+        out_f(&o, "}");
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"step\":");
+    if (rig_has(c, CIV_CAP_TS)) {
+        out_f(&o, "\"%02X\"", c->ts);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"width\":");
+    if (rig_has(c, CIV_CAP_FILTER_BW)) {
+        out_f(&o, "\"%02X\"", c->filter_bw);
+    } else {
+        out_f(&o, "null");
+    }
+    out_f(&o, ",\"power\":");
+    if (rig_has(c, CIV_CAP_POWER)) {
+        out_bool(&o, c->power);
+    } else {
+        out_f(&o, "null");
+    }
+
+    out_f(&o, ",\"rx\":");
+    out_ranges(&o, rig->rx, rig->n_rx);
+    out_f(&o, ",\"tx\":");
+    out_ranges(&o, rig->tx, rig->n_tx);
+    out_f(&o, ",\"levels\":");
+    out_items(&o, 0x14, rig->levels, rig->n_levels, CIV_MAX_LEVELS, c->level);
+    out_f(&o, ",\"funcs\":");
+    out_items(&o, 0x16, rig->funcs, rig->n_funcs, CIV_MAX_FUNCS, c->func);
+    out_f(&o, ",\"meters\":");
+    out_items(&o, 0x15, rig->meters, rig->n_meters, CIV_MAX_METERS, c->meter);
+    out_f(&o, "}");
+    return out_done(&o);
+}
+
+static bool name_is(const jmember_t *mem, const char *name)
+{
+    return mem->name_len == strlen(name) && memcmp(mem->name, name, mem->name_len) == 0;
+}
+
+static bool text_is(const jmember_t *mem, const char *text)
+{
+    return mem->type == J_STRING && mem->text_len == strlen(text) && memcmp(mem->text, text, mem->text_len) == 0;
+}
+
+/* A whole number in lo..hi. */
+static bool whole(const jmember_t *mem, double lo, double hi, long long *out)
+{
+    if (mem->type != J_NUMBER || !(mem->num >= lo && mem->num <= hi) || mem->num != floor(mem->num)) return false;
+    *out = (long long)mem->num;
+    return true;
+}
+
+static bool truth(const jmember_t *mem, bool *out)
+{
+    if (mem->type != J_TRUE && mem->type != J_FALSE) return false;
+    *out = mem->type == J_TRUE;
+    return true;
+}
+
+/* Shaped like an item's id, "14.0A": safe to repeat back in a message. */
+static bool id_shaped(const char *name, size_t len)
+{
+    static const char hex[] = "0123456789ABCDEFabcdef";
+    return len == 5 && name[2] == '.' && strchr(hex, name[0]) && strchr(hex, name[1]) && strchr(hex, name[3]) &&
+           strchr(hex, name[4]) && name[0] && name[1] && name[3] && name[4];
+}
+
+/* "14.0A": the command and the item's place in the personality's table. */
+static const civ_item_t *item_by_id(const civ_t *c, const jmember_t *mem, uint8_t *cmd)
+{
+    const civ_item_t *items;
+    size_t n;
+    if (!id_shaped(mem->name, mem->name_len) || mem->name[0] != '1') return NULL;
+    const char hex[3] = {mem->name[3], mem->name[4], '\0'};
+    unsigned long sub = strtoul(hex, NULL, 16);
+    switch (mem->name[1]) {
+    case '4':
+        items = c->rig->levels;
+        n = c->rig->n_levels < CIV_MAX_LEVELS ? c->rig->n_levels : CIV_MAX_LEVELS;
+        break;
+    case '5':
+        items = c->rig->meters;
+        n = c->rig->n_meters < CIV_MAX_METERS ? c->rig->n_meters : CIV_MAX_METERS;
+        break;
+    case '6':
+        items = c->rig->funcs;
+        n = c->rig->n_funcs < CIV_MAX_FUNCS ? c->rig->n_funcs : CIV_MAX_FUNCS;
+        break;
+    default:
+        return NULL;
+    }
+    *cmd = (uint8_t)(0x10 + (mem->name[1] - '0'));
+    for (size_t i = 0; i < n; i++) {
+        if (items[i].sub == sub && items[i].name) return &items[i];
+    }
+    return NULL;
+}
+
+/* One member of a change. The radio has the last word on everything CAT can
+ * set: a refusal from civ_local() is the radio's FA. */
+static console_result_t radio_put(mock_ctl_t *m, const jmember_t *mem, bool *key, bool *key_on, char *err,
+                                  size_t err_cap)
+{
+    civ_t *c = m->civ;
+    const civ_rig_t *rig = c->rig;
+    const civ_vfo_t *v = civ_selected_vfo(c);
+    long long n;
+    bool on;
+    uint8_t d[4];
+    uint8_t cmd;
+
+    if (name_is(mem, "freq")) {
+        if (!whole(mem, 0, 9999999999.0, &n)) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "freq: must be a whole number of hertz");
+        }
+        uint8_t bcd[5];
+        civ_u64_to_bcd_le((uint64_t)n, bcd, 5);
+        if (civ_local(c, 0x05, bcd, 5)) return CONSOLE_OK;
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "freq: the %s does not tune to %lld Hz", rig->name, n);
+    }
+    if (name_is(mem, "vfo")) {
+        if (!text_is(mem, "A") && !text_is(mem, "B")) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "vfo: must be \"A\" or \"B\"");
+        }
+        d[0] = text_is(mem, "B") ? 0x01 : 0x00;
+        if (civ_local(c, 0x07, d, 1)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "vfo: the radio refused");
+    }
+    if (name_is(mem, "op")) {
+        if (!text_is(mem, "equal") && !text_is(mem, "swap")) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "op: must be \"equal\" or \"swap\"");
+        }
+        d[0] = text_is(mem, "equal") ? 0xA0 : 0xB0;
+        if (civ_local(c, 0x07, d, 1)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "op: the %s cannot do that", rig->name);
+    }
+    if (name_is(mem, "mode")) {
+        for (size_t i = 0; mem->type == J_STRING && i < rig->n_modes; i++) {
+            char mode[16];
+            console_mode_name(rig->modes[i], false, mode, sizeof mode);
+            if (!text_is(mem, mode)) continue;
+            d[0] = rig->modes[i];
+            if (civ_local(c, 0x06, d, 1)) return CONSOLE_OK;
+        }
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "mode: not a mode of the %s", rig->name);
+    }
+    if (name_is(mem, "data")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "data: must be true or false");
+        d[0] = 0x06;
+        d[1] = on ? 0x01 : 0x00;
+        if (civ_local(c, 0x1A, d, 2)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "data: the %s has no data mode switch", rig->name);
+    }
+    if (name_is(mem, "filter")) {
+        if (!whole(mem, 1, rig->max_filter, &n)) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "filter: must be 1 to %u", (unsigned)rig->max_filter);
+        }
+        d[0] = v->mode;
+        d[1] = (uint8_t)n;
+        if (civ_local(c, 0x06, d, 2)) return CONSOLE_OK;
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "filter: the radio refused");
+    }
+    if (name_is(mem, "split")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "split: must be true or false");
+        d[0] = on ? 0x01 : 0x00;
+        if (civ_local(c, 0x0F, d, 1)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "split: the radio refused");
+    }
+    if (name_is(mem, "duplex")) {
+        for (size_t i = 0; i < ARRAY_LEN(w_duplex); i++) {
+            if (!text_is(mem, w_duplex[i])) continue;
+            d[0] = (uint8_t)(0x10 + i);
+            if (civ_local(c, 0x0F, d, 1)) return CONSOLE_OK;
+            return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "duplex: the %s has no repeater shift", rig->name);
+        }
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "duplex: must be \"simplex\", \"dup-\" or \"dup+\"");
+    }
+    if (name_is(mem, "rit")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "rit: must be true or false");
+        d[0] = 0x01;
+        d[1] = on ? 0x01 : 0x00;
+        if (civ_local(c, 0x21, d, 2)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "rit: the %s has no RIT", rig->name);
+    }
+    if (name_is(mem, "rit_hz")) {
+        if (!whole(mem, -9999, 9999, &n)) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "rit_hz: must be between -9999 and 9999 Hz");
+        }
+        d[0] = 0x00;
+        civ_u64_to_bcd_le((uint64_t)(n < 0 ? -n : n), &d[1], 2);
+        d[3] = n < 0 ? 0x01 : 0x00;
+        if (civ_local(c, 0x21, d, 4)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "rit_hz: the %s has no RIT", rig->name);
+    }
+    if (name_is(mem, "tuner")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "tuner: must be true or false");
+        d[0] = 0x01;
+        d[1] = on ? 0x01 : 0x00;
+        if (civ_local(c, 0x1C, d, 2)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "tuner: the %s has no tuner over CAT", rig->name);
+    }
+    if (name_is(mem, "att")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "att: must be true or false");
+        if (!rig_has(c, CIV_CAP_ATT) || !rig->att_on) {
+            return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "att: the panel cannot switch the %s's attenuator; CAT can",
+                          rig->name);
+        }
+        d[0] = on ? rig->att_on : 0x00;
+        if (civ_local(c, 0x11, d, 1)) return CONSOLE_OK;
+        return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "att: the radio refused");
+    }
+    if (name_is(mem, "ptt")) {
+        if (!truth(mem, &on)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "ptt: must be true or false");
+        *key = true; /* applied last, once nothing else in the change has been refused */
+        *key_on = on;
+        return CONSOLE_OK;
+    }
+
+    const civ_item_t *it = item_by_id(c, mem, &cmd);
+    if (!it) {
+        if (plain_name(mem->name, mem->name_len) || id_shaped(mem->name, mem->name_len)) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%.*s: the %s's panel has no such control",
+                          (int)mem->name_len, mem->name, rig->name);
+        }
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "the panel has no such control");
+    }
+    if (cmd == 0x14) {
+        if (!whole(mem, 0, 255, &n)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s: must be 0 to 255", it->name);
+        d[0] = it->sub;
+        civ_u16_to_bcd_be((uint16_t)n, &d[1], 2);
+        if (civ_local(c, 0x14, d, 3)) return CONSOLE_OK;
+    } else if (cmd == 0x16) {
+        if (!whole(mem, 0, func_max(it), &n) || !func_offers(it, (unsigned)n)) {
+            return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s: the panel offers 0 to %u", it->name, func_max(it));
+        }
+        d[0] = it->sub;
+        d[1] = (uint8_t)n;
+        if (civ_local(c, 0x16, d, 2)) return CONSOLE_OK;
+    } else {
+        /* A meter: CAT only reads it, so the panel sets it directly. */
+        int max = civ_meter_is_status(it->sub) ? 1 : 255;
+        if (!whole(mem, 0, max, &n)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s: must be 0 to %d", it->name, max);
+        if (civ_set_meter(c, it->sub, (uint16_t)n)) return CONSOLE_OK;
+    }
+    return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s: the radio refused", it->name);
+}
+
+console_result_t console_radio_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap)
+{
+    static const char malformed[] = "expected a JSON object of panel controls, like {\"freq\":7074000,\"mode\":\"LSB\"}";
+    const char *p = json;
+    bool first = true;
+    bool key = false, key_on = false;
+    jmember_t mem;
+    int r;
+
+    if (err && err_cap) err[0] = '\0';
+    if (!m->civ) return refuse(CONSOLE_UNAVAILABLE, err, err_cap, "this mock has no radio to show");
+    if (!j_open(&p)) return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+
+    const civ_t before = *m->civ; /* all of the change, or none of it */
+    while ((r = j_next(&p, &first, &mem)) == 1) {
+        console_result_t res = radio_put(m, &mem, &key, &key_on, err, err_cap);
+        if (res != CONSOLE_OK) {
+            *m->civ = before;
+            return res;
+        }
+    }
+    if (r < 0) {
+        *m->civ = before;
+        return refuse(CONSOLE_BAD_REQUEST, err, err_cap, "%s", malformed);
+    }
+    if (key) ae_set_panel_ptt(m->engine, key_on);
+    return CONSOLE_OK;
+}
+
 size_t console_error_json(const char *message, char *buf, size_t cap)
 {
     out_t o;
@@ -709,6 +1133,89 @@ void console_meter_read(console_meter_t *m, uint32_t *seen, console_level_t *out
     out->peak_cdb = atomic_load(&m->peak_cdb);
 }
 
+/* ---- the waterfall ------------------------------------------------------------------- */
+
+void console_scope_init(console_scope_t *s)
+{
+    memset(s->ring, 0, sizeof s->ring);
+    atomic_store(&s->written, 0u);
+}
+
+void console_scope_add(console_scope_t *s, const int16_t *samples, size_t n)
+{
+    uint32_t w = atomic_load(&s->written);
+    if (n > CONSOLE_SCOPE_RING) { /* only the newest can stay */
+        if (samples) samples += n - CONSOLE_SCOPE_RING;
+        w += (uint32_t)(n - CONSOLE_SCOPE_RING);
+        n = CONSOLE_SCOPE_RING;
+    }
+    size_t at = w % CONSOLE_SCOPE_RING;
+    size_t first = n < CONSOLE_SCOPE_RING - at ? n : CONSOLE_SCOPE_RING - at;
+    if (samples) {
+        memcpy(&s->ring[at], samples, first * sizeof(int16_t));
+        memcpy(&s->ring[0], samples + first, (n - first) * sizeof(int16_t));
+    } else {
+        memset(&s->ring[at], 0, first * sizeof(int16_t));
+        memset(&s->ring[0], 0, (n - first) * sizeof(int16_t));
+    }
+    atomic_store(&s->written, w + (uint32_t)n);
+}
+
+bool console_scope_take(console_scope_t *s, uint32_t *seen, int16_t *out)
+{
+    uint32_t w = atomic_load(&s->written);
+    bool fresh = w != *seen;
+    *seen = w;
+    if (!fresh || w < DSP_SPEC_INPUT) return false; /* a count that wrapped after a day reads short once */
+
+    size_t at = (w - DSP_SPEC_INPUT) % CONSOLE_SCOPE_RING;
+    size_t first = DSP_SPEC_INPUT < CONSOLE_SCOPE_RING - at ? DSP_SPEC_INPUT : CONSOLE_SCOPE_RING - at;
+    memcpy(out, &s->ring[at], first * sizeof(int16_t));
+    memcpy(out + first, &s->ring[0], (DSP_SPEC_INPUT - first) * sizeof(int16_t));
+
+    /* The audio task may have gone on writing meanwhile. Only if it has come
+     * right round to what was being copied is the copy no good. */
+    return atomic_load(&s->written) - w <= CONSOLE_SCOPE_RING - DSP_SPEC_INPUT;
+}
+
+void console_scope_work_init(console_scope_work_t *w)
+{
+    dsp_spec_init(&w->spec);
+    w->rx_seen = w->tx_seen = 0;
+}
+
+static bool scope_lane(console_scope_work_t *w, console_scope_t *s, uint32_t *seen, uint8_t *out)
+{
+    if (!s || !console_scope_take(s, seen, w->pcm)) return false;
+    dsp_spec_run(&w->spec, w->pcm, w->db);
+    for (int k = 0; k < DSP_SPEC_BINS; k++) {
+        float half_db = -2.0f * w->db[k];
+        out[k] = half_db <= 0.0f ? 0 : half_db >= 255.0f ? 255 : (uint8_t)lroundf(half_db);
+    }
+    return true;
+}
+
+size_t console_scope_row(console_scope_work_t *w, console_scope_t *rx, console_scope_t *tx, bool keyed, uint8_t *out,
+                         size_t cap)
+{
+    if (cap < CONSOLE_SCOPE_ROW_MAX) return 0;
+    size_t len = 4;
+    uint8_t flags = keyed ? CONSOLE_SCOPE_KEYED : 0;
+    if (scope_lane(w, rx, &w->rx_seen, &out[len])) {
+        flags |= CONSOLE_SCOPE_RX;
+        len += DSP_SPEC_BINS;
+    }
+    if (scope_lane(w, tx, &w->tx_seen, &out[len])) {
+        flags |= CONSOLE_SCOPE_TX;
+        len += DSP_SPEC_BINS;
+    }
+    out[0] = CONSOLE_SCOPE_FORMAT;
+    out[1] = flags;
+    out[2] = DSP_SPEC_BINS;
+    out[3] = 0;
+    return len;
+}
+
 /* ---- telemetry ---------------------------------------------------------------------- */
 
 void console_mode_name(uint8_t mode, bool data, char *out, size_t cap)
@@ -758,20 +1265,22 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
 
     out_init(&o, buf, cap);
     const civ_rig_t *rig = mock_ctl_rig(m);
-    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"hamlib\":%d,\"kept\":", (unsigned long)s->uptime_ms,
-          (unsigned long)ae_config_gen(m->engine), rig ? rig->hamlib_model : 0);
+    out_f(&o, "{\"t\":%lu,\"gen\":%lu,\"rgen\":%lu,\"hamlib\":%d,\"kept\":", (unsigned long)s->uptime_ms,
+          (unsigned long)ae_config_gen(m->engine), (unsigned long)s->radio_gen, rig ? rig->hamlib_model : 0);
     out_bool(&o, mock_ctl_settings_kept(m));
     out_f(&o, ",\"host\":");
     out_bool(&o, s->host);
 
     out_f(&o, ",\"ptt\":{\"on\":");
-    out_bool(&o, ptt.cat || ptt.line || ptt.vox);
+    out_bool(&o, ae_ptt_keyed(&ptt));
     out_f(&o, ",\"cat\":");
     out_bool(&o, ptt.cat);
     out_f(&o, ",\"line\":");
     out_bool(&o, ptt.line);
     out_f(&o, ",\"vox\":");
     out_bool(&o, ptt.vox);
+    out_f(&o, ",\"panel\":");
+    out_bool(&o, ptt.panel);
 
     out_f(&o, "},\"cat\":{\"freq\":%llu,\"txfreq\":%llu,\"mode\":\"%s\",\"split\":", (unsigned long long)s->freq_hz,
           (unsigned long long)s->tx_freq_hz, mode);

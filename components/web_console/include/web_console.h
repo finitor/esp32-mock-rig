@@ -10,6 +10,8 @@
  *   GET  /api/settings    every setting
  *   POST /api/settings    change settings: a JSON object, any subset
  *   POST /api/rig         change the radio imitated: {"hamlib":3088}
+ *   GET  /api/radio       the radio as its front panel shows it
+ *   POST /api/radio       a change made at the front panel: {"freq":7074000}
  *   POST /api/reset       back to the power-up settings
  *   POST /api/keep        keep the settings as they are for power-up, in flash
  *   POST /api/forget      forget them: power up with the build's settings
@@ -17,6 +19,8 @@
  *   POST /api/replay      play the parrot's recording again
  *   GET  /api/telemetry   one snapshot of the telemetry
  *   GET  /ws              WebSocket: the same snapshot, pushed 5 times a second
+ *   GET  /ws/scope        WebSocket: the waterfall, a row of spectrum 10 times
+ *                         a second, as bytes (console_api.h has the layout)
  *   GET  /api/health      the board's health: memory, processor, audio timing
  *   POST /api/tasks       the same, with the table of tasks read afresh: {}
  *   GET  /api/wifi        how the board is connected
@@ -48,6 +52,17 @@ typedef struct {
     /* Fill in everything but the Wi-Fi signal strength. Called from the
      * HTTP server's task, 5 times a second, without the lock. */
     void (*sample)(void *ctx, console_sample_t *out);
+
+    /* Called with the lock held after a change at the front panel, which may
+     * have moved the radio's frequency. May be NULL. */
+    void (*radio_changed)(void *ctx);
+
+    /* The newest audio each way, for the waterfall: what the host records and
+     * what it plays. The audio tasks add to them; the server reads them, and
+     * transforms them, only while a page has the waterfall open. Either may
+     * be NULL. */
+    console_scope_t *rx_scope;
+    console_scope_t *tx_scope;
 
     /* The board's health, or NULL for a console that does not show it. With
      * scan_tasks the table of tasks is to be read afresh, which holds the

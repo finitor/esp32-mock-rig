@@ -11,6 +11,9 @@
  *   a health | a tasks  the board's health; tasks reads the table of tasks first
  *   a apply <json>      change settings
  *   a rig <json>        change the radio imitated: {"hamlib":3088}
+ *   a radio             the radio as its front panel shows it
+ *   a panel <json>      a change made at the front panel: {"freq":7074000}
+ *   a scope             one row of the waterfall; the body is its bytes in hex
  *   a keep | a forget   keep the settings for power-up, or forget them
  *   a clip <json>       a clip operation: {"op":"save","clip":1}
  *   a play on|off       the host plays a tone, or stops playing
@@ -62,6 +65,8 @@ typedef struct {
     coord_t coord;
     console_meter_t tx_meter, rx_meter;
     uint32_t tx_seen, rx_seen;
+    console_scope_t tx_scope, rx_scope;
+    console_scope_work_t scope_work;
     int16_t parrot[PARROT_SECONDS * AE_PARROT_FS_HZ];
     uint8_t kept[MOCK_CTL_BLOB_MAX];
     size_t kept_len;
@@ -214,6 +219,9 @@ static void board_init(board_t *b, int index)
     mock_ctl_set_clips(&b->ctl, &clips);
     console_meter_init(&b->tx_meter);
     console_meter_init(&b->rx_meter);
+    console_scope_init(&b->tx_scope);
+    console_scope_init(&b->rx_scope);
+    console_scope_work_init(&b->scope_work);
 }
 
 /* What the firmware's status task does for the link, every block here. */
@@ -243,6 +251,7 @@ static void run(uint32_t ms)
                     if (b->phase > 2.0f * 3.14159265f) b->phase -= 2.0f * 3.14159265f;
                 }
                 console_meter_add(&b->tx_meter, tx, BLOCK);
+                console_scope_add(&b->tx_scope, tx, BLOCK);
             }
             if (b->recording) {
                 /* Both boards have the same clock here; on real ones the
@@ -252,6 +261,7 @@ static void run(uint32_t ms)
                 ae_fade_clock(&b->engine, seed, clock);
                 ae_process(&b->engine, b->playing ? tx : NULL, rx, BLOCK);
                 console_meter_add(&b->rx_meter, rx, BLOCK);
+                console_scope_add(&b->rx_scope, rx, BLOCK);
             }
         }
     }
@@ -268,6 +278,7 @@ static void telemetry(board_t *b)
     s.mode = civ_selected_vfo(&b->civ)->mode;
     s.data = civ_selected_vfo(&b->civ)->data;
     s.split = b->civ.split;
+    s.radio_gen = civ_state_hash(&b->civ);
     s.frames_ok = b->civ.frames_ok;
     s.frames_ng = b->civ.frames_ng;
     s.frames_dropped = b->civ.frames_dropped;
@@ -372,6 +383,11 @@ static void feed_civ(board_t *b, const char *hex)
         hex += 2;
     }
     g_reply_len = 0;
+    /* As the firmware does: a read of 1C 00 says the radio is transmitting
+     * when something other than CAT keys it. */
+    ae_ptt_t ptt;
+    ae_get_ptt(&b->engine, &ptt);
+    civ_set_ptt(&b->civ, ptt.line || ptt.vox || ptt.panel);
     civ_feed(&b->civ, in, n);
     printf("200 \"");
     for (size_t i = 0; i < g_reply_len; i++) printf("%s%02x", i ? " " : "", g_reply[i]);
@@ -414,6 +430,26 @@ static void board_command(board_t *b, char *line)
         } else {
             error(r == CONSOLE_UNAVAILABLE ? 409 : 400, err);
         }
+    } else if (strcmp(line, "radio") == 0) {
+        console_radio_json(&b->civ, g_json, sizeof g_json);
+        printf("200 %s\n", g_json);
+    } else if (strcmp(line, "panel") == 0) {
+        char err[CONSOLE_ERR_MAX];
+        console_result_t r = console_radio_apply(&b->ctl, arg, err, sizeof err);
+        if (r == CONSOLE_OK) {
+            console_radio_json(&b->civ, g_json, sizeof g_json);
+            printf("200 %s\n", g_json);
+        } else {
+            error(r == CONSOLE_UNAVAILABLE ? 409 : 400, err);
+        }
+    } else if (strcmp(line, "scope") == 0) {
+        uint8_t row[CONSOLE_SCOPE_ROW_MAX];
+        ae_ptt_t ptt;
+        ae_get_ptt(&b->engine, &ptt);
+        size_t n = console_scope_row(&b->scope_work, &b->rx_scope, &b->tx_scope, ae_ptt_keyed(&ptt), row, sizeof row);
+        printf("200 \"");
+        for (size_t i = 0; i < n; i++) printf("%02x", row[i]);
+        printf("\"\n");
     } else if (strcmp(line, "keep") == 0 || strcmp(line, "forget") == 0) {
         bool ok = line[0] == 'k' ? mock_ctl_keep_settings(&b->ctl) : mock_ctl_forget_settings(&b->ctl);
         if (ok) {

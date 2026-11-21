@@ -674,6 +674,88 @@ static void test_fade_seek(void)
     CHECK(peak == 32767 || peak == 32768);
 }
 
+/* ---- spectrum ----------------------------------------------------------- */
+
+static void test_spectrum(void)
+{
+    static dsp_spec_t s;
+    static int16_t x[DSP_SPEC_INPUT];
+    static float d[DSP_SPEC_BINS], d2[DSP_SPEC_BINS];
+    const double bin = (double)DSP_SPEC_FS_HZ / DSP_SPEC_N;
+
+    CHECK(DSP_SPEC_INPUT == 2144 && bin * DSP_SPEC_BINS == 3000.0);
+    dsp_spec_init(&s);
+
+    /* Silence. */
+    memset(x, 0, sizeof x);
+    dsp_spec_run(&s, x, d);
+    for (int k = 0; k < DSP_SPEC_BINS; k++) CHECK(d[k] == DSP_SILENCE_DBFS);
+
+    /* A full-scale sine in the middle of bin 64, 1500 Hz: it reads what the
+     * level meter reads, the bins beside it 6 dB less (the window), and the
+     * rest nothing to speak of. */
+    sine(x, DSP_SPEC_INPUT, 64 * bin, 48000, 32767);
+    dsp_spec_run(&s, x, d);
+    CHECK_RANGE(d[64], -3.06, -2.96);
+    CHECK_RANGE(d[63], -9.2, -8.9);
+    CHECK_RANGE(d[65], -9.2, -8.9);
+    for (int k = 0; k < DSP_SPEC_BINS; k++) {
+        if (k < 61 || k > 67) CHECK_RANGE(d[k], DSP_SILENCE_DBFS, -80);
+    }
+
+    /* The same spectrum whatever was run before: nothing is carried over. */
+    sine(x, DSP_SPEC_INPUT, 300, 48000, 20000);
+    dsp_spec_run(&s, x, d2);
+    sine(x, DSP_SPEC_INPUT, 64 * bin, 48000, 32767);
+    dsp_spec_run(&s, x, d2);
+    CHECK(memcmp(d, d2, sizeof d) == 0);
+
+    /* 20 dB down, at the two ends of what is shown. */
+    sine(x, DSP_SPEC_INPUT, 4 * bin, 48000, 3276.7);
+    dsp_spec_run(&s, x, d);
+    CHECK_RANGE(d[4], -23.1, -22.9);
+    sine(x, DSP_SPEC_INPUT, 127 * bin, 48000, 3276.7);
+    dsp_spec_run(&s, x, d);
+    CHECK_RANGE(d[127], -23.1, -22.9);
+
+    /* Half-way between two bins: both read it, 1.4 dB low. */
+    sine(x, DSP_SPEC_INPUT, 64.5 * bin, 48000, 32767);
+    dsp_spec_run(&s, x, d);
+    CHECK_RANGE(d[64], -4.6, -4.3);
+    CHECK_RANGE(d[65], -4.6, -4.3);
+
+    /* A steady level reads as itself in bin 0. */
+    for (int i = 0; i < DSP_SPEC_INPUT; i++) x[i] = 3277;
+    dsp_spec_run(&s, x, d);
+    CHECK_RANGE(d[0], -20.1, -19.9);
+    CHECK_RANGE(d[40], DSP_SILENCE_DBFS, -80);
+
+    /* Above what is shown: 4 kHz is in no bin, and 10.5 kHz, which would
+     * fold onto 1500 Hz, is stopped by the resampler's filter first. */
+    sine(x, DSP_SPEC_INPUT, 4000, 48000, 32767);
+    dsp_spec_run(&s, x, d);
+    for (int k = 0; k < DSP_SPEC_BINS; k++) CHECK_RANGE(d[k], DSP_SILENCE_DBFS, -70);
+    sine(x, DSP_SPEC_INPUT, 10500, 48000, 32767);
+    dsp_spec_run(&s, x, d);
+    for (int k = 0; k < DSP_SPEC_BINS; k++) CHECK_RANGE(d[k], DSP_SILENCE_DBFS, -65);
+
+    /* White noise at 48 kHz, 2000 RMS: each bin holds its share, the noise
+     * in one and a half bins' width (the window) out of 24 kHz. */
+    uint32_t r = 12345;
+    double want = 20 * log10(2000.0 / 32768.0) + 10 * log10(1.5 * bin / 24000.0);
+    double sum = 0;
+    int runs = 0;
+    for (int run = 0; run < 40; run++) {
+        for (int i = 0; i < DSP_SPEC_INPUT; i++) {
+            r = r * 1664525u + 1013904223u;
+            x[i] = (int16_t)(((double)(r >> 8) / 8388608.0 - 1.0) * 2000.0 * sqrt(3.0)); /* uniform */
+        }
+        dsp_spec_run(&s, x, d);
+        for (int k = 8; k < 120; k++, runs++) sum += pow(10, d[k] / 10);
+    }
+    CHECK_RANGE(10 * log10(sum / runs), want - 0.5, want + 0.5);
+}
+
 int main(void)
 {
     test_decimator_response();
@@ -693,6 +775,7 @@ int main(void)
     test_fade_statistics();
     test_fade_delay();
     test_fade_seek();
+    test_spectrum();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

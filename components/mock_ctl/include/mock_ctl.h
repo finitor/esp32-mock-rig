@@ -78,7 +78,8 @@
  *   52 <2>        VOX threshold, tenths of a dB below full scale, 6.0 .. 80.0
  *   53 <2>        VOX hang time, ms, 0 .. 5000
  *   54            PTT status, read only: <sources keying the radio now>
- *                   01 CAT, 02 control line, 04 VOX; 00 = receiving
+ *                   01 CAT, 02 control line, 04 VOX, 08 the key on the
+ *                   front panel (the web console's); 00 = receiving
  *
  *   60 <2>        the radio imitated, as its Hamlib model number in BCD:
  *                 30 85 the IC-705, 30 88 the G90. Setting it is switching
@@ -154,6 +155,7 @@ enum {
     MOCK_CTL_PTT_CAT = 0x01,
     MOCK_CTL_PTT_LINE_KEYED = 0x02,
     MOCK_CTL_PTT_VOX = 0x04,
+    MOCK_CTL_PTT_PANEL = 0x08,
 };
 
 enum {

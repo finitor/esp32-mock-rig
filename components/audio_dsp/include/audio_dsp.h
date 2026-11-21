@@ -226,6 +226,44 @@ size_t dsp_fifo_read(dsp_fifo_t *f, int16_t *out, size_t n);
  * too high) or repeats (too low) one sample. */
 size_t dsp_fifo_read_steered(dsp_fifo_t *f, int16_t *out, size_t n, uint32_t target, uint32_t tolerance);
 
+/* ---- spectrum ----------------------------------------------------------------
+ *
+ * The level in each of the lowest DSP_SPEC_BINS frequency bins, for a
+ * waterfall display of the audio passband. The audio is brought down to
+ * 12 kHz with the resampler's own filter, windowed (Hann) and transformed:
+ * 512 points give bins of 23.4 Hz, and 128 of them reach 3 kHz. One spectrum
+ * covers 43 ms of audio.
+ *
+ * Not for the audio path: it takes about as long as a block of audio lasts
+ * to arrive on a small processor, and nothing in the audio depends on it.
+ */
+#define DSP_SPEC_FS_HZ 12000
+#define DSP_SPEC_N     512 /* points transformed */
+#define DSP_SPEC_BINS  128 /* bins reported: bin k is at k * DSP_SPEC_FS_HZ / DSP_SPEC_N hertz */
+/* Samples at 48 kHz that one spectrum is made from. The first DSP_RS_TAPS
+ * only fill the resampler's filter. */
+#define DSP_SPEC_INPUT (DSP_SPEC_N * DSP_RS_FACTOR + DSP_RS_TAPS)
+
+typedef struct {
+    float cos_t[DSP_SPEC_N / 2]; /* cos and sin of 2 pi k / N */
+    float sin_t[DSP_SPEC_N / 2];
+    float window[DSP_SPEC_N];
+    uint16_t rev[DSP_SPEC_N]; /* each index with its bits reversed */
+    float re[DSP_SPEC_N];
+    float im[DSP_SPEC_N];
+    int16_t low[DSP_SPEC_INPUT / DSP_RS_FACTOR]; /* the audio at 12 kHz */
+    dsp_decim4_t decim;
+} dsp_spec_t;
+
+void dsp_spec_init(dsp_spec_t *s);
+
+/* in is DSP_SPEC_INPUT samples at 48 kHz, the newest last. db gets
+ * DSP_SPEC_BINS levels in dBFS on the level meter's scale: a sine reads in
+ * its bin what dsp_meter_rms_dbfs() reads for it (a full-scale one -3.01),
+ * up to 1.4 dB less when it falls between two bins. Nothing reads below
+ * DSP_SILENCE_DBFS. */
+void dsp_spec_run(dsp_spec_t *s, const int16_t *in, float *db);
+
 #ifdef __cplusplus
 }
 #endif

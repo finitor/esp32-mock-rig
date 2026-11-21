@@ -9,7 +9,9 @@
   from anywhere else: the board may be on a network with no internet.
   Served from flash by web_console.c, and by host/tools/console_sim.py.
   The settings form is built from /api/info, so a setting added in
-  console_api.c appears here without an edit.
+  console_api.c appears here without an edit. The front panel is built from
+  /api/radio in the same way: it knows no radio, only what the personality
+  lists.
 -->
 <style>
 :root {
@@ -76,8 +78,14 @@ section { background: var(--surface); border: 1px solid var(--line); border-radi
 .legend i.band { height: 8px; }
 #chartbox { position: relative; }
 canvas { display: block; width: 100%; height: 190px; }
-#tip { position: absolute; top: 4px; pointer-events: none; display: none; background: var(--surface);
+#tip, .ltip { position: absolute; top: 4px; pointer-events: none; display: none; background: var(--surface);
   border: 1px solid var(--axis); border-radius: 6px; padding: 4px 8px; font-size: 13px; white-space: nowrap; }
+.lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px 22px; margin-top: 12px; }
+.lanehead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 4px; }
+.lanehead .key { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink2); }
+.lanehead .key i { display: inline-block; width: 90px; height: 8px; border-radius: 2px; border: 1px solid var(--line); }
+.lanebox { position: relative; }
+.lanebox canvas { height: 250px; cursor: crosshair; }
 
 .groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 7px 0;
@@ -117,6 +125,38 @@ th { font-weight: 600; color: var(--ink2); border-top: 0; font-size: 13px; }
 th:first-child, td:first-child { text-align: left; padding-left: 0; }
 #tasks[hidden] { display: none; }
 #healthsec .kv span:last-child { white-space: nowrap; }
+.face { background: #14181d; color: #e8f1ea; border-radius: 8px; padding: 12px 14px; display: grid; gap: 8px; }
+.face .dim { color: #8fa39a; }
+.fmain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+.ftag { font-weight: 700; letter-spacing: .04em; }
+.dgs { display: inline-flex; align-items: baseline; font: 600 34px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dg { font: inherit; color: inherit; background: none; border: 0; border-radius: 4px; padding: 0 1px; cursor: ns-resize; }
+.dg.lead, .dgs .dot { color: #55635d; }
+.dg:hover { background: #26303a; }
+.dgs .unit { font-size: 15px; font-weight: 400; color: #8fa39a; margin-left: 8px; }
+.lamp { font-weight: 700; padding: 2px 12px; border-radius: 4px; background: #26303a; color: #8fa39a; }
+.lamp.tx { background: var(--red); color: #fff; }
+.flags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; }
+.flags span { border: 1px solid #3a4651; border-radius: 4px; padding: 0 7px; }
+.flags span.hot { border-color: var(--amber); color: var(--amber); }
+.fmeter { display: grid; grid-template-columns: 62px 1fr 40px; align-items: center; gap: 10px; font-size: 13px; }
+.fmeter .bar { background: #26303a; height: 8px; }
+.fmeter .bar i { background: #6fd39a; }
+.prow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+.pf { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); }
+.tog[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tog.key { font-weight: 700; min-width: 76px; }
+.tog.key[aria-pressed=true] { background: var(--red); border-color: var(--red); }
+.bseg { display: inline-flex; }
+.bseg .tog { border-radius: 0; margin-left: -1px; padding: 6px 11px; }
+.bseg .tog:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.bseg .tog:last-child { border-radius: 0 6px 6px 0; }
+#panelsec h3 { font-size: 13px; margin: 16px 0 6px; color: var(--ink2); font-weight: 600; }
+#panelsec h3 small { font-weight: 400; }
+.lvs { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 4px 26px; }
+.lv { display: grid; grid-template-columns: minmax(96px, 1fr) minmax(90px, 1.2fr) 30px; align-items: center; gap: 8px; }
+.lv span:last-child { text-align: right; color: var(--ink2); }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
 .wifi { display: grid; gap: 8px; max-width: 420px; margin-top: 10px; }
 .wifi label { display: grid; gap: 3px; color: var(--ink2); }
 @media (max-width: 520px) { .meter { grid-template-columns: 26px 1fr; } .meter .val { grid-column: 1 / -1; text-align: left; } }
@@ -171,6 +211,32 @@ th:first-child, td:first-child { text-align: left; padding-left: 0; }
     </div>
   </section>
 
+  <section aria-label="Front panel" id="panelsec" hidden>
+    <h2>Front panel</h2>
+    <div class="face">
+      <div class="fmain">
+        <span class="ftag" id="ptag">VFO A</span>
+        <span class="dgs" id="pdig" role="group" aria-label="Frequency of the selected VFO: each digit tunes"></span>
+        <span class="lamp" id="plamp">RX</span>
+      </div>
+      <div class="flags" id="pflags"></div>
+      <div class="dim num" id="pother"></div>
+      <div class="fmeter" id="psrow"><span class="dim" id="psname"></span><div class="bar"><i id="psbar"></i></div><span class="num" id="psval"></span></div>
+    </div>
+    <div class="prow" id="pvfo"></div>
+    <div class="prow" id="pmode"></div>
+    <div class="sub" id="pcat" style="margin-top:10px"></div>
+    <div class="actions"><span class="msg" id="pmsg" role="alert"></span></div>
+    <h3>Switches</h3>
+    <div class="prow" id="pfuncs" style="margin-top:0"></div>
+    <h3>Levels <small>0 to 255, as CAT carries them</small></h3>
+    <div class="lvs" id="plevels"></div>
+    <h3>Meters <small>there is no RF to measure: set what the radio would read, 0 to 255</small></h3>
+    <div class="lvs" id="pmeters"></div>
+    <div class="prow" id="pmstat" style="margin-top:8px"></div>
+    <div class="sub" style="margin-top:12px">What an operator sees and changes at the radio itself. A program on the CAT port reads these values back, and what it sets shows here. Click the upper or lower half of a digit, or turn the wheel over it, to tune.</div>
+  </section>
+
   <section aria-label="Level history">
     <h2>Last 60 seconds</h2>
     <div class="legend">
@@ -180,6 +246,28 @@ th:first-child, td:first-child { text-align: left; padding-left: 0; }
       <span>RMS, dBFS</span>
     </div>
     <div id="chartbox"><canvas id="chart" role="img" aria-label="Transmit and receive level over the last 60 seconds"></canvas><div id="tip"></div></div>
+  </section>
+
+  <section aria-label="Audio waterfall" id="scopesec" hidden>
+    <details id="scopebox">
+      <summary>Audio waterfall: <span id="scopenow">closed</span></summary>
+      <div class="sub" style="margin-top:8px">The spectrum of the audio each way, up to 3 kHz, the newest at the top. The board works it out, and sends it, only while this is open.</div>
+      <div class="lanes">
+        <div class="lane">
+          <div class="lanehead"><b>RX</b><span class="sub">audio the host records</span><span class="key"><span class="num klo"></span><i id="srxkey"></i><span class="num khi"></span></span></div>
+          <div class="lanebox"><canvas id="srx" role="img" aria-label="Waterfall of the audio the host records: frequency across, time downwards, level as colour"></canvas><div class="ltip" id="srxtip"></div></div>
+        </div>
+        <div class="lane">
+          <div class="lanehead"><b>TX</b><span class="sub">audio the host plays</span><span class="key"><span class="num klo"></span><i id="stxkey"></i><span class="num khi"></span></span></div>
+          <div class="lanebox"><canvas id="stx" role="img" aria-label="Waterfall of the audio the host plays: frequency across, time downwards, level as colour"></canvas><div class="ltip" id="stxtip"></div></div>
+        </div>
+      </div>
+      <div class="legend" style="margin-top:8px">
+        <span><i class="band" style="background:var(--red)"></i>Transmitting</span>
+        <span><i class="band" style="background:var(--line)"></i>No audio that way</span>
+        <span id="scopebin"></span>
+      </div>
+    </details>
   </section>
 
   <section aria-label="Settings">
@@ -421,7 +509,7 @@ function update(t) {
   else if (t.link && t.link.state === "receiving") { cls = "play"; text = "Hearing the other board"; }
   else if (p === "waiting") { cls = "wait"; text = "Waiting to replay"; }
   pill.className = "pill " + cls; pill.textContent = text;
-  const src = ["cat", "line", "vox"].filter(k => t.ptt[k]).map(k => ({ cat: "CAT", line: "control line", vox: "VOX" })[k]);
+  const src = ["cat", "line", "vox", "panel"].filter(k => t.ptt[k]).map(k => ({ cat: "CAT", line: "control line", vox: "VOX", panel: "the front panel" })[k]);
   $("pttsrc").textContent = src.length ? "keyed by " + src.join(" and ") : "";
 
   const f = $("freq"); f.textContent = fmtFreq(t.cat.freq);
@@ -479,6 +567,8 @@ function update(t) {
   while (hist.length && hist[0].t < t.t - SPAN) hist.shift();
   draw();
 
+  showLamp(t);
+  if (t.rgen !== rgen) { rgen = t.rgen; loadRadio(); }  // the radio's own state: changed over CAT, here, or by another browser
   if (t.gen !== gen) { gen = t.gen; loadSettings(); }   // changed here, over CAT, or by another browser
   if (info && t.hamlib && t.hamlib !== info.hamlib) loadInfo();   // so was the radio imitated
 }
@@ -540,6 +630,297 @@ function draw() {
 cv.addEventListener("pointermove", e => { hover = e.clientX - cv.getBoundingClientRect().left; draw(); });
 cv.addEventListener("pointerleave", () => { hover = null; draw(); });
 window.addEventListener("resize", draw);
+
+/* ---- the front panel: the radio imitated, as an operator at it has it ---- */
+let radio = null, rgen = null, panelKey = null, panelBusy = false;
+const pending = {}, pshow = [], digits = [];   // changes waiting to go; what shows a reading; the tuning digits
+
+function pmsg(text, bad) { const m = $("pmsg"); m.className = "msg" + (bad ? " bad" : ""); m.textContent = text || ""; }
+/* One request at a time; what is changed meanwhile goes in the next, the
+   latest value of each control only, so a turned wheel does not queue up. */
+async function panelFlush() {
+  if (panelBusy) return;
+  panelBusy = true;
+  while (Object.keys(pending).length) {
+    const body = Object.assign({}, pending);
+    for (const k in body) delete pending[k];
+    try { const r = await api("POST", "/api/radio", body); rgen = r.gen; pmsg(""); showRadio(r); }
+    catch (e) { pmsg(e.message, true); await loadRadio(true); }
+  }
+  panelBusy = false;
+}
+function panel(change) { Object.assign(pending, change); panelFlush(); }
+async function loadRadio(force) {
+  try { showRadio(await api("GET", "/api/radio"), force); } catch (e) { /* a board without a panel keeps the section hidden */ }
+}
+const selVfo = () => (radio.vfo === "A" ? radio.a : radio.b);
+
+function ptog(label, get, put, cls) {
+  const b = el("button", "tog" + (cls ? " " + cls : ""), label); b.type = "button";
+  b.setAttribute("aria-pressed", "false");
+  b.addEventListener("click", () => put(b.getAttribute("aria-pressed") !== "true"));
+  if (get) pshow.push(r => b.setAttribute("aria-pressed", get(r) ? "true" : "false"));
+  return b;
+}
+function pseg(label, choices, get, put) {
+  const g = el("span", "bseg"); g.setAttribute("role", "group"); g.setAttribute("aria-label", label);
+  for (const [value, text] of choices) g.appendChild(ptog(text, r => get(r) === value, () => put(value)));
+  return g;
+}
+function pfield(label, ...nodes) { const w = el("label", "pf"); w.append(el("span", null, label), ...nodes); return w; }
+function pslider(box, name, id, max, get) {
+  const row = el("label", "lv"), inp = el("input"), val = el("span", "num");
+  inp.type = "range"; inp.min = 0; inp.max = max; inp.step = 1; inp.title = "CI-V " + id.replace(".", " ");
+  inp.addEventListener("input", () => { val.textContent = inp.value; panel({ [id]: Number(inp.value) }); });
+  pshow.push((r, force) => { const v = get(r); if (v == null) return; if (force || document.activeElement !== inp) inp.value = v; val.textContent = inp.value; });
+  row.append(el("span", null, name), inp, val); box.appendChild(row);
+}
+const byId = (list, id) => { const x = list.find(i => i.id === id); return x ? x.value : null; };
+
+function buildPanel(r) {
+  for (const id of ["pvfo", "pmode", "pfuncs", "plevels", "pmeters", "pmstat", "pdig"]) $(id).textContent = "";
+  pshow.length = 0; digits.length = 0;
+
+  /* the tuning digits: as many as the radio's highest frequency has */
+  const n = String(r.rx.reduce((m, x) => Math.max(m, x[1]), 0)).length, box = $("pdig");
+  for (let i = 0; i < n; i++) {
+    const place = n - 1 - i, b = el("button", "dg num"); b.type = "button";
+    b.setAttribute("aria-label", "Tune in steps of " + fmtFreq(10 ** place) + ": arrow up and down");
+    const tune = dir => {
+      const f = selVfo().freq + dir * 10 ** place;
+      if (f < 0) return;
+      selVfo().freq = f; showFace(); panel({ freq: f });
+    };
+    b.addEventListener("click", e => { const q = b.getBoundingClientRect(); tune(e.clientY < q.top + q.height / 2 ? 1 : -1); });
+    b.addEventListener("wheel", e => { e.preventDefault(); tune(e.deltaY < 0 ? 1 : -1); }, { passive: false });
+    b.addEventListener("keydown", e => {
+      const k = { ArrowUp: 1, ArrowDown: -1 }[e.key], go = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+      if (k) { e.preventDefault(); tune(k); }
+      if (go && digits[i + go]) { e.preventDefault(); digits[i + go].focus(); }
+    });
+    box.appendChild(b); digits.push(b);
+    if (place && place % 3 === 0) box.appendChild(el("span", "dot", "."));
+  }
+  box.appendChild(el("span", "unit", "MHz"));
+
+  const vfo = $("pvfo");
+  vfo.appendChild(pseg("Selected VFO", [["A", "VFO A"], ["B", "VFO B"]], x => x.vfo, v => panel({ vfo: v })));
+  if (r.can.equal) vfo.appendChild(ptog("A = B", null, () => panel({ op: "equal" })));
+  vfo.appendChild(ptog("A \u21c4 B", null, () => panel({ op: "swap" })));
+  vfo.appendChild(ptog("Split", x => x.split, v => panel({ split: v })));
+  if (r.duplex != null) vfo.appendChild(pseg("Repeater shift", [["simplex", "Simplex"], ["dup-", "DUP\u2212"], ["dup+", "DUP+"]], x => x.duplex, v => panel({ duplex: v })));
+  const go = el("input"); go.type = "number"; go.step = "0.001"; go.min = 0; go.inputMode = "decimal"; go.style.width = "118px";
+  go.addEventListener("change", () => { const v = Number(go.value); if (go.value.trim() !== "" && Number.isFinite(v)) panel({ freq: Math.round(v * 1000) }); go.value = ""; });
+  vfo.appendChild(pfield("Go to", go, el("span", null, "kHz")));
+  const key = ptog("PTT", null, v => panel({ ptt: v }), "key"); key.id = "pkey";
+  key.title = "The key on the radio itself: CAT sees the radio transmitting and cannot unkey it";
+  vfo.appendChild(key);
+
+  const mode = $("pmode"), msel = el("select");
+  for (const m of r.modes) msel.appendChild(el("option", null, m));
+  msel.addEventListener("change", () => panel({ mode: msel.value }));
+  pshow.push((x, force) => { if (force || document.activeElement !== msel) msel.value = selVfo().mode; });
+  mode.appendChild(pfield("Mode", msel));
+  if (r.can.data) mode.appendChild(ptog("Data", () => selVfo().data, v => panel({ data: v })));
+  const fils = []; for (let f = 1; f <= r.filters; f++) fils.push([f, "FIL" + f]);
+  mode.appendChild(pseg("Filter", fils, () => selVfo().filter, v => panel({ filter: v })));
+  if (r.rit) {
+    const hz = el("input"); hz.type = "number"; hz.min = -9999; hz.max = 9999; hz.step = 1; hz.style.width = "84px";
+    hz.addEventListener("change", () => { const v = Number(hz.value); if (hz.value.trim() !== "" && Number.isFinite(v)) panel({ rit_hz: Math.round(v) }); else loadRadio(true); });
+    pshow.push((x, force) => { if (x.rit && (force || document.activeElement !== hz)) hz.value = x.rit.hz; });
+    mode.append(ptog("RIT", x => x.rit && x.rit.on, v => panel({ rit: v })), pfield("", hz, el("span", null, "Hz")));
+  }
+  if (r.tuner != null) mode.appendChild(ptog("Tuner", x => x.tuner, v => panel({ tuner: v })));
+  if (r.att && r.att.set) mode.appendChild(ptog("Attenuator", x => x.att && x.att.on, v => panel({ att: v })));
+
+  const funcs = $("pfuncs");
+  for (const f of r.funcs) {
+    if (f.choices) {
+      const sel = el("select");
+      const fill = v => {
+        sel.textContent = "";
+        f.choices.forEach((c, i) => { if (c !== "") { const o = el("option", null, c); o.value = i; sel.appendChild(o); } });
+        if (!f.choices[v]) { const o = el("option", null, v + ", set over CAT"); o.value = v; sel.appendChild(o); }
+        sel.value = v;
+      };
+      sel.title = "CI-V " + f.id.replace(".", " ");
+      sel.addEventListener("change", () => panel({ [f.id]: Number(sel.value) }));
+      pshow.push((x, force) => { const v = byId(x.funcs, f.id); if (v != null && (force || document.activeElement !== sel)) fill(v); });
+      funcs.appendChild(pfield(f.name, sel));
+    } else {
+      const b = ptog(f.name, null, v => panel({ [f.id]: v ? 1 : 0 }));
+      b.title = "CI-V " + f.id.replace(".", " ");
+      /* a value past on, which only CAT can set, shows as its number */
+      pshow.push(x => { const v = byId(x.funcs, f.id); b.setAttribute("aria-pressed", v ? "true" : "false"); b.textContent = f.name + (v > 1 ? " (" + v + ")" : ""); });
+      funcs.appendChild(b);
+    }
+  }
+  for (const l of r.levels) pslider($("plevels"), l.name, l.id, 255, x => byId(x.levels, l.id));
+  for (const m of r.meters) {
+    if (m.max === 1) {
+      const b = ptog(m.name, x => byId(x.meters, m.id), v => panel({ [m.id]: v ? 1 : 0 }));
+      b.title = "CI-V " + m.id.replace(".", " ");
+      $("pmstat").appendChild(b);
+    } else pslider($("pmeters"), m.name, m.id, m.max, x => byId(x.meters, m.id));
+  }
+}
+
+function showFace() {
+  const r = radio, sel = selVfo(), oth = r.vfo === "A" ? r.b : r.a, other = r.vfo === "A" ? "B" : "A";
+  const text = v => v.mode + (v.data ? "-D" : "") + ", FIL" + v.filter;
+  $("ptag").textContent = "VFO " + r.vfo;
+  const s = String(sel.freq).padStart(digits.length, "0").slice(-digits.length);
+  let lead = true;
+  digits.forEach((b, i) => { if (s[i] !== "0" || i >= digits.length - 4) lead = false; b.textContent = s[i]; b.classList.toggle("lead", lead); });
+  $("pother").textContent = "VFO " + other + "  " + fmtFreq(oth.freq) + "  " + text(oth) + (r.split ? "  \u2014 transmits here" : "");
+
+  const txf = r.split ? oth.freq : sel.freq, flags = $("pflags");
+  flags.textContent = "";
+  const flag = (t, hot) => flags.appendChild(el("span", hot ? "hot" : null, t));
+  flag(text(sel));
+  if (r.split) flag("SPLIT", true);
+  if (r.duplex && r.duplex !== "simplex") flag(r.duplex.toUpperCase(), true);
+  if (r.rit && r.rit.on) flag("RIT " + (r.rit.hz > 0 ? "+" : "") + r.rit.hz + " Hz", true);
+  if (r.tuner) flag("TUNER");
+  if (r.att && r.att.on) flag("ATT");
+  if (r.power === false) flag("POWER OFF", true);
+  if (!r.tx.some(x => txf >= x[0] && txf <= x[1])) flag("outside the transmit bands");
+
+  const sm = r.meters.find(m => m.id === "15.02");
+  $("psrow").style.display = sm ? "" : "none";
+  if (sm) { $("psname").textContent = sm.name; $("psbar").style.width = sm.value / 255 * 100 + "%"; $("psval").textContent = sm.value; }
+
+  const cat = [];
+  if (r.att && !r.att.set) cat.push("attenuator byte " + r.att.byte);
+  if (r.step != null) cat.push("tuning step " + r.step);
+  if (r.width != null) cat.push("filter width " + r.width);
+  if (r.power != null) cat.push("power " + (r.power ? "on" : "off"));
+  $("pcat").textContent = cat.length ? "Shown as CAT left them, and set only over CAT: " + cat.join(", ") + "." : "";
+}
+function showRadio(r, force) {
+  radio = r;
+  const key = [r.hamlib, r.levels.length, r.funcs.length, r.meters.length, r.modes.length].join(":");
+  if (key !== panelKey) { panelKey = key; buildPanel(r); force = true; }
+  $("panelsec").hidden = false;
+  for (const f of pshow) f(r, force);
+  showFace();
+  if (last) showLamp(last);
+}
+function showLamp(t) {
+  const lamp = $("plamp"), key = $("pkey");
+  lamp.className = "lamp" + (t.ptt.on ? " tx" : ""); lamp.textContent = t.ptt.on ? "TX" : "RX";
+  if (key) key.setAttribute("aria-pressed", t.ptt.panel ? "true" : "false");
+}
+
+/* ---- the waterfall: rows of spectrum on a WebSocket of their own, only while it is open ---- */
+const SROWS = 300, SDB_LO = -90, SDB_HI = -10;   // rows kept (30 s), and the levels at the two ends of the colours
+const lanes = ["srx", "stx"].map((id, i) => ({ cv: $(id), tip: $(id + "tip"), key: $(id + "key"), hue: i ? "--tx" : "--rx",
+  rows: [], buf: document.createElement("canvas"), img: null, lut: null, hover: null }));
+const keyed = [];             // per row, newest first: was the radio transmitting
+let scopeWs = null, scopeAt = 0;
+
+/* One hue for each lane, from the page's surface (quiet) through the hue to
+   its deep end (loud): level reads as lightness, in either theme. */
+function scopeLut(l) {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+  const lo = rgb(css("--surface")), mid = rgb(css(l.hue)), hi = mix(mid, dark ? [255, 255, 255] : [0, 0, 0], dark ? .85 : .65);
+  const pack = c => (255 << 24 | c[2] << 16 | c[1] << 8 | c[0]) >>> 0;
+  l.lut = new Uint32Array(257);
+  for (let v = 0; v < 256; v++) {
+    const t = Math.max(0, Math.min(1, (-v / 2 - SDB_LO) / (SDB_HI - SDB_LO)));
+    l.lut[v] = pack(t < .5 ? mix(lo, mid, t * 2) : mix(mid, hi, t * 2 - 1));
+  }
+  l.lut[256] = pack(rgb(css("--line")));        // a row with no audio that way
+  const hex = c => "rgb(" + c.join(",") + ")";
+  l.key.style.background = "linear-gradient(90deg," + hex(lo) + "," + hex(mid) + "," + hex(hi) + ")";
+}
+function drawLane(l) {
+  const cv = l.cv, w = cv.clientWidth, h = cv.clientHeight, r = window.devicePixelRatio || 1, sc = info.scope;
+  if (!w || !sc) return;
+  if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); }
+  if (!l.lut) scopeLut(l);
+  if (!l.img || l.img.width !== sc.bins) { l.buf.width = sc.bins; l.buf.height = SROWS; l.img = new ImageData(sc.bins, SROWS); }
+  const px = new Uint32Array(l.img.data.buffer);
+  for (let i = 0; i < SROWS; i++) {
+    const row = l.rows[i], at = i * sc.bins;
+    if (row) for (let k = 0; k < sc.bins; k++) px[at + k] = l.lut[row[k]];
+    else px.fill(l.lut[row === null ? 256 : 255], at, at + sc.bins);
+  }
+  l.buf.getContext("2d").putImageData(l.img, 0, 0);
+
+  const c = cv.getContext("2d"), L = 40, R = 8, T = 4, B = 22, pw = w - L - R, ph = h - T - B;
+  const hz = sc.fs / sc.n, span = sc.bins * hz, rowH = ph / SROWS;
+  c.setTransform(r, 0, 0, r, 0, 0);
+  c.clearRect(0, 0, w, h);
+  c.imageSmoothingEnabled = false;
+  c.drawImage(l.buf, L, T, pw, ph);
+  c.strokeStyle = css("--axis"); c.lineWidth = 1; c.strokeRect(L - .5, T - .5, pw + 1, ph + 1);
+  c.font = "12px system-ui, sans-serif"; c.fillStyle = css("--muted"); c.textBaseline = "middle";
+  c.textAlign = "center";
+  for (let f = 0; f <= span; f += 1000) c.fillText(f ? f / 1000 + " kHz" : "0", Math.max(L + 4, Math.min(w - R - 16, L + pw * f / span)), h - 9);
+  c.textAlign = "right";
+  for (let s = 0; s * sc.rows <= SROWS; s += 10) c.fillText(s ? s + " s" : "now", L - 9, Math.max(T + 6, Math.min(T + ph - 6, T + s * sc.rows * rowH)));
+  c.fillStyle = css("--red");
+  for (let i = 0; i < keyed.length; i++) if (keyed[i]) c.fillRect(L - 6, T + i * rowH, 3, rowH + .6);
+
+  const hv = l.hover;
+  if (!hv || hv.x < L || hv.x >= L + pw || hv.y < T || hv.y >= T + ph) { l.tip.style.display = "none"; return; }
+  const k = Math.floor((hv.x - L) / pw * sc.bins), i = Math.floor((hv.y - T) / rowH), row = l.rows[i];
+  c.strokeStyle = css("--ink"); c.globalAlpha = .55;
+  c.beginPath(); c.moveTo(Math.round(hv.x) + .5, T); c.lineTo(Math.round(hv.x) + .5, T + ph);
+  c.moveTo(L, Math.round(hv.y) + .5); c.lineTo(L + pw, Math.round(hv.y) + .5); c.stroke(); c.globalAlpha = 1;
+  l.tip.textContent = row === undefined ? "nothing yet" : (i / sc.rows).toFixed(1) + " s ago, " + Math.round(k * hz) + " Hz: " +
+    (row ? (row[k] >= 240 ? "silent" : (-row[k] / 2).toFixed(1) + " dBFS") : "no audio that way") + (keyed[i] ? ", transmitting" : "");
+  l.tip.style.display = "block";
+  l.tip.style.left = Math.max(0, Math.min(w - l.tip.offsetWidth, hv.x + 12)) + "px";
+  l.tip.style.top = Math.max(0, Math.min(h - l.tip.offsetHeight, hv.y + 12)) + "px";
+}
+function scopeRow(buf) {
+  const b = new Uint8Array(buf);
+  if (b.length < 4 || b[0] !== 1) return;                 // a layout this page does not know
+  const flags = b[1], bins = b[2];
+  let at = 4;
+  lanes.forEach((l, i) => {
+    const has = flags & (1 << i) && at + bins <= b.length;
+    l.rows.unshift(has ? b.subarray(at, at + bins) : null);
+    if (has) at += bins;
+    if (l.rows.length > SROWS) l.rows.length = SROWS;
+  });
+  keyed.unshift(!!(flags & 4));
+  if (keyed.length > SROWS) keyed.length = SROWS;
+  scopeAt = Date.now();
+  lanes.forEach(drawLane);
+}
+function scopeConnect() {
+  if (scopeWs || !$("scopebox").open) return;
+  scopeWs = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/scope");
+  scopeWs.binaryType = "arraybuffer";
+  scopeWs.onmessage = e => { if (e.data instanceof ArrayBuffer) scopeRow(e.data); };
+  scopeWs.onclose = () => { scopeWs = null; setTimeout(scopeConnect, 2000); };
+}
+$("scopebox").addEventListener("toggle", () => {
+  if ($("scopebox").open) { scopeConnect(); lanes.forEach(drawLane); }
+  else if (scopeWs) { scopeWs.onclose = null; scopeWs.close(); scopeWs = null; }
+});
+setInterval(() => {
+  const open = $("scopebox").open, live = open && Date.now() - scopeAt < 2000;
+  $("scopenow").textContent = !open ? "closed" : live ? "live" : "waiting for the board";
+}, 500);
+for (const l of lanes) {
+  l.cv.addEventListener("pointermove", e => { const q = l.cv.getBoundingClientRect(); l.hover = { x: e.clientX - q.left, y: e.clientY - q.top }; drawLane(l); });
+  l.cv.addEventListener("pointerleave", () => { l.hover = null; drawLane(l); });
+}
+window.addEventListener("resize", () => lanes.forEach(drawLane));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => lanes.forEach(l => { l.lut = null; drawLane(l); }));
+function showScope() {
+  const sc = info.scope;
+  $("scopesec").hidden = !sc;
+  document.querySelectorAll(".klo").forEach(e => { e.textContent = "\u2212" + -SDB_LO; });
+  document.querySelectorAll(".khi").forEach(e => { e.textContent = "\u2212" + -SDB_HI + " dBFS"; });
+  if (sc) $("scopebin").textContent = "Level in each " + (sc.fs / sc.n).toFixed(1) + " Hz, on the level meters' scale; " + sc.rows + " rows a second";
+}
 
 /* ---- the radio imitated ---- */
 function showInfo() {
@@ -669,6 +1050,7 @@ $("healthbox").addEventListener("toggle", () => { if ($("healthbox").open) loadH
     catch (e) { await new Promise(r => setTimeout(r, 2000)); }
   }
   showInfo();
+  showScope();
   buildSettings();
   await loadSettings();
   loadWifi();

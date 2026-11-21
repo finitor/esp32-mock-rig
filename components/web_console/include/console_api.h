@@ -51,7 +51,7 @@ typedef struct {
 } console_info_t;
 
 /* Who this is and what can be set: the radio imitated and the ones it could
- * be instead, and each setting's name, label, group, and either its choices
+ * be instead, the layout of the waterfall's rows ("scope"), and each setting's name, label, group, and either its choices
  * (with a label for each, where the word alone does not say enough) or its
  * unit, range and step. The page builds its form from this. */
 size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, size_t cap);
@@ -81,6 +81,48 @@ console_result_t console_rig_apply(mock_ctl_t *m, const char *json, char *err, s
  * not finished, when this returns CONSOLE_OK: the telemetry says when it is
  * done. CONSOLE_UNAVAILABLE with the reason if it cannot be begun now. */
 console_result_t console_clip_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
+
+/* ---- the front panel ----------------------------------------------------------
+ *
+ * The radio imitated, as an operator at its front panel has it: read what
+ * the controller set over CAT, and change things at the radio to see whether
+ * the controller notices. The panel is generic. It is built from the
+ * personality's own tables, so it shows whichever radio is imitated with no
+ * knowledge of its own.
+ *
+ *   {"rig":"Icom IC-705","hamlib":3085,"gen":2166136261,
+ *    "vfo":"A","split":false,
+ *    "a":{"freq":14074000,"mode":"USB","data":true,"filter":1},"b":{...},
+ *    "modes":["LSB","USB",...],"filters":3,"can":{"data":true,"equal":true},
+ *    "duplex":"simplex","rit":{"on":false,"hz":0},"tuner":false,
+ *    "att":{"on":false,"byte":"00","set":true},"step":"00","width":"34","power":true,
+ *    "rx":[[30000,199999999],...],"tx":[[1800000,2000000],...],
+ *    "levels":[{"id":"14.01","name":"AF gain","value":128},...],
+ *    "funcs":[{"id":"16.12","name":"AGC","value":2,"choices":["off","fast","mid","slow"]},...],
+ *    "meters":[{"id":"15.02","name":"S-meter","value":12,"max":255},...]}
+ *
+ * What the radio lacks is null (duplex, rit, tuner, att, step, width,
+ * power). An item's id is its CI-V command and sub-command. "gen" is
+ * civ_state_hash(), which the telemetry carries too ("rgen").
+ *
+ * A change is a flat object of any of: "freq" (Hz, the selected VFO), "vfo"
+ * ("A"/"B"), "op" ("equal": the selected VFO into the other; "swap"), "mode",
+ * "data", "filter", "split", "duplex" ("simplex"/"dup-"/"dup+"), "rit",
+ * "rit_hz", "tuner", "att", "ptt" (the key on the front panel), and items by
+ * id: {"14.01":200,"16.12":3,"15.02":120}.
+ *
+ * Everything CAT can set goes to the radio as the CI-V command itself
+ * (civ_local), so the panel and CAT cannot disagree about what is allowed.
+ * The meters, which CAT can only read, and the key are the panel's own. All
+ * of a change is applied, or none of it.
+ */
+
+/* c is the parser, or a copy of it taken with the parser's lock held. */
+size_t console_radio_json(const civ_t *c, char *buf, size_t cap);
+
+/* CONSOLE_UNAVAILABLE for what this radio does not have, CONSOLE_BAD_REQUEST
+ * for the rest. The caller keeps the CI-V parser from running meanwhile. */
+console_result_t console_radio_apply(mock_ctl_t *m, const char *json, char *err, size_t err_cap);
 
 /* {"error":"<message>"}, with the message escaped. */
 size_t console_error_json(const char *message, char *buf, size_t cap);
@@ -125,6 +167,76 @@ void console_meter_add(console_meter_t *m, const int16_t *samples, size_t n);
 /* seen is the reader's own memory of the meter, zero to start with. */
 void console_meter_read(console_meter_t *m, uint32_t *seen, console_level_t *out);
 
+/* ---- the waterfall ----------------------------------------------------------------
+ *
+ * The spectrum of the audio the host plays and of the audio it records, up
+ * to 3 kHz, a row at a time for the page to scroll. Two parts, kept apart
+ * because of who runs them:
+ *
+ *   console_scope_t   a ring of the newest samples. The audio task adds to
+ *                     it, and that is all the waterfall costs the audio: a
+ *                     copy. One for each direction.
+ *   console_scope_row a row for the page, made from the two rings by one
+ *                     other task: the transforms are done there, and only
+ *                     while some page is showing the waterfall.
+ *
+ * A row is bytes, not JSON, to keep it small beside the link's audio on the
+ * same radio:
+ *
+ *   byte 0   CONSOLE_SCOPE_FORMAT
+ *   byte 1   flags: CONSOLE_SCOPE_RX, _TX: that lane follows; _KEYED: the
+ *            radio is transmitting
+ *   byte 2   bins in a lane, DSP_SPEC_BINS
+ *   byte 3   0
+ *   then the receive lane and the transmit lane, whichever are there, a byte
+ *   for each bin: the level in half decibels below full scale (0 is 0 dBFS,
+ *   255 is -127.5 dBFS or less), on the level meters' scale.
+ *
+ * A lane is left out while the host is not streaming that way. Bin k is at
+ * k * fs / n hertz; /api/info gives fs, n, the bins and the rows a second.
+ */
+#define CONSOLE_SCOPE_RING 4096u /* a power of two, with room to spare over DSP_SPEC_INPUT */
+#define CONSOLE_SCOPE_FORMAT 0x01
+#define CONSOLE_SCOPE_ROWS_PER_S 10
+#define CONSOLE_SCOPE_ROW_MAX (4 + 2 * DSP_SPEC_BINS)
+
+enum {
+    CONSOLE_SCOPE_RX = 0x01,
+    CONSOLE_SCOPE_TX = 0x02,
+    CONSOLE_SCOPE_KEYED = 0x04,
+};
+
+typedef struct {
+    int16_t ring[CONSOLE_SCOPE_RING]; /* the audio task's */
+    _Atomic uint32_t written;         /* samples added so far */
+} console_scope_t;
+
+void console_scope_init(console_scope_t *s);
+
+/* The audio task. samples NULL counts as n samples of silence. */
+void console_scope_add(console_scope_t *s, const int16_t *samples, size_t n);
+
+/* The newest DSP_SPEC_INPUT samples into out, the newest last. seen is the
+ * reader's own memory of the ring, zero to start with. False, and out is not
+ * to be used, if nothing has been added since the last call (the host has
+ * stopped streaming that way) or there are not that many samples yet. */
+bool console_scope_take(console_scope_t *s, uint32_t *seen, int16_t *out);
+
+/* What making rows needs to keep: about 15 KB, so one of them, not on a stack. */
+typedef struct {
+    dsp_spec_t spec;
+    int16_t pcm[DSP_SPEC_INPUT];
+    float db[DSP_SPEC_BINS];
+    uint32_t rx_seen, tx_seen;
+} console_scope_work_t;
+
+void console_scope_work_init(console_scope_work_t *w);
+
+/* One row. rx is what the host records and tx what it plays; either may be
+ * NULL. Returns its length, or 0 if cap is below CONSOLE_SCOPE_ROW_MAX. */
+size_t console_scope_row(console_scope_work_t *w, console_scope_t *rx, console_scope_t *tx, bool keyed, uint8_t *out,
+                         size_t cap);
+
 /* ---- telemetry ------------------------------------------------------------------ */
 
 /* What the console shows that the engine does not know: the caller collects
@@ -138,6 +250,7 @@ typedef struct {
     uint8_t mode;        /* the CI-V mode number */
     bool data;
     bool split;
+    uint32_t radio_gen;  /* civ_state_hash(): changes when the front panel should be read again */
     uint32_t frames_ok, frames_ng, frames_dropped;
 
     console_level_t tx; /* audio the host plays */
@@ -155,7 +268,8 @@ typedef struct {
 } console_sample_t;
 
 /* One snapshot: PTT and its sources, the receive channel's status, the
- * parrot, the link, and everything in the sample. "gen" changes when the settings do,
+ * parrot, the link, and everything in the sample. "rgen" changes when the
+ * radio's own state does (see the front panel). "gen" changes when the settings do,
  * however they were changed, so the page knows to read them again, and
  * "hamlib" is the radio imitated now, for the same reason. "kept" says
  * whether the power-up settings are ones kept in flash, and "clips" lists

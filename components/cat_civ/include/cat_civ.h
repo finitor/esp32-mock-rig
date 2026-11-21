@@ -42,10 +42,20 @@ typedef struct {
     uint64_t lo_hz, hi_hz;
 } civ_range_t;
 
-/* A 0x14 level, 0x15 meter or 0x16 function the radio has. */
+/* A 0x14 level, 0x15 meter or 0x16 function the radio has.
+ *
+ * name and choices are for the front panel (the web console's picture of the
+ * radio) and change nothing over CAT. name is what the panel calls the item.
+ * choices names a function's values from 00 up, with '|' between them:
+ * "off|fast|mid|slow". An empty name is a value the panel does not offer.
+ * NULL is a plain switch, off and on. Only values with a source behind them
+ * are named: CAT stores any byte, and the panel shows one it has no name for
+ * as a number. */
 typedef struct {
     uint8_t sub;
     uint16_t initial;
+    const char *name;
+    const char *choices;
 } civ_item_t;
 
 /* A 1A 05 menu setting with a one-byte value. item is the two item-number
@@ -106,6 +116,10 @@ typedef struct civ_rig {
 
     uint32_t caps;
 
+    /* The byte 11 carries for the attenuator switched in, for the front
+     * panel's switch. 0: the panel shows the byte and does not set it. */
+    uint8_t att_on;
+
     /* Power-up state. */
     uint64_t init_freq[2];
     uint8_t init_mode;
@@ -148,6 +162,11 @@ struct civ {
     uint8_t preamble; /* consecutive FE seen */
     bool in_frame;
     bool overflow;
+
+    /* a command run by civ_local(): its reply is noted here and not sent */
+    bool local;
+    bool local_replied;
+    bool local_ok;
 
     /* radio state */
     civ_vfo_t vfo[2];
@@ -207,6 +226,31 @@ void civ_set_ptt(civ_t *c, bool on);
 
 /* Drive a 15 xx meter (for example the S-meter from the audio engine). */
 bool civ_set_meter(civ_t *c, uint8_t sub, uint16_t value);
+
+/* Whether a 15 xx item is a status of one byte, 00 or 01 (squelch open, tone
+ * squelch open, overflow), and not a meter of 0000 to 0255. */
+bool civ_meter_is_status(uint8_t sub);
+
+/* ---- the front panel ---------------------------------------------------
+ *
+ * What an operator does at the radio itself. A change made there goes
+ * through the same code as a command from CAT, so both keep the same rules
+ * and a controller reads back exactly what the panel set.
+ */
+
+/* Run one command as if a controller had sent it, with nothing going out on
+ * the serial port: cmd is the command byte and data what follows it, as in
+ * civ_frame_t. True if the radio took it (it would have answered FB, or with
+ * data); false if it would have answered FA, or not at all. The frame
+ * counters do not count it. Like civ_feed(), not to be run at the same time
+ * as anything else that uses c. */
+bool civ_local(civ_t *c, uint8_t cmd, const uint8_t *data, size_t len);
+
+/* A number that changes when the radio's state does (frequencies, modes,
+ * levels, functions, meters and the rest of what CAT can read back, and
+ * which radio it is), and stays the same while it does not, however many
+ * commands arrive. For a display to know when to read the state again. */
+uint32_t civ_state_hash(const civ_t *c);
 
 /* Whether the radio would transmit on this frequency. */
 bool civ_in_tx_range(const civ_t *c, uint64_t hz);

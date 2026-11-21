@@ -246,7 +246,7 @@ static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
     ae_ptt_t ptt;
     ae_get_ptt(&s_engine, &ptt);
     cat_lock(NULL);
-    civ_set_ptt(&s_civ, ptt.line || ptt.vox);
+    civ_set_ptt(&s_civ, ptt.line || ptt.vox || ptt.panel);
     civ_feed(&s_civ, bytes, len);
     link_follow_radio(); /* the frequency may have changed */
     cat_unlock(NULL);
@@ -286,6 +286,10 @@ static bool s_loop_primed;
 /* Levels for the web console: what the host plays and what it records. */
 static console_meter_t s_tx_meter;
 static console_meter_t s_rx_meter;
+/* And the newest of each, for its waterfall. Adding to these is a copy: the
+ * spectrum is worked out in the console's task, when a page asks for it. */
+static console_scope_t s_tx_scope;
+static console_scope_t s_rx_scope;
 #endif
 
 static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
@@ -294,6 +298,7 @@ static void audio_from_host(void *ctx, const int16_t *samples, size_t n)
     dsp_fifo_write(&s_loop, samples, n);
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_meter_add(&s_tx_meter, samples, n);
+    console_scope_add(&s_tx_scope, samples, n);
 #endif
 }
 
@@ -319,6 +324,7 @@ static void audio_to_host(void *ctx, int16_t *samples, size_t n)
     ae_process(&s_engine, have_audio ? samples : NULL, samples, n);
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_meter_add(&s_rx_meter, samples, n);
+    console_scope_add(&s_rx_scope, samples, n);
 #endif
     /* Everything the receive side costs: the engine, and in the link route
      * the packets sent and taken. */
@@ -478,6 +484,7 @@ static void status_task(void *arg)
 
         if (ptt.line != was.line) ESP_LOGI(TAG, "PTT %s (control line)", ptt.line ? "on" : "off");
         if (ptt.vox != was.vox) ESP_LOGI(TAG, "PTT %s (VOX)", ptt.vox ? "on" : "off");
+        if (ptt.panel != was.panel) ESP_LOGI(TAG, "PTT %s (front panel)", ptt.panel ? "on" : "off");
         was = ptt;
 
         bool hearing = false;
@@ -509,7 +516,7 @@ static void status_task(void *arg)
 
         const ui_led_input_t in = {
             .host = usb_composite_mounted(),
-            .transmitting = ptt.cat || ptt.line || ptt.vox || parrot.state == AE_PARROT_RECORDING,
+            .transmitting = ae_ptt_keyed(&ptt) || parrot.state == AE_PARROT_RECORDING,
             .replay_waiting = parrot.state == AE_PARROT_WAITING,
             .replaying = parrot.state == AE_PARROT_PLAYING || hearing, /* green: audio is coming back */
         };
@@ -563,6 +570,7 @@ static void console_sample(void *ctx, console_sample_t *out)
     out->mode = vfo->mode;
     out->data = vfo->data;
     out->split = s_civ.split;
+    out->radio_gen = civ_state_hash(&s_civ);
     out->frames_ok = s_civ.frames_ok;
     out->frames_ng = s_civ.frames_ng;
     out->frames_dropped = s_civ.frames_dropped;
@@ -586,6 +594,13 @@ static void console_sample(void *ctx, console_sample_t *out)
 #endif
 }
 
+/* A change at the console's front panel, with the CAT lock held. */
+static void console_radio_changed(void *ctx)
+{
+    (void)ctx;
+    link_follow_radio(); /* the frequency may have changed */
+}
+
 /* Only the console's task comes here, so one reader's memory will do. */
 static void console_health(void *ctx, console_health_t *out, bool scan_tasks)
 {
@@ -601,6 +616,9 @@ static void console_start(void)
         .lock = cat_lock,
         .unlock = cat_unlock,
         .sample = console_sample,
+        .radio_changed = console_radio_changed,
+        .rx_scope = &s_rx_scope,
+        .tx_scope = &s_tx_scope,
         .health = console_health,
     };
     esp_err_t err = web_console_start(&cfg);
@@ -633,6 +651,8 @@ void app_main(void)
 #ifdef CONFIG_MOCK_WEB_CONSOLE
     console_meter_init(&s_tx_meter);
     console_meter_init(&s_rx_meter);
+    console_scope_init(&s_tx_scope);
+    console_scope_init(&s_rx_scope);
 #endif
     civ_init(&s_civ, rig, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);

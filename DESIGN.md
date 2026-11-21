@@ -6,7 +6,7 @@ Operator: Tim, W0SIG (General).
 
 ## Status
 
-Last updated: Nov 20, 2026.
+Last updated: Nov 21, 2026.
 
 - The CI-V core (`cat_civ`) and the IC-705 personality (`rig_ic705`) exist as portable C and pass real Hamlib on the host: `rigctl -m 3085` (Hamlib 4.7.1) over a pseudo-terminal, 16 command groups, no command rejected. The commands the Android FT8 apps FT8CN and FT8AF send an IC-705 were read from their source and all get correct replies on the host; neither app has been run.
 - The audio DSP (`audio_dsp`) exists as portable C with host unit tests: resampler, channel noise and attenuation, level meter, VOX detector, and a FIFO with clock-drift steering.
@@ -15,12 +15,14 @@ Last updated: Nov 20, 2026.
 - PTT from a serial control line and from VOX (step 13) exists in `audio_engine` beside CAT keying, with host unit tests; both are off at power-up. A read of `1C 00` reports transmit whichever source keyed. The LED policy (`ui`) exists with host unit tests, and the firmware drives the board's RGB LED from it. Not run on a board.
 - The mock's own controls (`mock_ctl`, step 12) exist as portable C with host unit tests: CI-V frames to the private address `F0` read and change the route, the channel settings, the parrot's settings and the PTT sources at run time, replay the parrot's recording, and read the engine's status. `host/tools/mockctl.py` sends them; it is checked against the parser over a pseudo-terminal, not against a board.
 - The web console (Milestone 3, steps 16 to 19) is written. Its settings and telemetry (`console_api`) are portable C with host unit tests, sharing `mock_ctl`'s table of settings. The page has been tried in a desktop browser against a simulator that runs the same C code on the host. The Wi-Fi bring-up and the HTTP and WebSocket server have only been compiled: they have never run.
-- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 1005 KB image with the web console and the ESP-NOW link; 319 KB with the console and the link both off, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
+- The firmware builds for the ESP32-S3 (ESP-IDF v5.5.6, 1037 KB image with the web console and the ESP-NOW link; 319 KB with the console and the link both off, which leaves Wi-Fi out) with the whole of Milestone 1 written: the USB composite device (sound card plus CAT serial port), the serial port wired to the CAT parser, and audio loopback. Its descriptors pass a structural check against the S3's limits and Android's requirements. None of it has run on hardware: whether hosts enumerate it and stream audio is unknown until a board is flashed.
 - Nothing has run on an ESP32 yet, and no modem application has been tried against any of it.
 - The G90 personality (Milestone 5, steps 27 and 28) is written. `rig_g90` is built from the Radioddity CI-V table, Hamlib's Xiegu backend and one log of a real G90, not from a radio: the G90 and DE-19 are not accessible during this project. It passes real Hamlib on the host: `rigctl -m 3088` (Hamlib 4.7.1 only) over a pseudo-terminal, 32 command groups, no command rejected. The radio imitated is chosen at run time, over CI-V (`60`), with `mockctl.py` or in the web console, and the firmware keeps the choice in flash. Reconciling it with the real radio (step 29) waits for the station.
 - Flash persistence (step 14) is written. Settings can be kept as the power-up settings, and the parrot's recording can be kept as one of five clips in a flash partition of its own and played back later. The packing of settings (`mock_ctl`) and the clip store (`clips`) are portable C with host unit tests, the latter on a pretend flash chip that can lose power mid-save. The firmware side (NVS, the partition, the task that writes clips) has only been compiled: no byte has been written to real flash.
 - Path simulation (Milestone 6, steps 30 and 31) is written. The receive channel can fade the signal as an HF path does, by the eight conditions the Data2G project's simulator names (its `mpg`, `mpp`, `mpd` and `mps`, and four ITU-R F.1487 ones) or by custom numbers, and can shift it in frequency. Two linked boards share one channel: a protocol on the link keeps their path settings, fading seed and clock in step, so the path fades alike both ways. All of it is portable C with host unit tests, which check the fading's statistics and that two boards with clocks 100 ppm apart fade together. None of it has run on a board, and its cost in processor time there is an estimate.
 - Board health readings are written, for the first bring-up: free memory, how busy each processor core is, the time the audio work takes per block, how often Wi-Fi was lost, why the board last restarted and, on request, every task's stack headroom and share of a core. They go to the log on the COM jack every 30 s and to a section of the web console. The layout of a reading and the timing of the audio work are portable C with host unit tests; the collecting (`main/health.c`) has only been compiled, so no real number has been read yet. The simulator's health numbers are made up and say so.
+- The front panel (Milestone 7, steps 34 and 35) is written: a section of the web console that shows the radio imitated as an operator at it would have it (both VFOs, mode, split, RIT, every level, function and meter the personality lists) and lets them be changed there, with a PTT key of its own. It is generic: built from the personality's tables, with no radio drawn. `console_api` and `cat_civ` carry it as portable C with host unit tests. The simulator now gives each board a CAT serial port, so the page has been watched in a browser while real Hamlib (`rigctl -m 3085`) drove the radio, and while Data2G's rigctld facade (its `feature/rigctld` branch, model 3085 upstream, `rigctl -m 2` as the client) did. The firmware's side is compiled only.
+- The waterfall (step 37) is written: a section of the web console that shows the spectrum of the audio each way, up to 3 kHz, scrolling. The spectrum (`audio_dsp`) and the row format (`console_api`) are portable C with host unit tests, and it has been watched in a desktop browser against the simulator, with a tone, noise and the receive mute all showing as they should. On a board the audio task would only copy samples; the transforms run in the console's task while a page has the waterfall open. That side is compiled only, and the time a row takes on the S3 is an estimate.
 - Next step: flash a board and work through Milestone 1, steps 6 and 9 (enumeration on each host, then the `rigctl` and audio acceptance tests). For that first bring-up the web console can be switched off in menuconfig, so that Wi-Fi is not a suspect. Milestone 2 has steps 10 to 13 written (parrot, channel, mock-only controls, VOX and line PTT with the LED states); the optional flash storage (step 14) and the FT8 acceptance test (step 15) remain. Milestone 3 has its acceptance test (step 20) left, which needs a board, and Milestone 4 its own (step 26), which needs two. Everything that can be written without hardware now is.
 - The two-board link (Milestone 4, steps 21 to 25) is written. Its core (`link`: packets, jitter buffer, loss and clock-drift handling, peer discovery, frequency matching, framing for a wire) is portable C with host unit tests that join two boards by a simulated path with loss, jitter, reordering and clocks that differ. It is a fourth receive route in `audio_engine`, with two settings on both control paths and its statistics in the web console. Two simulated boards have been watched hearing each other in a browser. The ESP-NOW and UART transports have only been compiled: no packet has crossed between two boards.
 - Three ESP32-S3 boards are ordered and will not arrive before Sunday, Nov 22, 2026; nothing has been tested on hardware. Until then, target work is compile-only.
@@ -92,15 +94,15 @@ The host sees one USB device; inside, CAT state keys the audio engine, and the r
 Firmware modules:
 
 - `usb_composite`: descriptors and TinyUSB callbacks for UAC2 + CDC-ACM, including line-state changes
-- `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels)
+- `cat_civ`: CI-V framing, address handling, command dispatch and the radio state struct (VFO A/B, mode, split, PTT, levels). It also runs a command for the front panel as if CAT had sent it (`civ_local`), and gives a number that changes when the radio's state does (`civ_state_hash`)
 - `rig_ic705` and `rig_g90`: the two personalities, behind one interface; the parser becomes one or the other at run time
 - `coord`: two linked boards agreeing on one channel: the path's settings, and the seed and clock their fading runs by
-- `audio_dsp`: the signal processing itself, with no hardware dependencies: fading and frequency offset, 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering
-- `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. In the link route the receiver hears a second board and the transmit audio goes to it; the engine only hands the audio over, through two functions the firmware supplies. It also combines the PTT sources: CAT, a selected control line, and the VOX it runs on the transmit audio
+- `audio_dsp`: the signal processing itself, with no hardware dependencies: fading and frequency offset, 48↔12 kHz resampling, noise and attenuation, level meter, VOX detector, FIFO with drift steering, and the spectrum the console's waterfall shows
+- `audio_engine`: transmit audio in, receive audio out, using `audio_dsp`. The route picks what the receiver hears (the transmit audio, nothing, or the parrot's replay from PSRAM); the channel then applies mute while keyed, turnaround delay, noise at a set SNR and attenuation. In the link route the receiver hears a second board and the transmit audio goes to it; the engine only hands the audio over, through two functions the firmware supplies. It also combines the PTT sources: CAT, a selected control line, the VOX it runs on the transmit audio, and the key on the front panel
 - `mock_ctl`: the mock's own controls, CI-V frames to address `F0`: route, channel settings, parrot settings, the link's settings, PTT sources and status now; personality later. It also offers the same settings by number to other control paths, which is how the web console shares its ranges
 - `link`: the path between two boards: 12 kHz audio in 10 ms packets, a jitter buffer with loss and clock-drift handling, peer discovery and frequency matching, all portable; and one of two transports that carry the packets, ESP-NOW or a UART, chosen at build time. See [Two-board link](#two-board-link)
 - `wifi_net`: Wi-Fi bring-up, shared by the web console and the ESP-NOW transport: joining or hosting a network, the board's name
-- `web_console`: the settings and telemetry as JSON (`console_api`, portable), and around it Wi-Fi, a small HTTP server, the control page and a WebSocket for live telemetry; see [Web control and telemetry console](#web-control-and-telemetry-console)
+- `web_console`: the settings, the telemetry and the radio's front panel as JSON (`console_api`, portable), and around it Wi-Fi, a small HTTP server, the control page and a WebSocket for live telemetry; see [Web control and telemetry console](#web-control-and-telemetry-console)
 - `ui`: which colour the RGB LED shows for the radio's state; the firmware drives the LED
 
 `cat_civ`, the personalities, `audio_dsp`, `audio_engine`, `mock_ctl`, `ui`, the `console_api` part of `web_console` and the core of `link` are written as portable C with no ESP-IDF dependencies, so they can be tested on the host.
@@ -127,7 +129,7 @@ Repository layout:
 | `main/` | Firmware entry point: boot self-check, then CAT and audio wiring, the status task and the web console's hookup; `status_led.c` drives the RGB LED through RMT; `storage.c` keeps things in flash (NVS, the clips partition and the task that writes it); `Kconfig.projbuild` holds the power-up route, channel, parrot and PTT settings and the LED's pin |
 | `partitions.csv` | Flash layout: NVS, 2 MB for the firmware, the rest of the 16 MB for clips |
 | `CMakeLists.txt`, `sdkconfig.defaults` | ESP-IDF project file and board configuration (16 MB flash, octal PSRAM, UART console) |
-| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console`, `test_link`, `test_clips` and `test_coord` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` and `tools/gen_hilbert_fir.py` (filter generators), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
+| `host/` | Host-only build: `civ_pty` (parser behind a pseudo-terminal), `test_civ`, `test_dsp`, `test_engine`, `test_ctl`, `test_ui`, `test_console`, `test_link`, `test_clips` and `test_coord` (unit tests), `console_sim` with `tools/console_sim.py` (the web console in a browser with two simulated radios joined by the link, each with a CAT serial port for Hamlib, and a check of its interface), `rigctl_check.sh` (real Hamlib acceptance check), `tools/mockctl.py` (reads and changes the mock's settings over its CAT port) with `mockctl_check.sh` (its check over the pseudo-terminal), `tools/gen_resampler_fir.py` and `tools/gen_hilbert_fir.py` (filter generators), `tools/check_usb_descriptors.py` (descriptor check on the built firmware) |
 
 ## USB device
 
@@ -221,6 +223,8 @@ Minimum command set. Exact data layouts come from Icom's CI-V Reference Guide an
 
 Mode bytes are the usual Icom codes (`00` LSB, `01` USB, `02` AM, `03` CW, `04` RTTY, `05` FM, `06` WFM, `07` CW-R, `08` RTTY-R, `17` DV); data mode is a separate flag. Confirm against the guide.
 
+Names for the [front panel](#front-panel) sit beside each level, meter and function in `rig_ic705`. The functions' values are named only where Hamlib 4.7.1 was logged sending them (`rigctl -m 3085`, Nov 21, 2026): `16 12` AGC `01` fast, `02` medium, `03` slow, `00` off; `16 02` preamplifier `01` and `02` (asked for as `L PREAMP 1` and `2`; `10` and `20` are refused by Hamlib itself); `16 47` break-in `01` semi, `02` full; `11 20` for the attenuator at 20 dB. Icom's guide was not reachable to name the rest.
+
 Emulated radio facts: receive 0.030–199.999 MHz and 400–470 MHz; transmit on the amateur HF, 50, 144 and 430 MHz bands; 10 W maximum. Power-up state: 14.074 MHz, USB with data mode on, VFO A, split off.
 
 How it is verified without a radio:
@@ -267,6 +271,7 @@ Built from documents, not from a radio. Each fact below is marked with where it 
 - The attenuator command toggles whatever its data [M] and reads back `0C` for on [H]. The mock stores the byte it is given, which is what Hamlib 4.7.1 (`12`) and master (`01`) each expect to read back.
 - Some of the radio's replies hold bytes that are not BCD: full power as `5F`, some AF and SWR values [H]. The mock's replies are always BCD.
 - The radio's address is `70` by default and it answers `88` and others [M]; [I] shows one answering `A4`. The mock answers any address.
+- Hamlib 4.7.1 sets the G90's AGC with numbers [M] does not give: `16 12 02` for fast, `05` for medium, `03` for slow, `00` for off (logged Nov 21, 2026), where [M] has `01` fast, `02` middle, `03` slow. The mock stores whichever byte arrives and reads it back, so Hamlib is content. The [front panel](#front-panel) names the values by [M], and shows `05` as a number. What the radio does with `05` is not known.
 
 **Not checked.** Only Hamlib 4.7.1 has been run. Hamlib master differs for the G90 in ways read from its source and covered by unit tests, not by running it: it addresses `88`, tries `1D 19` first, sends `11 00`/`11 01` for the attenuator and `21 00` for RIT. No Android or desktop program that speaks to a G90 directly has been tried, and nothing has been compared with a real G90.
 
@@ -319,7 +324,7 @@ A command with no data reads; with data it sets. Numbers are BCD, most significa
 | `51` | VOX | `00` off, `01` on |
 | `52` | VOX threshold | Tenths of a dB below full scale, 2 bytes: 6.0 to 80.0 |
 | `53` | VOX hang time | ms, 2 bytes: 0 to 5000 |
-| `54` | PTT status, read only | The sources keying the radio now: `01` CAT, `02` control line, `04` VOX, added together; `00` is receiving |
+| `54` | PTT status, read only | The sources keying the radio now: `01` CAT, `02` control line, `04` VOX, `08` the key on the web console's front panel, added together; `00` is receiving |
 | `60` | The radio imitated | Its Hamlib model number in BCD, 2 bytes: `30 85` the IC-705, `30 88` the G90. Setting it switches radios; the new one starts from its power-up state. Refused for a model the mock does not have |
 
 Example: `FE FE F0 E0 12 01 25 01 FD` sets the SNR to −12.5 dB and is answered `FE FE E0 F0 FB FD`.
@@ -353,13 +358,14 @@ Limits, as built:
 
 ## PTT
 
-Three sources:
+Four sources:
 
 | Source | Trigger |
 | --- | --- |
 | CAT | CI-V `1C 00 01` keys, `1C 00 00` unkeys |
 | Control line | RTS (or DTR) asserted, Digirig style |
 | VOX | Transmit audio level above a threshold |
+| Front panel | The PTT key on the web console's [front panel](#front-panel): an operator keying at the radio itself |
 
 **Control-line PTT is a selectable mode, off by default.** The IC-705 works the same way: keying from DTR or RTS is a menu setting (USB SEND) rather than always on. Hosts raise DTR and RTS when they open a serial port and leave them high unless that line is the configured PTT. Data2G does this explicitly, and desktop operating systems do it for Hamlib. If the firmware always treated RTS as PTT, a host using CAT or VOX keying would hold the mock radio in transmit for the whole session.
 
@@ -367,10 +373,11 @@ While keyed, the receive stream carries silence or a low noise floor, as a real 
 
 As built (host-tested, not yet run on a board):
 
-- **Any source keys.** `audio_engine` holds all three: the radio transmits while CAT, the selected control line or the VOX keys it, and unkeys when none does. CAT keying always works; the other two are settings, off at power-up, changed with the [mock-only controls](#mock-only-controls) or at build time.
+- **Any source keys.** `audio_engine` holds all four: the radio transmits while CAT, the selected control line, the VOX or the front panel's key keys it, and unkeys when none does. CAT keying always works; the control line and the VOX are settings, off at power-up, changed with the [mock-only controls](#mock-only-controls) or at build time.
+- **Front panel's key.** It is not a setting and is not kept: it is released at power-up and when the radio imitated is changed, and it stays down until the page releases it, so a browser that goes away leaves the radio transmitting, as a stuck microphone would. It exists to test what a controller does when the radio is keyed from somewhere else: CAT reads transmit, and a CAT unkey is answered `FB` and changes nothing.
 - **Control line.** The setting names the line: off, RTS or DTR. The firmware passes every line-state change from the host to the engine, which ignores the lines unless one is selected.
 - **VOX.** A transmit sample at or above the threshold (default −40 dBFS) opens it, and it closes the hang time (default 100 ms) after the last such sample. It is judged once per audio block: the block the audio starts in is already keyed, so the parrot records the start of the transmission. With no audio arriving at all the hang time still runs out. Changing an unrelated setting does not disturb an open VOX.
-- **What CAT reports.** A read of `1C 00` says transmit whichever source keyed. The core keeps CAT's own PTT apart from the others', so neither clears the other; the firmware refreshes the others' state just before it feeds the parser each batch of serial bytes.
+- **What CAT reports.** A read of `1C 00` says transmit whichever source keyed, the front panel's key included. The core keeps CAT's own PTT apart from the others', so neither clears the other; the firmware refreshes the others' state just before it feeds the parser each batch of serial bytes.
 - **Data2G.** Its default PTT mode is VOX, so against the mock it needs `vox=on` (or its PTT mode set to CAT). VOX stays off at power-up because any sound the host plays would key the radio.
 - **Monitor route.** PTT does not mute receive there, but the sources still report transmit to CAT, the status and the LED.
 
@@ -580,19 +587,22 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 | `GET /api/settings` | Every setting: `{"route":"monitor","noise":"off","snr":10.0,"bw":2500, ...}` |
 | `POST /api/settings` | Change any subset: `{"noise":"on","snr":-12.5}`. Answers with every setting, or with `{"error":"snr: must be between -60.0 and 80.0 dB"}` |
 | `POST /api/rig` | Change the radio imitated: `{"hamlib":3088}` |
+| `GET /api/radio` | The radio as its front panel shows it: both VFOs, mode, split and the rest, and every level, function and meter with its name |
+| `POST /api/radio` | A change made at the front panel: `{"freq":7074000,"mode":"LSB"}`. Answers with the radio as it is now, or with an error and nothing changed |
 | `POST /api/reset` | Back to the power-up settings |
 | `POST /api/keep`, `POST /api/forget` | Keep the settings as they are for power-up, in flash; forget them again |
 | `POST /api/clip` | A clip operation: `{"op":"save","clip":1}`, with `op` one of `save`, `play`, `erase`. Answered when it has begun; the telemetry says when it is done |
 | `POST /api/replay` | Play the parrot's recording again |
 | `GET /api/telemetry` | One telemetry snapshot |
 | `GET /ws` | WebSocket: the same snapshot, pushed five times a second |
+| `GET /ws/scope` | WebSocket: the [waterfall](#waterfall), a row of spectrum ten times a second, as bytes, for as long as the connection is open |
 | `GET /api/health` | The board's health: memory, processor load, the time the audio work takes, Wi-Fi drops, the last table of tasks |
 | `POST /api/tasks` | The same, with the table of tasks read afresh. The body is `{}` |
 | `GET /api/wifi`, `POST /api/wifi` | How the board is connected; save a network to join (`{"ssid":...,"password":...}`) and restart |
 
 **Settings.** The names and units are the ones `mockctl.py` uses (`snr=-12.5` there, `"snr":-12.5` here). `console_api` holds only the names: for each it names the `mock_ctl` command that carries the setting, and it reads, range-checks and writes the value through `mock_ctl`'s own functions. So there is one table of ranges and one set of power-up values, a change made on either path shows on the other, and values keep the CI-V controls' steps (tenths of a dB and of a second). A value out of range is refused, not clamped, and a request with one refused value changes nothing.
 
-**Telemetry.** A snapshot holds: PTT and which sources key it; the CAT frequency, mode and split, and the CI-V frame counts; the level (RMS and peak over 0.1 s) of the audio the host plays and of the audio it records, each absent when the host is not streaming that way; the audio FIFO's fill, target and its overrun, underrun and drift-steering counts; the receive channel's measured source level, gain and mute; the parrot's state and recording length; the Wi-Fi signal strength; and a number that changes when the settings do, however they were changed, so the page knows to read them again. With the link built in, the link's state and statistics are in it too (see [Two-board link](#two-board-link)).
+**Telemetry.** A snapshot holds: PTT and which sources key it; a number that changes when the radio's own state does (`rgen`, see [Front panel](#front-panel)); the CAT frequency, mode and split, and the CI-V frame counts; the level (RMS and peak over 0.1 s) of the audio the host plays and of the audio it records, each absent when the host is not streaming that way; the audio FIFO's fill, target and its overrun, underrun and drift-steering counts; the receive channel's measured source level, gain and mute; the parrot's state and recording length; the Wi-Fi signal strength; and a number that changes when the settings do, however they were changed, so the page knows to read them again. With the link built in, the link's state and statistics are in it too (see [Two-board link](#two-board-link)).
 
 **Board health.** What a bring-up asks about the board and not about the radio. It is asked for on its own and is not in the telemetry, so the five-times-a-second stream stays as small as it was; the page asks every 2 s, and only while its health section is open. A reading holds:
 
@@ -605,9 +615,9 @@ As built (steps 16 to 19). The settings and telemetry code is host-tested and th
 
 The table of tasks is the one part that is not free. FreeRTOS reads it with everything else on the board held up while it looks through every stack for the high-water mark: estimated at a millisecond or so, not measured, and long enough to cost a USB audio packet. So the table is read only when the page's "Read every task" button asks (`POST /api/tasks`), each reading says how long it took and how old it is, and the regular reading touches only counters. The same readings go to the log on the COM jack every 30 s (`MOCK_HEALTH_LOG_S` in menuconfig, 0 for never), without the table unless `MOCK_HEALTH_LOG_TASKS` asks for it, so a build with the console off can be judged too. The per-core and per-task figures need FreeRTOS's run-time statistics (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`, on in `sdkconfig.defaults`), which cost one clock reading at each task switch; a build without them reports the rest. The collecting is `main/health.c`; the layout of a reading and the timing arithmetic are in `console_api`, host-tested.
 
-**Page.** One file of about 36 KB, embedded in the firmware, with nothing loaded from anywhere else, because the board may be on a network with no internet. It builds its settings form from `/api/info`, so a setting added in `console_api.c` appears without an edit to the page. A choice of up to four values is a row of buttons and a longer one a list; where the values' own words say too little, as with the fading conditions, `/api/info` gives a label for each ("ITU high latitude disturbed: hilat-d (30 Hz, 7 ms)") and the page shows that, while the value sent stays the word. A status line shows the same states as the LED; a strip chart shows the last 60 seconds of both levels and of PTT, kept in the browser only.
+**Page.** One file of about 59 KB, embedded in the firmware, with nothing loaded from anywhere else, because the board may be on a network with no internet. It builds its settings form from `/api/info`, so a setting added in `console_api.c` appears without an edit to the page. A choice of up to four values is a row of buttons and a longer one a list; where the values' own words say too little, as with the fading conditions, `/api/info` gives a label for each ("ITU high latitude disturbed: hilat-d (30 Hz, 7 ms)") and the page shows that, while the value sent stays the word. A status line shows the same states as the LED; a strip chart shows the last 60 seconds of both levels and of PTT, kept in the browser only.
 
-**On the host.** `make -C host console-sim` serves the page at `http://localhost:8080` with a simulated radio behind it: `console_api`, `mock_ctl` and the audio engine as compiled for the host, with a pretend host that keys and plays a tone for 6 s in every 15. `make -C host console` checks the interface through the same simulator. The simulator's HTTP layer is a Python stand-in for `web_console.c`, so neither tests that file.
+**On the host.** `make -C host console-sim` serves the page at `http://localhost:8080` with a simulated radio behind it: `console_api`, `mock_ctl` and the audio engine as compiled for the host, with a pretend host that keys and plays a tone for 6 s in every 15. `make -C host radio-sim` is the same without the pretend host. Each simulated board also has a CAT serial port, a pseudo-terminal linked at `host/build/cat-a` (and `cat-b`), which reaches the same parser as a board's USB serial port, so Hamlib or any CAT program can drive the radio the page shows. `make -C host console` checks the interface through the same simulator, that port included. The simulator's HTTP layer is a Python stand-in for `web_console.c`, so neither tests that file.
 
 **Limits.**
 
@@ -616,9 +626,82 @@ The table of tasks is the one part that is not free. FreeRTOS reads it with ever
 - Settings are stored only when asked ("Keep these for power-up"); the Wi-Fi network and the radio imitated are stored when changed.
 - The page's history is 60 seconds and lives in the browser; nothing is recorded on the board.
 - Telemetry is sampled five times a second, so a transmission shorter than 0.2 s can fall between two snapshots.
-- Wi-Fi traffic shares the radio with ESP-NOW link audio, so the console keeps its traffic light: about 3 KB per second per open page, and up to 1 KB more while its health section is open.
+- Wi-Fi traffic shares the radio with ESP-NOW link audio, so the console keeps its traffic light: about 3 KB per second per open page, up to 1 KB more while its health section is open, and 1.3 KB more for each direction of audio streaming while its waterfall is open.
 - The health readings measure the board, not the host: a late or lost USB packet shows as an underrun in the telemetry, not here. Each reader (the page, the log) gets rates since it last asked, so two browsers with the health section open each see shorter intervals.
 - The console is on by default and can be switched off in menuconfig, which keeps Wi-Fi off altogether.
+
+### Front panel
+
+A section of the page that shows the radio imitated as an operator standing at it would have it, and lets them change it there. The settings above belong to the mock; these belong to the radio. It exists to exercise rig-control software with no radio on the bench: Hamlib, and through it a rigctld facade such as Data2G's, can be watched setting the radio, and the other half of their job, noticing what changed at the radio, can be tested by changing it.
+
+**Generic, not a drawing of one radio.** The panel is built from what the personality lists, as the settings form is built from `/api/info`: the page knows no radio. An IC-705's face would promise a scope and menus the mock does not have, a G90's could not be drawn from a radio, and one page serves both and any personality added later. The idea is grig's, the Hamlib front panel that looks the same for every radio, turned round: there the program is the controller, here the page is the radio.
+
+**What it shows and sets.**
+
+| On the panel | Sets it with | Notes |
+| --- | --- | --- |
+| Frequency of the selected VFO: a digit steps by its place (click its upper or lower half, the wheel, the arrow keys), or a number typed in kHz | `05` | The digits are as many as the radio's highest frequency has. The other VFO's frequency and mode are shown beside it |
+| Selected VFO, A = B, A ⇄ B | `07 00`/`01`, `07 A0`, `07 B0` | A = B only where the radio has it |
+| Mode, data mode, filter | `06`, `1A 06`, `06 <mode> <filter>` | The personality's own modes |
+| Split, repeater shift | `0F 00`/`01`, `0F 10` to `12` | |
+| RIT and its frequency, tuner, attenuator | `21 01`, `21 00`, `1C 01`, `11` | The attenuator only where the personality says which byte is "on" (`att_on`); otherwise the byte CAT left is shown |
+| Every level | `14 <sub>` | A slider, 0 to 255, as CAT carries it |
+| Every function | `16 <sub>` | A switch, or a list where the personality names the values |
+| Every meter | none: CAT only reads them | A slider, 0 to 255, or a switch for the one-byte statuses. There is no RF, so the operator sets what the radio would measure |
+| PTT key | none | A PTT source of its own; see [PTT](#ptt) |
+| Tuning step, filter width, power | not set from the panel | Shown as CAT left them |
+
+**One set of rules.** Everything CAT can set is set from the panel by running the CI-V command itself through the parser (`civ_local`), with nothing sent on the serial port and nothing counted as a CAT frame. So the panel cannot set what CAT would refuse, the G90's own handlers apply to it as they do to CAT, and a controller reads back exactly what the panel set. `console_api` only turns names into commands. A request is applied whole or not at all.
+
+**Names come with their source.** The names of levels, meters and functions are in the personality's tables (`civ_item_t.name`), beside the numbers. A function's values are named only where there is a source: for the IC-705, AGC (`00` to `03`: off, fast, mid, slow), the preamplifier (`00` to `02`) and break-in (`00` to `02`: off, semi, full) are what Hamlib 4.7.1 was logged sending; for the G90, AGC is the manual's (`00` to `03`: off, fast, middle, slow). Every other function is a plain switch on the panel. CAT can still set any byte, and a value the panel has no name for is shown as its number. The IC-705's meter scales (which reading is S9, or an SWR of 2) are not on the panel for the same reason: Icom's CI-V guide could not be fetched when this was written, so the meters are in the raw 0 to 255 that CAT carries.
+
+**Knowing when to read again.** The page reads `/api/radio` (about 3.2 KB for the IC-705) only when the radio's state has changed. The telemetry carries a hash of that state (`civ_state_hash`: frequencies, modes, levels, functions, meters and the rest of what CAT can read back, and which radio it is), computed five times a second. A hash, not a counter of commands, because WSJT-X and others set the same frequency and mode over and over: a counter would have the page reading again several times a second, and Wi-Fi traffic is to stay light beside ESP-NOW. PTT is not in the hash; the telemetry already carries it.
+
+**Limits.**
+
+- The panel shows what the mock implements, which is less than Hamlib's IC-705 backend can ask for: no memories, scanning, CTCSS tones, repeater offset, Morse sending or parameters (beep, backlight, time). Those are refused over CAT as before.
+- A change at the panel is not announced on the CAT port. A real IC-705 with CI-V transceive on sends a frame when its dial is turned; the mock sends nothing unasked, so a controller learns of a change when it next reads.
+- No meter follows the audio. The S-meter is whatever the panel last set.
+- The panel's key stays down until the page releases it.
+- The meters and function values carry no units or names beyond those sourced above.
+- Tried in a desktop browser against the simulator only, with Hamlib 4.7.1 and with Data2G's facade driving it. Not on a board, not on a phone's browser.
+
+### Waterfall
+
+A section of the page that shows the spectrum of the audio each way, scrolling downwards: what the host records (receive, after the channel) and what it plays (transmit), side by side, 0 to 3 kHz, the last 30 seconds. It is an audio display, not a band scope: there is no RF. What it is for is seeing what the channel does to a signal (noise at the set SNR, the mute while keyed, fading across the passband, a frequency offset) and what a modem actually sends, without a second program on the host.
+
+**Where the work is done.** On the board, and not in the audio path.
+
+| Step | Task | Cost |
+| --- | --- | --- |
+| Keep the newest samples of each direction in a ring (4096 samples) | The two audio tasks | A copy of each block, whether or not anyone is watching |
+| Take the newest 2144 samples, bring them to 12 kHz with the resampler's filter, window (Hann), transform (512 points), and turn 128 bins into bytes | The console's HTTP task, below the audio tasks in priority | Estimated well under a millisecond a direction on the S3 (10 µs on the development Mac), ten times a second, and only while a page has the waterfall open |
+| Send the row | The same task | 4 bytes and 128 for each direction streaming |
+
+Sending the audio for the browser to transform would be 24 KB a second beside the link's audio on the same radio; rows are 1.3 KB a second for each direction. The page opens a WebSocket of its own (`/ws/scope`) when its waterfall section is opened and closes it when the section is closed, so a console left open costs nothing more than before. The server marks such a connection in its session, sends rows to those and telemetry to the rest, and asks for no rows at all while there are none.
+
+**A row.** Bytes, not JSON:
+
+```
+byte 0   format, 01
+byte 1   flags: 01 a receive lane follows, 02 a transmit lane follows, 04 the radio is transmitting
+byte 2   bins in a lane, 128
+byte 3   00
+then each lane that is there, receive first: one byte for each bin, the level
+in half decibels below full scale (0 is 0 dBFS, 240 is -120 dBFS, silence)
+```
+
+Bin k is at k × 12000 / 512 Hz, 23.4 Hz apart; `/api/info` gives those numbers and the rows a second, so the page hard-codes none of them. A lane is left out while the host is not streaming that way, and the page shows the gap in grey. Levels are on the level meters' scale: a tone reads in its bin what the RX or TX meter reads for it as RMS, up to 1.4 dB less between two bins. Noise reads lower than the meter by the ratio of a bin's width to the whole band: the default floor of −40 dBFS in 2500 Hz is about −58 dBFS in a bin.
+
+**The page.** Each lane has one hue, the same as its level in the chart above it (blue for receive, orange for transmit), from the page's surface for −90 dBFS and below to the hue's deep end at −10 dBFS, so level reads as lightness in the light and the dark theme. Rows during which the radio was transmitting have a red tick beside them. Pointing at a cell gives its time, frequency and level.
+
+**Limits.**
+
+- 3 kHz and 23 Hz, fixed. Each row covers 43 ms of audio, and rows come every 100 ms, so more than half the audio between rows is never looked at: a burst shorter than 60 ms can be missed.
+- The two lanes are transformed one after the other from rings read at slightly different moments, so they are not aligned to better than a row.
+- 32 KB of internal memory, always, for the two rings and the transform's tables.
+- Every page showing the waterfall holds a second connection, of the seven the server allows.
+- Watched in a desktop browser against the simulator only. The simulator's host plays a single tone, so fading has been seen as a tone that comes and goes, not yet as notches across a wide signal.
 
 ## Data2G target
 
@@ -635,6 +718,16 @@ What its Android source does (read at v0.5.2+8 on Nov 19, 2026; not yet tested o
 | Line defaults | DTR and RTS are asserted on open; only the line chosen for PTT is held low. |
 | Network rig | CAT connection can be USB serial, Bluetooth, or "Network (rigctld or ser2net)". |
 | USB permission | The attach filter matches CDC by interface class, so "always open with Data2G" can make the permission stick across replugs. |
+
+**Its rigctld facade** (branch `feature/rigctld` of the fork, read Nov 21, 2026) serves Hamlib's NET rigctl protocol over the radio Data2G controls, so that other programs can share it. On that date it passed frequency, mode and PTT for the current VFO, with VFO, split and common levels being added. It can be exercised against the mock with no radio and no board, using the simulator's CAT port and the [front panel](#front-panel):
+
+```
+make -C host radio-sim                                     the page at http://localhost:8080
+data2g-rigctld --rig-model 3085 --rig-device host/build/cat-a --port 14532
+rigctl -m 2 -r 127.0.0.1:14532                             f, F 7074000, m, M PKTUSB 0, t, T 1
+```
+
+Tried once that way on Nov 21, 2026 (Hamlib 4.7.1 as the client): frequency and mode set through the facade showed on the panel, and those set at the panel were read back through it. With the panel's key down, `rigctl` straight to the radio read PTT as 1 and the facade read 0, which is what its document says: it reports the PTT it owns, not the radio's.
 
 To check on a phone:
 
@@ -732,6 +825,15 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 31. Written, host-tested; over a real transport compiled only: the shared channel. Two linked boards keep one set of path settings and fade from one seed and clock.
 32. Acceptance: two phones running Data2G in ARQ over `mpp` and `mpd` between two boards, with throughput and speed levels compared against Data2G's own simulator at the same condition and SNR; and the processor time fading takes, measured on a board.
 
+**Milestone 7: front panel**
+
+34. Written, host-tested, and tried in a desktop browser against the simulator with Hamlib and with Data2G's rigctld facade driving it: the radio's front panel in the web console (`/api/radio`), `civ_local` and `civ_state_hash` in the core, names for the panel in both personalities, and the panel's key as a fourth PTT source. The firmware's two routes are compiled only.
+35. Written: a CAT serial port on each simulated board (`host/build/cat-a`, `cat-b`), so the panel can be used with rig-control software before any board exists.
+36. Acceptance: on a board, `rigctl -m 3085` on the USB serial port while the page is open: what it sets shows on the panel within a second, what the panel sets it reads back, and the audio buffer's underruns do not rise while a slider is dragged.
+
+37. Written, host-tested and watched in a desktop browser against the simulator: the audio waterfall. The spectrum in `audio_dsp`, the rings and the row format in `console_api`, `/ws/scope` in the simulator. The firmware's side (the rings fed from the audio tasks, the rows pushed from the server's task) is compiled only.
+38. Acceptance: on a board, with a modem transmitting through the link or the parrot: the waterfall shows its signal each way, the audio buffer's underruns and the time per audio block are the same with the waterfall open as closed, and the HTTP task's share of a core with it open is read from the table of tasks.
+
 **Bring-up aids**
 
 33. Written; the layout and the timing arithmetic host-tested, the collecting compiled only: the board's health in the log and in the web console: memory, processor load per core, time per audio block, Wi-Fi drops, the reason for the last restart, and the table of tasks on request.
@@ -814,6 +916,16 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 | Nov 20, 2026 | The table of tasks is read only on request, never on a timer by default, and each reading reports how long it took. | FreeRTOS reads it inside a critical section while it scans every stack, about a millisecond by estimate. An instrument should not put clicks into the audio it is there to judge; where it must disturb, it says by how much. |
 | Nov 20, 2026 | Processor load per core comes from the idle tasks' run-time counters, and the audio cost from timing `audio_to_host` itself. | Both are a few counter reads with no critical section worth the name, so they can be read every 2 s. The block timing counts exactly the work that must finish before the next block. |
 | Nov 20, 2026 | The simulator's health numbers are made up, and the text where the restart reason goes says so. | There is no ESP32 to measure, but the page needs something to lay out. Invented numbers that looked measured would mislead about the very thing the section exists to answer. |
+| Nov 21, 2026 | The web console gets a front panel for the radio imitated, generic and built from the personality's tables, not a picture of an IC-705 or a G90. | To exercise rig-control software (Hamlib, Data2G's rigctld facade) with no radio at hand: see what the controller set, and change things at the radio to see whether it notices. Generic because the page then needs no knowledge of any radio, serves both personalities, and promises nothing the mock lacks. |
+| Nov 21, 2026 | The panel sets what CAT can set by running the CI-V command through the parser (`civ_local`), not through setters of its own. | One set of rules: the panel cannot set what CAT would refuse, a personality's own handlers apply to both, and there is no second table of ranges to drift. |
+| Nov 21, 2026 | The page learns that the radio changed from a hash of its state in the telemetry, not from a count of commands. | Controllers repeat sets that change nothing. A counter would have the page fetching 3 KB several times a second beside ESP-NOW; the hash moves only when something did. |
+| Nov 21, 2026 | The panel's PTT key is a fourth PTT source in `audio_engine`, apart from CAT's. | It is the case a controller must cope with: a radio keyed by its own operator. Sent as CAT's `1C 00` it would be indistinguishable from the controller's keying, and the controller could release it. |
+| Nov 21, 2026 | Meters are set from the panel and nowhere else; a function's values are named only with a source, and meter scales are left out. | There is no RF to measure, and a controller's meter readout needs something to read. The names and scales that could not be sourced (Icom's guide refused the fetch) are left as numbers and not filled in from memory. |
+| Nov 21, 2026 | The simulator gives each board a CAT serial port. | No board has been flashed, and the panel is for use with Hamlib now. The page and the port then show one radio, as a board's would. |
+| Nov 21, 2026 | The console gets an audio waterfall, transformed on the board and sent as one byte for each bin. | To see what the channel does to a signal and what a modem sends. Transformed on the board because the audio itself would be 24 KB a second on the radio the link shares, against 1.3 KB for a direction's rows. |
+| Nov 21, 2026 | The audio tasks only copy samples into a ring; the transforms run in the console's task, and only while a page has the waterfall open. | The audio path must not pay for a display. A slow row then delays the page, never a USB audio packet, and a console nobody is watching costs two copies a block. |
+| Nov 21, 2026 | The waterfall has a WebSocket of its own, opened and closed with its section of the page. | The telemetry's socket only pushes and every page gets it; a row is wanted by some pages and not others. A second connection says which without the page having to send anything. |
+| Nov 21, 2026 | 512 points at 12 kHz, the lowest 128 bins, ten rows a second, levels on the meters' scale. | 23 Hz across 3 kHz is the passband every modem here uses, at a width a 400-pixel lane can show. The resampler's filter already exists and keeps what is above 6 kHz from folding in. One scale for the meters and the waterfall means a tone reads the same on both. |
 
 ## Open questions
 
@@ -868,6 +980,16 @@ Framework: ESP-IDF v5.5.6 with Espressif's `usb_device_uac` component for audio 
 - [ ] Does the S3 composite device enumerate cleanly on both test phones? (after step 9)
 - [x] How does Data2G on Android key PTT? VOX, CAT, DTR or RTS, chosen in its rig pane.
 - [x] Does Data2G on Android support network rig control? Yes: "Network (rigctld or ser2net)".
+- [ ] Front panel: the IC-705's function values beyond AGC, preamplifier and break-in (filter shape, notch width, SSB transmit bandwidth, DSQL/CSQL, tone squelch type), and its meter scales (S9, SWR 2.0, full power), from Icom's CI-V Reference Guide. Unnamed until someone reads the guide; the fetch was refused on Nov 21, 2026.
+- [ ] Front panel: should the mock send CI-V transceive frames when the panel changes frequency or mode, as a mock-only setting off at power-up? Hamlib lists async data for model 3085, and it would test how a facade copes with data it did not ask for. The address to send from, and whether the HTTP task may write to the serial port, need deciding.
+- [ ] Front panel: which of what Hamlib's IC-705 backend claims and the mock refuses is worth adding: memories and VFO/memory operations, scanning, CTCSS tones and repeater offset, Morse sending, parameters (beep, backlight, time), XIT. A `rigctl` sweep through every claimed capability would list them exactly. Driven by what Data2G's facade comes to pass through.
+- [ ] Front panel: should the panel's key release itself when no page has been heard from for a while?
+- [ ] Front panel: does dragging a slider (a request every few tens of milliseconds, each holding the CAT lock briefly) disturb USB audio or the link on a board? (step 36)
+- [ ] G90: what does the real radio do with `16 12 05`, which Hamlib 4.7.1 sends for medium AGC? (step 29)
+- [ ] Waterfall: how long does a row take on the S3, and does the waterfall open change the audio's underruns or the time per audio block? Estimated at well under a millisecond a direction. (step 38)
+- [ ] Waterfall: is 32 KB of internal memory for it acceptable beside Wi-Fi and the link, or should the rings be allocated only while a page is watching? The board's health section has the figures. (step 38)
+- [ ] Waterfall: is 0 to 3 kHz the right span, or should it reach 4 kHz for WSJT-X's upper tones? 171 bins would be 1.7 KB a second a direction.
+- [ ] Waterfall: should the simulator's pretend host play something wider than a tone (a comb, or a recorded modem burst), so that fading can be judged by eye on the host?
 
 ## References
 

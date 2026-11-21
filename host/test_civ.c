@@ -568,6 +568,135 @@ static void test_switch_personality(void)
     CHECK(g_out_len == 8 && g_out[6] == 0x70);
 }
 
+/* The front panel: commands run at the radio itself, and the number that
+ * tells a display to read the radio again. */
+static void test_front_panel(void)
+{
+    civ_t c;
+    fresh(&c);
+    uint32_t ok = c.frames_ok, ng = c.frames_ng;
+    uint32_t h0 = civ_state_hash(&c);
+
+    /* A command the radio takes: nothing goes out, nothing is counted, and
+     * CAT reads back what was set. */
+    static const uint8_t freq[] = {0x00, 0x40, 0x07, 0x07, 0x00}; /* 7.074 MHz */
+    g_out_len = 0;
+    CHECK(civ_local(&c, 0x05, freq, sizeof freq));
+    CHECK(g_out_len == 0);
+    CHECK(c.frames_ok == ok && c.frames_ng == ng);
+    CHECK(civ_rx_freq(&c) == 7074000);
+    EXPECT(&c, "fe fe a4 e0 03 fd", "fe fe e0 a4 03 00 40 07 07 00 fd");
+    uint32_t h1 = civ_state_hash(&c);
+    CHECK(h1 != h0);
+
+    /* What the radio refuses over CAT it refuses here, and nothing changes. */
+    static const uint8_t far[] = {0x00, 0x00, 0x00, 0x50, 0x02}; /* 250 MHz */
+    static const uint8_t level_high[] = {0x01, 0x02, 0x56};      /* AF gain 256 */
+    static const uint8_t no_mode[] = {0x09};
+    g_out_len = 0;
+    CHECK(!civ_local(&c, 0x05, far, sizeof far));
+    CHECK(!civ_local(&c, 0x14, level_high, sizeof level_high));
+    CHECK(!civ_local(&c, 0x06, no_mode, sizeof no_mode));
+    CHECK(!civ_local(&c, 0x7E, NULL, 0)); /* no such command */
+    CHECK(!civ_local(&c, 0x00, freq, sizeof freq)); /* transceive: taken, but never answered */
+    CHECK(g_out_len == 0 && c.frames_ng == ng);
+    CHECK(civ_rx_freq(&c) == 7074000);
+    static const uint8_t too_long[CIV_MAX_FRAME] = {0};
+    CHECK(!civ_local(&c, 0x05, too_long, sizeof too_long));
+
+    /* A read is taken, and changes nothing. */
+    CHECK(civ_local(&c, 0x03, NULL, 0));
+    CHECK(civ_state_hash(&c) == h1);
+
+    /* CAT goes on working after a local command: replies are sent again. */
+    EXPECT(&c, "fe fe a4 e0 14 01 02 00 fd", "fe fe e0 a4 fb fd");
+    uint32_t h2 = civ_state_hash(&c);
+    CHECK(h2 != h1);
+    EXPECT(&c, "fe fe a4 e0 14 01 02 00 fd", "fe fe e0 a4 fb fd"); /* the same again */
+    EXPECT(&c, "fe fe a4 e0 14 01 fd", "fe fe e0 a4 14 01 02 00 fd");
+    CHECK(civ_state_hash(&c) == h2);
+
+    /* Everything CAT can read back is in the number. */
+    uint32_t h = h2;
+#define CHANGES(frame)                                             \
+    do {                                                           \
+        EXPECT(&c, frame, "fe fe e0 a4 fb fd");                    \
+        CHECK(civ_state_hash(&c) != h);                            \
+        h = civ_state_hash(&c);                                    \
+    } while (0)
+    CHANGES("fe fe a4 e0 06 03 02 fd");          /* mode and filter */
+    CHANGES("fe fe a4 e0 1a 06 00 fd");          /* data mode */
+    CHANGES("fe fe a4 e0 07 01 fd");             /* VFO B */
+    CHANGES("fe fe a4 e0 0f 01 fd");             /* split */
+    CHANGES("fe fe a4 e0 0f 11 fd");             /* duplex */
+    CHANGES("fe fe a4 e0 16 22 01 fd");          /* a function */
+    CHANGES("fe fe a4 e0 11 20 fd");             /* attenuator */
+    CHANGES("fe fe a4 e0 10 03 fd");             /* tuning step */
+    CHANGES("fe fe a4 e0 1a 03 10 fd");          /* filter width */
+    CHANGES("fe fe a4 e0 1c 01 01 fd");          /* tuner */
+    CHANGES("fe fe a4 e0 21 00 20 01 00 fd");    /* RIT frequency */
+    CHANGES("fe fe a4 e0 21 01 01 fd");          /* RIT */
+    CHANGES("fe fe a4 e0 1a 05 01 19 02 fd");    /* a menu setting */
+    CHANGES("fe fe a4 e0 25 01 00 00 10 14 00 fd"); /* the other VFO's frequency */
+#undef CHANGES
+    CHECK(civ_set_meter(&c, 0x02, 120));
+    CHECK(civ_state_hash(&c) != h);
+
+    /* Another radio in the same state is not the same radio. */
+    civ_t a, b;
+    civ_init(&a, &rig_ic705, tx, on_ptt, NULL);
+    civ_init(&b, &rig_g90, tx, on_ptt, NULL);
+    CHECK(civ_state_hash(&a) != civ_state_hash(&b));
+    civ_init(&b, &rig_ic705, tx, on_ptt, NULL);
+    CHECK(civ_state_hash(&a) == civ_state_hash(&b));
+
+    /* PTT is not in it: the display has that from elsewhere, five times a second. */
+    h = civ_state_hash(&a);
+    civ_set_ptt(&a, true);
+    CHECK(civ_state_hash(&a) == h);
+
+    CHECK(civ_meter_is_status(0x01) && civ_meter_is_status(0x05) && civ_meter_is_status(0x07));
+    CHECK(!civ_meter_is_status(0x02) && !civ_meter_is_status(0x12));
+
+    /* The G90's own commands run locally too, through its extra handler. */
+    civ_init(&b, &rig_g90, tx, on_ptt, NULL);
+    g_out_len = 0;
+    CHECK(civ_local(&b, 0x02, NULL, 0)); /* the frequency edges */
+    static const uint8_t equal[] = {0xA0};
+    CHECK(!civ_local(&b, 0x07, equal, 1)); /* no A=B on a G90 */
+    CHECK(g_out_len == 0);
+}
+
+/* Every level, meter and function has a name for the front panel, and a
+ * function's named values are well formed. */
+static void test_panel_names(void)
+{
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
+    for (size_t r = 0; r < 2; r++) {
+        const civ_rig_t *rig = rigs[r];
+        const struct {
+            const civ_item_t *items;
+            size_t n;
+            bool choices;
+        } tables[] = {{rig->levels, rig->n_levels, false}, {rig->meters, rig->n_meters, false}, {rig->funcs, rig->n_funcs, true}};
+        for (size_t t = 0; t < 3; t++) {
+            for (size_t i = 0; i < tables[t].n; i++) {
+                const civ_item_t *it = &tables[t].items[i];
+                CHECK(it->name && it->name[0]);
+                CHECK(tables[t].choices || !it->choices);
+                if (it->choices) {
+                    size_t len = strlen(it->choices);
+                    CHECK(len > 0 && it->choices[len - 1] != '|' && strchr(it->choices, '|'));
+                    CHECK(!strchr(it->choices, '"') && !strchr(it->choices, '\\'));
+                }
+            }
+        }
+        CHECK(rig->n_levels <= CIV_MAX_LEVELS && rig->n_meters <= CIV_MAX_METERS && rig->n_funcs <= CIV_MAX_FUNCS);
+    }
+    CHECK(rig_ic705.att_on == 0x20); /* what Hamlib 4.7.1 sends for L ATT 20 */
+    CHECK(rig_g90.att_on == 0);      /* Hamlib versions disagree on the G90's: the panel only shows it */
+}
+
 int main(void)
 {
     test_bcd();
@@ -584,6 +713,8 @@ int main(void)
     test_g90_rigctl();
     test_g90_manual();
     test_switch_personality();
+    test_front_panel();
+    test_panel_names();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

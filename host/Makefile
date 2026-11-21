@@ -6,6 +6,8 @@
 #   make mockctl    run tools/mockctl.py against the mock's own controls over a pty
 #   make console    run the web console's API through tools/console_sim.py and check it
 #   make console-sim  serve the web console on http://localhost:8080 with a simulated radio
+#   make radio-sim    the same with no pretend transmissions, to drive the radio from Hamlib:
+#                     rigctl -m 3085 -r host/build/cat-a
 
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror
@@ -104,7 +106,10 @@ console: $(BUILD)/console_sim
 console-sim: $(BUILD)/console_sim
 	python3 tools/console_sim.py
 
+radio-sim: $(BUILD)/console_sim
+	python3 tools/console_sim.py --quiet
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test rigctl mockctl console console-sim clean
+.PHONY: all test rigctl mockctl console console-sim radio-sim clean

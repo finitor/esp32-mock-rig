@@ -89,7 +89,7 @@ CMD_REPLAY, CMD_PARROT_STATUS, CMD_PTT_STATUS = 0x30, 0x34, 0x54
 CMD_RIG = 0x60
 # name: (Hamlib model, what to call it)
 RIGS = {"ic705": (3085, "Icom IC-705"), "g90": (3088, "Xiegu G90")}
-PTT_SOURCES = ((0x01, "CAT"), (0x02, "control line"), (0x04, "VOX"))
+PTT_SOURCES = ((0x01, "CAT"), (0x02, "control line"), (0x04, "VOX"), (0x08, "front panel"))
 FLAG_RX_MUTED, FLAG_GAIN_LIMITED = 0x01, 0x02
 PARROT_STATES = ("idle", "recording", "waiting to replay", "playing")
 PARROT_FLAG_TRUNCATED = 0x01

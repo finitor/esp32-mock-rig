@@ -834,8 +834,8 @@ static void test_telemetry(void)
     CHECK(json_valid(g_buf));
     char want[1024];
     snprintf(want, sizeof want,
-             "{\"t\":1234,\"gen\":%lu,\"hamlib\":0,\"kept\":false,\"host\":false,"
-             "\"ptt\":{\"on\":false,\"cat\":false,\"line\":false,\"vox\":false},"
+             "{\"t\":1234,\"gen\":%lu,\"rgen\":0,\"hamlib\":0,\"kept\":false,\"host\":false,"
+             "\"ptt\":{\"on\":false,\"cat\":false,\"line\":false,\"vox\":false,\"panel\":false},"
              "\"cat\":{\"freq\":7074000,\"txfreq\":7074000,\"mode\":\"USB-D\",\"split\":false,\"ok\":0,\"ng\":0,"
              "\"dropped\":0},"
              "\"audio\":{\"tx\":null,\"rx\":null,"
@@ -872,7 +872,7 @@ static void test_telemetry(void)
     s.rssi_dbm = -57;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
     CHECK(json_valid(g_buf));
-    CHECK_HAS(g_buf, "\"hamlib\":0,\"kept\":false,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false},");
+    CHECK_HAS(g_buf, "\"hamlib\":0,\"kept\":false,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false,\"panel\":false},");
     CHECK_HAS(g_buf, "\"cat\":{\"freq\":14074000,\"txfreq\":14075000,\"mode\":\"USB\",\"split\":true,"
                      "\"ok\":4000000000,\"ng\":2,\"dropped\":1},");
     CHECK_HAS(g_buf, "\"audio\":{\"tx\":{\"rms\":-12.1,\"peak\":-9.0},\"rx\":{\"rms\":-120.0,\"peak\":-120.0},");
@@ -931,7 +931,7 @@ static void test_telemetry(void)
     ae_set_lines(&g_engine, false, true);
     ae_process(&g_engine, NULL, audio, 480);
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
-    CHECK_HAS(g_buf, "\"ptt\":{\"on\":true,\"cat\":false,\"line\":true,\"vox\":false},");
+    CHECK_HAS(g_buf, "\"ptt\":{\"on\":true,\"cat\":false,\"line\":true,\"vox\":false,\"panel\":false},");
 
     /* Too small a buffer gives nothing. */
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, 200) == 0);
@@ -1072,6 +1072,295 @@ static void test_health(void)
     CHECK(g_buf[0] == '\0');
 }
 
+/* ---- the front panel ------------------------------------------------------------ */
+
+static console_result_t panel(const char *json)
+{
+    return console_radio_apply(&g_ctl, json, g_err, sizeof g_err);
+}
+
+static const char *radio(void)
+{
+    size_t n = console_radio_json(&g_civ, g_buf, sizeof g_buf);
+    CHECK(n == strlen(g_buf) && n > 0);
+    CHECK(json_valid(g_buf));
+    return g_buf;
+}
+
+/* What CAT answers to a command sent as "<cmd> <data>" in hex, as hex. */
+static const char *cat(const char *hex)
+{
+    static char reply[3 * 64];
+    uint8_t in[32] = {0xFE, 0xFE, 0xA4, 0xE0};
+    size_t n = 4;
+    for (const char *p = hex; p[0] && p[1] && n < sizeof in - 1; p += p[2] ? 3 : 2) {
+        in[n++] = (uint8_t)strtoul((char[]){p[0], p[1], '\0'}, NULL, 16);
+    }
+    in[n++] = 0xFD;
+    g_out_len = 0;
+    civ_feed(&g_civ, in, n);
+    reply[0] = '\0';
+    for (size_t i = 4; i + 1 < g_out_len; i++) snprintf(reply + strlen(reply), 4, "%s%02x", i > 4 ? " " : "", g_out[i]);
+    return reply;
+}
+
+static void test_front_panel(void)
+{
+    static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};
+    console_sample_t s;
+    ae_ptt_t ptt;
+    memset(&s, 0, sizeof s);
+
+    fresh();
+    /* A mock that was given no radio has no panel to change. */
+    CHECK(panel("{\"freq\":7074000}") == CONSOLE_UNAVAILABLE);
+    mock_ctl_set_rigs(&g_ctl, &g_civ, rigs, 2, NULL, NULL);
+
+    /* The radio at power-up, whole. */
+    char want[512];
+    snprintf(want, sizeof want,
+             "{\"rig\":\"Icom IC-705\",\"hamlib\":3085,\"gen\":%lu,\"vfo\":\"A\",\"split\":false,"
+             "\"a\":{\"freq\":14074000,\"mode\":\"USB\",\"data\":true,\"filter\":1},"
+             "\"b\":{\"freq\":7074000,\"mode\":\"USB\",\"data\":true,\"filter\":1},"
+             "\"modes\":[\"LSB\",\"USB\",\"AM\",\"CW\",\"RTTY\",\"FM\",\"WFM\",\"CW-R\",\"RTTY-R\",\"DV\"],\"filters\":3,"
+             "\"can\":{\"data\":true,\"equal\":true},\"duplex\":\"simplex\",\"rit\":{\"on\":false,\"hz\":0},"
+             "\"tuner\":false,\"att\":{\"on\":false,\"byte\":\"00\",\"set\":true},\"step\":\"00\",\"width\":\"34\","
+             "\"power\":true,\"rx\":[[30000,199999999],[400000000,470000000]],\"tx\":[[1800000,2000000],",
+             (unsigned long)civ_state_hash(&g_civ));
+    CHECK(strncmp(radio(), want, strlen(want)) == 0);
+    CHECK_HAS(g_buf, "\"levels\":[{\"id\":\"14.01\",\"name\":\"AF gain\",\"value\":128},{\"id\":\"14.02\",");
+    CHECK_HAS(g_buf, "{\"id\":\"14.0A\",\"name\":\"RF power\",\"value\":255}");
+    CHECK_HAS(g_buf, "\"funcs\":[{\"id\":\"16.02\",\"name\":\"Preamp\",\"value\":0,\"choices\":[\"off\",\"1\",\"2\"]},"
+                     "{\"id\":\"16.12\",\"name\":\"AGC\",\"value\":2,\"choices\":[\"off\",\"fast\",\"mid\",\"slow\"]},"
+                     "{\"id\":\"16.22\",\"name\":\"Noise blanker\",\"value\":0},");
+    CHECK_HAS(g_buf, "\"meters\":[{\"id\":\"15.01\",\"name\":\"Squelch status\",\"value\":0,\"max\":1},"
+                     "{\"id\":\"15.02\",\"name\":\"S-meter\",\"value\":12,\"max\":255},");
+    CHECK(strlen(g_buf) < CONSOLE_JSON_MAX * 3 / 4); /* room for a radio with more on its panel */
+    CHECK(console_radio_json(&g_civ, g_buf, 200) == 0); /* too small: nothing, not a cut-off text */
+
+    /* Tuning, mode, data mode and filter: CAT reads back what the panel set. */
+    uint32_t ok = g_civ.frames_ok;
+    CHECK(panel("{\"freq\":7074000,\"mode\":\"LSB\",\"data\":false,\"filter\":2}") == CONSOLE_OK && g_err[0] == '\0');
+    CHECK(g_civ.frames_ok == ok); /* not CAT frames */
+    CHECK_STR(cat("03"), "03 00 40 07 07 00");
+    CHECK_STR(cat("04"), "04 00 02");
+    CHECK_STR(cat("1a 06"), "1a 06 00 00");
+    CHECK_HAS(radio(), "\"a\":{\"freq\":7074000,\"mode\":\"LSB\",\"data\":false,\"filter\":2},");
+
+    /* The VFOs and split. A frequency goes to the selected VFO. */
+    CHECK(panel("{\"vfo\":\"B\",\"freq\":3573000,\"split\":true}") == CONSOLE_OK);
+    CHECK_HAS(radio(), "\"vfo\":\"B\",\"split\":true,\"a\":{\"freq\":7074000,");
+    CHECK_HAS(g_buf, "\"b\":{\"freq\":3573000,\"mode\":\"USB\",\"data\":true,\"filter\":1}");
+    CHECK_STR(cat("0f"), "0f 01");
+    CHECK(panel("{\"op\":\"swap\"}") == CONSOLE_OK);
+    CHECK_HAS(radio(), "\"a\":{\"freq\":3573000,");
+    CHECK(panel("{\"op\":\"equal\",\"vfo\":\"A\",\"split\":false}") == CONSOLE_OK);
+    CHECK_HAS(radio(), "\"vfo\":\"A\",\"split\":false,\"a\":{\"freq\":7074000,\"mode\":\"LSB\",\"data\":false,\"filter\":2},"
+                       "\"b\":{\"freq\":7074000,\"mode\":\"LSB\",\"data\":false,\"filter\":2},");
+
+    /* The rest of what CAT can set. */
+    CHECK(panel("{\"duplex\":\"dup-\",\"rit\":true,\"rit_hz\":-120,\"tuner\":true,\"att\":true}") == CONSOLE_OK);
+    CHECK_HAS(radio(), "\"duplex\":\"dup-\",\"rit\":{\"on\":true,\"hz\":-120},\"tuner\":true,"
+                       "\"att\":{\"on\":true,\"byte\":\"20\",\"set\":true},");
+    CHECK_STR(cat("11"), "11 20");
+    CHECK_STR(cat("21 00"), "21 00 20 01 01");
+    CHECK(panel("{\"att\":false,\"duplex\":\"simplex\"}") == CONSOLE_OK);
+    CHECK_STR(cat("11"), "11 00");
+
+    /* Levels, functions and meters, by id. */
+    CHECK(panel("{\"14.01\":200,\"14.0a\":0,\"16.12\":3,\"16.22\":1,\"15.02\":120,\"15.01\":1}") == CONSOLE_OK);
+    CHECK_STR(cat("14 01"), "14 01 02 00");
+    CHECK_STR(cat("14 0a"), "14 0a 00 00");
+    CHECK_STR(cat("16 12"), "16 12 03");
+    CHECK_STR(cat("16 22"), "16 22 01");
+    CHECK_STR(cat("15 02"), "15 02 01 20");
+    CHECK_STR(cat("15 01"), "15 01 01");
+    CHECK_HAS(radio(), "{\"id\":\"15.02\",\"name\":\"S-meter\",\"value\":120,\"max\":255}");
+
+    /* What CAT sets shows on the panel, a value with no name as its number. */
+    CHECK_STR(cat("16 12 05"), "fb");
+    CHECK_HAS(radio(), "{\"id\":\"16.12\",\"name\":\"AGC\",\"value\":5,\"choices\":");
+
+    /* Refused, with a reason, and nothing of the request applied. */
+    static const struct {
+        const char *json;
+        console_result_t result;
+        const char *err;
+    } bad[] = {
+        {"{\"mode\":\"CW\",\"freq\":250000000}", CONSOLE_BAD_REQUEST, "freq: the Icom IC-705 does not tune to 250000000 Hz"},
+        {"{\"mode\":\"CW\",\"freq\":7074000.5}", CONSOLE_BAD_REQUEST, "freq: must be a whole number of hertz"},
+        {"{\"mode\":\"CW\",\"freq\":\"7074000\"}", CONSOLE_BAD_REQUEST, "freq: must be a whole number of hertz"},
+        {"{\"mode\":\"CW\",\"freq\":-1}", CONSOLE_BAD_REQUEST, "freq: must be a whole number of hertz"},
+        {"{\"mode\":\"CW\",\"mode\":\"PSK\"}", CONSOLE_BAD_REQUEST, "mode: not a mode of the Icom IC-705"},
+        {"{\"mode\":\"CW\",\"mode\":3}", CONSOLE_BAD_REQUEST, "mode: not a mode of the Icom IC-705"},
+        {"{\"mode\":\"CW\",\"vfo\":\"C\"}", CONSOLE_BAD_REQUEST, "vfo: must be \"A\" or \"B\""},
+        {"{\"mode\":\"CW\",\"op\":\"clear\"}", CONSOLE_BAD_REQUEST, "op: must be \"equal\" or \"swap\""},
+        {"{\"mode\":\"CW\",\"filter\":4}", CONSOLE_BAD_REQUEST, "filter: must be 1 to 3"},
+        {"{\"mode\":\"CW\",\"filter\":0}", CONSOLE_BAD_REQUEST, "filter: must be 1 to 3"},
+        {"{\"mode\":\"CW\",\"data\":1}", CONSOLE_BAD_REQUEST, "data: must be true or false"},
+        {"{\"mode\":\"CW\",\"split\":\"on\"}", CONSOLE_BAD_REQUEST, "split: must be true or false"},
+        {"{\"mode\":\"CW\",\"duplex\":\"dup\"}", CONSOLE_BAD_REQUEST, "duplex: must be \"simplex\", \"dup-\" or \"dup+\""},
+        {"{\"mode\":\"CW\",\"rit_hz\":10000}", CONSOLE_BAD_REQUEST, "rit_hz: must be between -9999 and 9999 Hz"},
+        {"{\"mode\":\"CW\",\"14.01\":256}", CONSOLE_BAD_REQUEST, "AF gain: must be 0 to 255"},
+        {"{\"mode\":\"CW\",\"14.01\":1.5}", CONSOLE_BAD_REQUEST, "AF gain: must be 0 to 255"},
+        {"{\"mode\":\"CW\",\"16.12\":4}", CONSOLE_BAD_REQUEST, "AGC: the panel offers 0 to 3"},
+        {"{\"mode\":\"CW\",\"16.22\":2}", CONSOLE_BAD_REQUEST, "Noise blanker: the panel offers 0 to 1"},
+        {"{\"mode\":\"CW\",\"15.02\":256}", CONSOLE_BAD_REQUEST, "S-meter: must be 0 to 255"},
+        {"{\"mode\":\"CW\",\"15.01\":2}", CONSOLE_BAD_REQUEST, "Squelch status: must be 0 to 1"},
+        {"{\"mode\":\"CW\",\"14.7F\":1}", CONSOLE_BAD_REQUEST, "14.7F: the Icom IC-705's panel has no such control"},
+        {"{\"mode\":\"CW\",\"17.01\":1}", CONSOLE_BAD_REQUEST, "17.01: the Icom IC-705's panel has no such control"},
+        {"{\"mode\":\"CW\",\"snr\":1}", CONSOLE_BAD_REQUEST, "snr: the Icom IC-705's panel has no such control"},
+        {"{\"mode\":\"CW\",\"a\\\"b\":1}", CONSOLE_BAD_REQUEST, "the panel has no such control"},
+        {"{\"mode\":\"CW\",\"ptt\":1}", CONSOLE_BAD_REQUEST, "ptt: must be true or false"},
+        {"{\"mode\":\"CW\",\"ptt\":true,\"freq\":1}", CONSOLE_BAD_REQUEST, "freq: the Icom IC-705 does not tune to 1 Hz"},
+        {"{\"mode\":\"CW\"", CONSOLE_BAD_REQUEST, "expected a JSON object of panel controls, like {\"freq\":7074000,\"mode\":\"LSB\"}"},
+        {"[1]", CONSOLE_BAD_REQUEST, "expected a JSON object of panel controls, like {\"freq\":7074000,\"mode\":\"LSB\"}"},
+        {"{\"mode\":\"CW\",\"freq\":{\"hz\":1}}", CONSOLE_BAD_REQUEST,
+         "expected a JSON object of panel controls, like {\"freq\":7074000,\"mode\":\"LSB\"}"},
+    };
+    uint32_t before = civ_state_hash(&g_civ);
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        console_result_t r = panel(bad[i].json);
+        if (r != bad[i].result) printf("     case %zu: %s\n", i, bad[i].json);
+        CHECK(r == bad[i].result);
+        CHECK_STR(g_err, bad[i].err);
+        CHECK(civ_state_hash(&g_civ) == before); /* the mode before it in the request was taken back */
+        ae_get_ptt(&g_engine, &ptt);
+        CHECK(!ptt.panel);
+    }
+    CHECK(panel("{}") == CONSOLE_OK && civ_state_hash(&g_civ) == before);
+
+    /* The key on the panel: the radio transmits, CAT sees it and cannot
+     * release it, and the telemetry names the source. */
+    CHECK(panel("{\"ptt\":true}") == CONSOLE_OK);
+    ae_get_ptt(&g_engine, &ptt);
+    CHECK(ptt.panel && !ptt.cat);
+    CHECK(civ_state_hash(&g_civ) == before); /* the telemetry carries it, not the panel's reading */
+    s.radio_gen = before;
+    CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0 && json_valid(g_buf));
+    snprintf(want, sizeof want, ",\"rgen\":%lu,\"hamlib\":3085,", (unsigned long)before);
+    CHECK_HAS(g_buf, want);
+    CHECK_HAS(g_buf, "\"ptt\":{\"on\":true,\"cat\":false,\"line\":false,\"vox\":false,\"panel\":true},");
+    CHECK(panel("{\"ptt\":false}") == CONSOLE_OK);
+    ae_get_ptt(&g_engine, &ptt);
+    CHECK(!ptt.panel);
+
+    /* A G90: its own panel, from its own tables, and what it lacks is refused. */
+    CHECK(console_rig_apply(&g_ctl, "{\"hamlib\":3088}", g_err, sizeof g_err) == CONSOLE_OK);
+    snprintf(want, sizeof want,
+             "{\"rig\":\"Xiegu G90\",\"hamlib\":3088,\"gen\":%lu,\"vfo\":\"A\",\"split\":false,"
+             "\"a\":{\"freq\":14074000,\"mode\":\"USB\",\"data\":true,\"filter\":1},"
+             "\"b\":{\"freq\":7074000,\"mode\":\"USB\",\"data\":true,\"filter\":1},"
+             "\"modes\":[\"LSB\",\"USB\",\"AM\",\"CW\",\"FM\",\"CW-R\"],\"filters\":3,"
+             "\"can\":{\"data\":true,\"equal\":false},\"duplex\":null,\"rit\":{\"on\":false,\"hz\":0},"
+             "\"tuner\":false,\"att\":{\"on\":false,\"byte\":\"00\",\"set\":false},\"step\":null,\"width\":null,"
+             "\"power\":null,\"rx\":[[500000,30000000]],\"tx\":[[1800000,2000000],",
+             (unsigned long)civ_state_hash(&g_civ));
+    CHECK(strncmp(radio(), want, strlen(want)) == 0);
+    CHECK_HAS(g_buf, "{\"id\":\"16.02\",\"name\":\"Preamplifier\",\"value\":0},"
+                     "{\"id\":\"16.12\",\"name\":\"AGC\",\"value\":1,\"choices\":[\"off\",\"fast\",\"middle\",\"slow\"]},");
+    CHECK(panel("{\"op\":\"equal\"}") == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "op: the Xiegu G90 cannot do that");
+    CHECK(panel("{\"duplex\":\"dup+\"}") == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "duplex: the Xiegu G90 has no repeater shift");
+    CHECK(panel("{\"att\":true}") == CONSOLE_UNAVAILABLE);
+    CHECK_STR(g_err, "att: the panel cannot switch the Xiegu G90's attenuator; CAT can");
+    CHECK(panel("{\"mode\":\"RTTY\"}") == CONSOLE_BAD_REQUEST);
+    CHECK(panel("{\"freq\":50100000}") == CONSOLE_BAD_REQUEST);
+    CHECK(panel("{\"14.07\":1}") == CONSOLE_BAD_REQUEST); /* a level of the IC-705's */
+    CHECK_STR(g_err, "14.07: the Xiegu G90's panel has no such control");
+    CHECK(panel("{\"mode\":\"CW-R\",\"freq\":7030000,\"op\":\"swap\",\"16.12\":0}") == CONSOLE_OK);
+    CHECK_HAS(radio(), "\"b\":{\"freq\":7030000,\"mode\":\"CW-R\",\"data\":true,\"filter\":1}");
+}
+
+/* ---- the waterfall --------------------------------------------------------------- */
+
+static void test_scope(void)
+{
+    static console_scope_t rx, tx;
+    static console_scope_work_t work;
+    static int16_t in[3 * CONSOLE_SCOPE_RING], got[DSP_SPEC_INPUT];
+    uint8_t row[CONSOLE_SCOPE_ROW_MAX];
+    uint32_t seen = 0;
+
+    /* The ring: the newest samples, in order, however they were added. */
+    for (size_t i = 0; i < sizeof in / sizeof in[0]; i++) in[i] = (int16_t)(i % 30011);
+    console_scope_init(&rx);
+    CHECK(!console_scope_take(&rx, &seen, got)); /* nothing yet */
+    console_scope_add(&rx, in, DSP_SPEC_INPUT - 1);
+    CHECK(!console_scope_take(&rx, &seen, got)); /* not enough yet */
+    console_scope_add(&rx, in + DSP_SPEC_INPUT - 1, 1);
+    CHECK(console_scope_take(&rx, &seen, got));
+    CHECK(memcmp(got, in, sizeof got) == 0);
+    CHECK(!console_scope_take(&rx, &seen, got)); /* nothing new: the host has stopped */
+
+    size_t total = DSP_SPEC_INPUT;
+    static const size_t sizes[] = {1, 47, 480, 1000, 3000}; /* across the wrap, twice */
+    for (size_t i = 0, n; total + (n = sizes[i % 5]) <= 3 * CONSOLE_SCOPE_RING; i++) {
+        console_scope_add(&rx, in + total, n);
+        total += n;
+        CHECK(console_scope_take(&rx, &seen, got));
+        CHECK(memcmp(got, in + total - DSP_SPEC_INPUT, sizeof got) == 0);
+    }
+    CHECK(total > 2 * CONSOLE_SCOPE_RING);
+
+    /* More than the ring holds at once: its newest part stays. */
+    console_scope_init(&rx);
+    seen = 0;
+    console_scope_add(&rx, in, 5);
+    console_scope_add(&rx, in + 5, CONSOLE_SCOPE_RING + 100);
+    CHECK(console_scope_take(&rx, &seen, got));
+    CHECK(memcmp(got, in + 5 + CONSOLE_SCOPE_RING + 100 - DSP_SPEC_INPUT, sizeof got) == 0);
+
+    /* No samples counts as silence. */
+    console_scope_add(&rx, NULL, 1000);
+    CHECK(console_scope_take(&rx, &seen, got));
+    CHECK(got[DSP_SPEC_INPUT - 1] == 0 && got[DSP_SPEC_INPUT - 1000] == 0 && got[DSP_SPEC_INPUT - 1001] != 0);
+
+    /* A row: the header, then a lane for each direction that is streaming. */
+    console_scope_init(&rx);
+    console_scope_init(&tx);
+    console_scope_work_init(&work);
+    CHECK(console_scope_row(&work, &rx, &tx, false, row, sizeof row - 1) == 0);
+    CHECK(console_scope_row(&work, &rx, &tx, false, row, sizeof row) == 4);
+    CHECK(row[0] == CONSOLE_SCOPE_FORMAT && row[1] == 0 && row[2] == DSP_SPEC_BINS && row[3] == 0);
+
+    /* The host records a full-scale tone at 1500 Hz, bin 64: -3 dBFS is 6
+     * half decibels. It plays nothing. */
+    tone(in, CONSOLE_SCOPE_RING, 32767.0f);
+    console_scope_add(&rx, in, CONSOLE_SCOPE_RING);
+    CHECK(console_scope_row(&work, &rx, &tx, true, row, sizeof row) == 4 + DSP_SPEC_BINS);
+    CHECK(row[1] == (CONSOLE_SCOPE_RX | CONSOLE_SCOPE_KEYED));
+    CHECK(row[4 + 64] == 6 && row[4 + 63] == 18 && row[4 + 65] == 18);
+    CHECK(row[4 + 20] > 160 && row[4 + 120] > 160); /* below -80 dBFS */
+
+    /* Both ways, the played tone 20 dB down: receive first, then transmit. */
+    tone(in, CONSOLE_SCOPE_RING, 3276.7f);
+    console_scope_add(&tx, in, CONSOLE_SCOPE_RING);
+    console_scope_add(&rx, NULL, CONSOLE_SCOPE_RING);
+    CHECK(console_scope_row(&work, &rx, &tx, false, row, sizeof row) == CONSOLE_SCOPE_ROW_MAX);
+    CHECK(row[1] == (CONSOLE_SCOPE_RX | CONSOLE_SCOPE_TX));
+    CHECK(row[4 + 64] == 240); /* silence: -120 dBFS, the lowest anything reads */
+    CHECK(row[4 + DSP_SPEC_BINS + 64] == 46);
+
+    /* Only the transmit side goes on: its lane comes straight after the header. */
+    console_scope_add(&tx, in, 480);
+    CHECK(console_scope_row(&work, &rx, &tx, false, row, sizeof row) == 4 + DSP_SPEC_BINS);
+    CHECK(row[1] == CONSOLE_SCOPE_TX && row[4 + 64] == 46);
+    CHECK(console_scope_row(&work, &rx, &tx, false, row, sizeof row) == 4 && row[1] == 0);
+
+    /* A board with no waterfall for one direction, or for either. */
+    console_scope_add(&tx, in, 480);
+    CHECK(console_scope_row(&work, NULL, &tx, false, row, sizeof row) == 4 + DSP_SPEC_BINS && row[1] == CONSOLE_SCOPE_TX);
+    CHECK(console_scope_row(&work, NULL, NULL, true, row, sizeof row) == 4 && row[1] == CONSOLE_SCOPE_KEYED);
+
+    /* The page learns the layout from /api/info. */
+    const console_info_t info = {.name = "x"};
+    fresh();
+    CHECK(console_info_json(&g_ctl, &info, g_buf, sizeof g_buf) > 0 && json_valid(g_buf));
+    CHECK_HAS(g_buf, ",\"scope\":{\"fs\":12000,\"n\":512,\"bins\":128,\"rows\":10},\"settings\":[");
+}
+
 int main(void)
 {
     test_settings_read();
@@ -1088,6 +1377,8 @@ int main(void)
     test_telemetry();
     test_cost();
     test_health();
+    test_front_panel();
+    test_scope();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

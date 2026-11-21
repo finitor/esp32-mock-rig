@@ -31,63 +31,67 @@ static const civ_range_t ic705_tx[] = {
 
 /* 14 xx levels, 0..255 */
 static const civ_item_t ic705_levels[] = {
-    {0x01, 128}, /* AF gain */
-    {0x02, 255}, /* RF gain */
-    {0x03, 0},   /* squelch */
-    {0x06, 0},   /* NR level */
-    {0x07, 128}, /* twin PBT inside */
-    {0x08, 128}, /* twin PBT outside */
-    {0x09, 128}, /* CW pitch */
-    {0x0A, 255}, /* RF power: 255 = 10 W */
-    {0x0B, 128}, /* mic gain */
-    {0x0C, 130}, /* key speed */
-    {0x0D, 128}, /* notch position */
-    {0x0E, 0},   /* compressor level */
-    {0x0F, 128}, /* break-in delay */
-    {0x12, 128}, /* NB level */
-    {0x15, 0},   /* monitor gain */
-    {0x16, 128}, /* VOX gain */
-    {0x17, 128}, /* anti-VOX gain */
-    {0x19, 255}, /* LCD backlight */
+    {0x01, 128, "AF gain", 0},
+    {0x02, 255, "RF gain", 0},
+    {0x03, 0, "Squelch", 0},
+    {0x06, 0, "NR level", 0},
+    {0x07, 128, "Twin PBT inside", 0},
+    {0x08, 128, "Twin PBT outside", 0},
+    {0x09, 128, "CW pitch", 0},
+    {0x0A, 255, "RF power", 0}, /* 255 = 10 W */
+    {0x0B, 128, "Mic gain", 0},
+    {0x0C, 130, "Key speed", 0},
+    {0x0D, 128, "Notch position", 0},
+    {0x0E, 0, "Compressor level", 0},
+    {0x0F, 128, "Break-in delay", 0},
+    {0x12, 128, "NB level", 0},
+    {0x15, 0, "Monitor gain", 0},
+    {0x16, 128, "VOX gain", 0},
+    {0x17, 128, "Anti-VOX gain", 0},
+    {0x19, 255, "LCD backlight", 0},
 };
 
 /* 15 xx meters and status */
 static const civ_item_t ic705_meters[] = {
-    {0x01, 0},   /* squelch status: closed */
-    {0x02, 12},  /* S-meter: about S1 */
-    {0x05, 0},   /* tone squelch status */
-    {0x07, 0},   /* overflow */
-    {0x11, 0},   /* power output */
-    {0x12, 0},   /* SWR: 1.0 */
-    {0x13, 0},   /* ALC */
-    {0x14, 0},   /* COMP */
-    {0x15, 203}, /* Vd: about 13.8 V */
-    {0x16, 0},   /* Id */
+    {0x01, 0, "Squelch status", 0}, /* closed */
+    {0x02, 12, "S-meter", 0}, /* about S1 */
+    {0x05, 0, "Tone squelch status", 0},
+    {0x07, 0, "Overflow", 0},
+    {0x11, 0, "Power output", 0},
+    {0x12, 0, "SWR", 0}, /* 1.0 */
+    {0x13, 0, "ALC", 0},
+    {0x14, 0, "COMP", 0},
+    {0x15, 203, "Vd", 0}, /* about 13.8 V */
+    {0x16, 0, "Id", 0},
 };
 
-/* 16 xx functions */
+/* 16 xx functions. The values named for the front panel are the ones Hamlib
+ * 4.7.1 was logged sending (rigctl -m 3085, L AGC, L PREAMP, U SBKIN and
+ * U FBKIN): AGC 00 to 03, preamplifier 00 to 02, break-in 00 to 02. The rest
+ * are switches there, whatever further values the radio has: Icom's guide
+ * was not at hand to name them. */
 static const civ_item_t ic705_funcs[] = {
-    {0x02, 0}, /* preamp */
-    {0x12, 2}, /* AGC: MID */
-    {0x22, 0}, /* noise blanker */
-    {0x40, 0}, /* noise reduction */
-    {0x41, 0}, /* auto notch */
-    {0x42, 0}, /* repeater tone */
-    {0x43, 0}, /* tone squelch */
-    {0x44, 0}, /* speech compressor */
-    {0x45, 0}, /* monitor */
-    {0x46, 0}, /* VOX */
-    {0x47, 0}, /* break-in */
-    {0x48, 0}, /* manual notch */
-    {0x4B, 0}, /* DTCS */
-    {0x4F, 0}, /* twin peak filter */
-    {0x50, 0}, /* dial lock */
-    {0x56, 0}, /* DSP IF filter shape */
-    {0x57, 0}, /* manual notch width */
-    {0x58, 0}, /* SSB TX bandwidth */
-    {0x5B, 0}, /* DSQL / CSQL */
-    {0x5D, 0}, /* tone squelch type */
-    {0x65, 0}, /* IP plus */
+    {0x02, 0, "Preamp", "off|1|2"},
+    {0x12, 2, "AGC", "off|fast|mid|slow"}, /* MID */
+    {0x22, 0, "Noise blanker", 0},
+    {0x40, 0, "Noise reduction", 0},
+    {0x41, 0, "Auto notch", 0},
+    {0x42, 0, "Repeater tone", 0},
+    {0x43, 0, "Tone squelch", 0},
+    {0x44, 0, "Speech compressor", 0},
+    {0x45, 0, "Monitor", 0},
+    {0x46, 0, "VOX", 0},
+    {0x47, 0, "Break-in", "off|semi|full"},
+    {0x48, 0, "Manual notch", 0},
+    {0x4B, 0, "DTCS", 0},
+    {0x4F, 0, "Twin peak filter", 0},
+    {0x50, 0, "Dial lock", 0},
+    {0x56, 0, "DSP IF filter shape", 0},
+    {0x57, 0, "Manual notch width", 0},
+    {0x58, 0, "SSB TX bandwidth", 0},
+    {0x5B, 0, "DSQL / CSQL", 0},
+    {0x5D, 0, "Tone squelch type", 0},
+    {0x65, 0, "IP plus", 0},
 };
 
 /* 1A 05 xx xx menu settings. Only the items a client has been seen to send. */
@@ -127,6 +131,7 @@ const civ_rig_t rig_ic705 = {
 
     .caps = CIV_CAP_X25_X26 | CIV_CAP_DATA_MODE | CIV_CAP_VFO_EQUAL | CIV_CAP_DUPLEX | CIV_CAP_POWER |
             CIV_CAP_TUNER | CIV_CAP_RIT | CIV_CAP_FILTER_BW | CIV_CAP_ATT | CIV_CAP_TS,
+    .att_on = 0x20, /* 20 dB: what Hamlib 4.7.1 sends for L ATT 20 */
 
     .init_freq = {14074000, 7074000},
     .init_mode = 0x01, /* USB */

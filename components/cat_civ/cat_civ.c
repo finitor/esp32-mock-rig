@@ -68,6 +68,11 @@ static void send_frame(civ_t *c, const civ_frame_t *f, const uint8_t *payload, s
 {
     uint8_t out[CIV_MAX_FRAME];
     if (len + 5 > sizeof out) return;
+    if (c->local) { /* civ_local(): only whether it was taken matters */
+        c->local_replied = true;
+        c->local_ok = !(len == 1 && payload[0] == CIV_NG);
+        return;
+    }
     out[0] = CIV_PREAMBLE;
     out[1] = CIV_PREAMBLE;
     out[2] = f->from; /* back to the controller */
@@ -170,6 +175,11 @@ bool civ_set_meter(civ_t *c, uint8_t sub, uint16_t value)
     if (i < 0) return false;
     c->meter[i] = value;
     return true;
+}
+
+bool civ_meter_is_status(uint8_t sub)
+{
+    return sub == 0x01 || sub == 0x05 || sub == 0x07; /* squelch, tone squelch, overflow */
 }
 
 void civ_set_private(civ_t *c, uint8_t addr, civ_private_fn fn, void *ctx)
@@ -364,7 +374,7 @@ static void cmd_meter(civ_t *c, const civ_frame_t *f)
     }
     uint8_t sub = f->data[0];
     uint8_t p[4] = {0x15, sub};
-    if (sub == 0x01 || sub == 0x05 || sub == 0x07) { /* squelch, tone squelch, overflow */
+    if (civ_meter_is_status(sub)) {
         p[2] = (uint8_t)(c->meter[i] ? 0x01 : 0x00);
         civ_reply(c, f, p, 3);
     } else {
@@ -678,6 +688,68 @@ static void dispatch(civ_t *c, const civ_frame_t *f)
         civ_reply_ng(c, f);
         break;
     }
+}
+
+/* ---- the front panel -------------------------------------------------- */
+
+bool civ_local(civ_t *c, uint8_t cmd, const uint8_t *data, size_t len)
+{
+    if (len > CIV_MAX_FRAME - 6) return false; /* longer than any frame from the wire */
+    const civ_frame_t f = {
+        .to = c->rig->default_addr,
+        .from = 0xE0,
+        .cmd = cmd,
+        .data = data,
+        .len = len,
+    };
+    uint32_t ok = c->frames_ok, ng = c->frames_ng;
+    c->local = true;
+    c->local_replied = false;
+    c->local_ok = false;
+    dispatch(c, &f);
+    c->local = false;
+    c->frames_ok = ok;
+    c->frames_ng = ng;
+    return c->local_replied && c->local_ok;
+}
+
+/* FNV-1a, a field at a time: the padding inside a struct is not state. */
+static uint32_t hash_bytes(uint32_t h, const void *p, size_t n)
+{
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+#define HASH(h, field) hash_bytes((h), &(field), sizeof(field))
+
+uint32_t civ_state_hash(const civ_t *c)
+{
+    uint32_t h = 2166136261u;
+    int model = c->rig->hamlib_model;
+    uint8_t flags = (uint8_t)((c->split ? 1 : 0) | (c->power ? 2 : 0) | (c->rit_on ? 4 : 0));
+
+    h = HASH(h, model);
+    for (int v = 0; v < 2; v++) {
+        uint8_t data = c->vfo[v].data ? 1 : 0;
+        h = HASH(h, c->vfo[v].freq);
+        h = HASH(h, c->vfo[v].mode);
+        h = HASH(h, c->vfo[v].filter);
+        h = HASH(h, data);
+    }
+    h = HASH(h, c->sel);
+    h = HASH(h, flags);
+    h = HASH(h, c->duplex);
+    h = HASH(h, c->tuner);
+    h = HASH(h, c->att);
+    h = HASH(h, c->ts);
+    h = HASH(h, c->filter_bw);
+    h = HASH(h, c->rit_hz);
+    h = HASH(h, c->level);
+    h = HASH(h, c->meter);
+    h = HASH(h, c->func);
+    h = HASH(h, c->setting);
+    return h;
 }
 
 /* ---- framing ---------------------------------------------------------- */

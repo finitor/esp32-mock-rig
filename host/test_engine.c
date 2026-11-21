@@ -810,6 +810,41 @@ static void test_line_ptt(void)
     CHECK(rx_open(&e));
 }
 
+/* The key on the radio's front panel: a source of its own. */
+static void test_panel_ptt(void)
+{
+    ae_t e;
+    ae_init(&e, 31);
+    g_line = AE_LINE_OFF;
+    configure(&e, edit_line);
+    CHECK(rx_open(&e));
+    CHECK(!ptt_now(&e).panel && !ae_ptt_keyed(&(ae_ptt_t){0}));
+
+    ae_set_panel_ptt(&e, true);
+    ae_ptt_t p = ptt_now(&e);
+    CHECK(p.panel && !p.cat && !p.line && !p.vox && ae_ptt_keyed(&p));
+    CHECK(!rx_open(&e)); /* transmitting: the receive is muted */
+
+    /* CAT keying and unkeying meanwhile does not release it. */
+    ae_set_ptt(&e, true);
+    ae_set_ptt(&e, false);
+    CHECK(ptt_now(&e).panel && !rx_open(&e));
+    ae_set_panel_ptt(&e, false);
+    CHECK(!ae_ptt_keyed(&(ae_ptt_t){.panel = ptt_now(&e).panel}) && rx_open(&e));
+
+    /* It records in the parrot route like any other source, and holds a
+     * replay off while it keys. */
+    parrot_engine(&e, 0, 0);
+    tx_tone(0, FS / 2, 1500, 8000);
+    ae_set_panel_ptt(&e, true);
+    for (size_t i = 0; i < FS / 2; i += BLOCK) ae_process(&e, p_tx + i, p_out + i, BLOCK);
+    ae_parrot_status_t st;
+    ae_get_parrot_status(&e, &st);
+    CHECK(st.state == AE_PARROT_RECORDING && st.recorded_ms > 400);
+    CHECK(!ae_parrot_replay(&e));
+    ae_set_panel_ptt(&e, false);
+}
+
 static float g_vox_dbfs;
 static uint32_t g_vox_hang;
 static void edit_vox(ae_config_t *c)
@@ -1545,6 +1580,7 @@ int main(void)
     test_parrot_through_channel();
     test_parrot_no_delay();
     test_line_ptt();
+    test_panel_ptt();
     test_vox();
     test_fading();
     test_fading_parrot_timing();

@@ -2,7 +2,7 @@
 
 ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
 
-**Status:** early. The CAT protocol core, the IC-705 and G90 personalities, the audio DSP, parrot mode, the channel simulation, PTT from CAT, a control line or VOX, their run-time controls, the web console's settings and telemetry and the two-board link are written and tested on a desktop, and the CAT side passes real Hamlib as both radios. The G90 personality is built from Xiegu's CAT manual and Hamlib's source, and has not been compared with a real G90. The firmware, including the USB sound card, the serial port, the web console over Wi-Fi and the link over ESP-NOW or a UART, builds but has not yet been run on a board.
+**Status:** early. The CAT protocol core, the IC-705 and G90 personalities, the audio DSP, parrot mode, the channel simulation, PTT from CAT, a control line or VOX, their run-time controls, the web console's settings, telemetry and front panel and the two-board link are written and tested on a desktop, and the CAT side passes real Hamlib as both radios. The G90 personality is built from Xiegu's CAT manual and Hamlib's source, and has not been compared with a real G90. The firmware, including the USB sound card, the serial port, the web console over Wi-Fi and the link over ESP-NOW or a UART, builds but has not yet been run on a board.
 
 ## What it will do
 
@@ -12,7 +12,7 @@ ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks
 - Parrot mode: record transmit audio and play it back as receive audio; keep recordings in flash as clips.
 - Simulate a channel: noise at a set SNR, attenuation, turnaround delay, and HF fading by the same named conditions as Data2G's simulator.
 - Link two boards (ESP-NOW or wired UART) so two modems can hold an ARQ session over a fake radio path.
-- Offer a web console over Wi-Fi to change settings and watch telemetry while it runs.
+- Offer a web console over Wi-Fi to change settings and watch telemetry while it runs, with a front panel for the radio it imitates (see what the rig-control software set, and change things at the radio to see whether it notices) and a waterfall of the audio each way.
 
 ## Hardware
 
@@ -99,6 +99,20 @@ To see the console without a board, with two simulated radios joined by the link
 ```bash
 make -C host console-sim
 ```
+
+The console's front panel shows the radio imitated: both VFOs, mode, split, every level, switch and meter, and a PTT key. To use it with Hamlib and no board, start the simulator without its pretend transmissions and point any CAT program at a simulated board's serial port:
+
+```bash
+make -C host radio-sim
+```
+
+```bash
+rigctl -m 3085 -r host/build/cat-a
+```
+
+What `rigctl` sets shows on the panel at `http://localhost:8080`, and what is changed on the panel it reads back. A rigctld server in front of the radio, such as Data2G's `data2g-rigctld --rig-model 3085 --rig-device host/build/cat-a`, can be tested the same way.
+
+The console's "Audio waterfall" section shows the spectrum of the audio the host records and of the audio it plays, up to 3 kHz, scrolling: what the modem sends, and what the channel's noise, fading and mute do to it. The board works it out only while the section is open.
 
 None of the firmware has been tested on hardware yet.
 

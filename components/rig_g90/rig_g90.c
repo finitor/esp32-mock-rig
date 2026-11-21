@@ -49,29 +49,29 @@ static const civ_range_t g90_tx[] = {
 /* 14 xx levels, 0..255 for 0..100 % [M]. Any other sub-command reads as 255
  * [M]: see g90_extra(). */
 static const civ_item_t g90_levels[] = {
-    {0x01, 64},  /* AF level */
-    {0x02, 255}, /* RF gain: not in [M], reported working in [H] */
-    {0x03, 0},   /* squelch */
-    {0x09, 128}, /* CW sidetone frequency */
-    {0x0A, 255}, /* transmit power: 255 = 20 W */
-    {0x0C, 130}, /* CW key speed */
+    {0x01, 64, "AF level", 0},
+    {0x02, 255, "RF gain", 0}, /* not in [M], reported working in [H] */
+    {0x03, 0, "Squelch", 0},
+    {0x09, 128, "CW sidetone frequency", 0},
+    {0x0A, 255, "Transmit power", 0}, /* 255 = 20 W */
+    {0x0C, 130, "CW key speed", 0},
 };
 
 /* 15 xx [M] */
 static const civ_item_t g90_meters[] = {
-    {0x01, 0},  /* squelch status */
-    {0x02, 12}, /* S-meter */
-    {0x11, 0},  /* power meter */
-    {0x12, 0},  /* SWR meter: 1.0 */
+    {0x01, 0, "Squelch status", 0},
+    {0x02, 12, "S-meter", 0},
+    {0x11, 0, "Power meter", 0},
+    {0x12, 0, "SWR meter", 0}, /* 1.0 */
 };
 
 /* 16 xx [M] */
 static const civ_item_t g90_funcs[] = {
-    {0x02, 0}, /* preamplifier: 00 off, 01 or 02 on */
-    {0x12, 1}, /* AGC: 00 off, 01 fast, 02 middle, 03 slow */
-    {0x22, 0}, /* noise blanker */
-    {0x44, 0}, /* speech compressor */
-    {0x50, 0}, /* dial lock */
+    {0x02, 0, "Preamplifier", 0}, /* 00 off, 01 or 02 on */
+    {0x12, 1, "AGC", "off|fast|middle|slow"}, /* 00 off, 01 fast, 02 middle, 03 slow */
+    {0x22, 0, "Noise blanker", 0},
+    {0x44, 0, "Speech compressor", 0},
+    {0x50, 0, "Dial lock", 0},
 };
 
 /* The commands only this radio has, or answers in its own way. */
