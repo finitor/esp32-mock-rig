@@ -51,9 +51,12 @@ typedef struct {
 } console_info_t;
 
 /* Who this is and what can be set: the radio imitated and the ones it could
- * be instead, the layout of the waterfall's rows ("scope"), and each setting's name, label, group, and either its choices
- * (with a label for each, where the word alone does not say enough) or its
- * unit, range and step. The page builds its form from this. */
+ * be instead, the layout of the waterfall's rows ("scope"), and each setting's
+ * name, label, group, and either its choices (with a label for each, where
+ * the word alone does not say enough) or its unit, range and step. A setting
+ * that is in force only while another has one value says so ("when": the
+ * custom fading's numbers, {"fade":"custom"}). The page builds its form from
+ * this. */
 size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, size_t cap);
 
 /* ---- settings ---------------------------------------------------------------- */

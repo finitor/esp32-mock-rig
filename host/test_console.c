@@ -509,6 +509,15 @@ static void test_info(void)
     CHECK_HAS(g_buf, "\"choices\":[\"off\",\"mpg\",\"mpp\",\"mpd\",\"mps\",\"nvis-d\",\"lowlat-d\",\"hilat-m\",\"hilat-d\","
                      "\"custom\"],\"labels\":[\"Off\",\"Good: mpg (0.1 Hz, 0.5 ms)\",");
     CHECK_HAS(g_buf, "\"ITU high latitude disturbed: hilat-d (30 Hz, 7 ms)\",\"Custom: the two numbers below\"]}");
+    /* The custom fading's two numbers say when they are in force; the
+     * frequency offset, which always is, does not, and nor does anything else. */
+    CHECK_HAS(g_buf, "\"hint\":\"For custom fading: how fast it fades.\",\"when\":{\"fade\":\"custom\"},\"unit\":\"Hz\"");
+    CHECK_HAS(g_buf, "second path arrives.\",\"when\":{\"fade\":\"custom\"},\"unit\":\"ms\"");
+    CHECK_HAS(g_buf, "\"hint\":\"Moves the receive audio up or down.\",\"unit\":\"Hz\"");
+    int conditional = 0;
+    for (const char *q = g_buf; (q = strstr(q, "\"when\":")) != NULL; q++) conditional++;
+    CHECK(conditional == 2);
+
     /* A label for every choice of a setting that has labels, and none for the others. */
     size_t labelled = 0;
     for (const char *q = g_buf; (q = strstr(q, "\"labels\":[")) != NULL; q++) labelled++;

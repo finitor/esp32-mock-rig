@@ -189,6 +189,22 @@ static const char *const *cset_labels(const cset_t *s)
 
 _Static_assert(sizeof l_fade / sizeof l_fade[0] == AE_FADE_COUNT, "a label for every fading condition");
 
+/* A setting that is in force only while another, a choice, has one value:
+ * the custom fading's two numbers, which the named conditions do not use.
+ * The setting keeps its value meanwhile and can still be set by the other
+ * control paths; the page shows it as not in force. NULL for the rest. */
+static const cset_t *cset_when(const cset_t *s, const char **value)
+{
+    if (s->cmd != MOCK_CTL_DOPPLER && s->cmd != MOCK_CTL_FADE_DELAY) return NULL;
+    for (size_t i = 0; i < ARRAY_LEN(csets); i++) {
+        if (csets[i].cmd == MOCK_CTL_FADE) {
+            *value = w_fade[AE_FADE_CUSTOM];
+            return &csets[i];
+        }
+    }
+    return NULL;
+}
+
 static const cset_t *find_cset(const char *name, size_t len)
 {
     for (size_t i = 0; i < ARRAY_LEN(csets); i++) {
@@ -240,6 +256,9 @@ size_t console_info_json(mock_ctl_t *m, const console_info_t *info, char *buf, s
             out_f(&o, ",\"hint\":");
             out_str(&o, s->hint);
         }
+        const char *when_value = NULL;
+        const cset_t *when = cset_when(s, &when_value);
+        if (when) out_f(&o, ",\"when\":{\"%s\":\"%s\"}", when->name, when_value);
         if (s->scale == 0) {
             out_f(&o, ",\"choices\":[");
             for (size_t w = 0; w < s->n_words; w++) out_f(&o, "%s\"%s\"", w ? "," : "", s->words[w]);
