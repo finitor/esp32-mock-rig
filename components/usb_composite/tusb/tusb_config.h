@@ -43,6 +43,15 @@ extern "C" {
 
 #define CFG_TUD_ENDPOINT0_SIZE 64
 
+/* The interrupt hands each finished transfer to the USB task through this
+ * queue, and drops it when the queue is full. Three audio endpoints finish a
+ * transfer every millisecond, so TinyUSB's default of 16 lasts about 5 ms
+ * without the task running. A dropped completion on the CAT port's IN
+ * endpoint leaves it busy for good: CAT still arrives and no reply leaves,
+ * which the first board did twice. 64 rides out about 20 ms, which covers
+ * what nothing can preempt, such as a flash write. */
+#define CFG_TUD_TASK_QUEUE_SZ 64
+
 /* One CDC-ACM port for CAT. CI-V frames are a few bytes; these are ample. */
 #define CFG_TUD_CDC            1
 #define CFG_TUD_CDC_RX_BUFSIZE 256

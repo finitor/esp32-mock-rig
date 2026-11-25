@@ -34,8 +34,10 @@ CONFIG_UAC_SUPPORT_MACOS=y
 # waits more than 1 ms for a processor. At its default (priority 5, either
 # core) Wi-Fi and lwIP on the same core cost one packet every 20 to 30 s on the
 # first board. Keep the USB tasks on core 1, above lwIP, and lwIP on core 0
-# with Wi-Fi.
-CONFIG_UAC_TINYUSB_TASK_PRIORITY=12
+# with Wi-Fi. The TinyUSB task is the highest of the three: it empties the
+# interrupt's event queue, and below the audio tasks a long audio block let
+# that queue overflow and wedge the CAT port (see tusb_config.h).
+CONFIG_UAC_TINYUSB_TASK_PRIORITY=15
 CONFIG_UAC_TINYUSB_TASK_CORE=1
 CONFIG_UAC_SPK_TASK_PRIORITY=14
 CONFIG_UAC_SPK_TASK_CORE=1
