@@ -360,11 +360,12 @@ static esp_err_t post_tasks(httpd_req_t *req)
     return send_health(req, true);
 }
 
-/* The page only listens. Whatever it sends is read and dropped. */
+/* The page only listens. Whatever it sends is read and dropped. The server
+ * answers the handshake itself and does not call this for it, so every call
+ * is a frame (and req->method is left over from some earlier request: it says
+ * nothing). */
 static esp_err_t ws_handler(httpd_req_t *req)
 {
-    if (req->method == HTTP_GET) return ESP_OK; /* the handshake; the server has answered it */
-
     uint8_t buf[64];
     httpd_ws_frame_t frame = {0};
     esp_err_t err = httpd_ws_recv_frame(req, &frame, 0); /* the length only */
@@ -385,16 +386,21 @@ static void scope_closed(void *ctx)
     atomic_fetch_sub(&s_scope_clients, 1);
 }
 
-/* The waterfall's WebSocket: the same, and its connection is marked. */
-static esp_err_t ws_scope_handler(httpd_req_t *req)
+/* The waterfall's WebSocket is marked as one as soon as its handshake is done,
+ * which only the server's post-handshake callback hears of: the handler is
+ * not called until the page sends something, and it never does. */
+#if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error "the waterfall needs CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT (sdkconfig.defaults)"
+#endif
+static esp_err_t ws_scope_opened(httpd_req_t *req)
 {
-    if (req->method == HTTP_GET && req->sess_ctx != &s_scope_mark) {
-        if (!s_cfg.rx_scope && !s_cfg.tx_scope) return ESP_FAIL; /* this board has no waterfall: close */
+    if (!s_cfg.rx_scope && !s_cfg.tx_scope) return ESP_FAIL; /* this board has no waterfall: close */
+    if (req->sess_ctx != &s_scope_mark) {
         req->sess_ctx = (void *)&s_scope_mark;
         req->free_ctx = scope_closed;
         atomic_fetch_add(&s_scope_clients, 1);
     }
-    return ws_handler(req);
+    return ESP_OK;
 }
 
 /* ---- Wi-Fi ----------------------------------------------------------------------------- */
@@ -475,7 +481,11 @@ esp_err_t web_console_start(const web_console_config_t *config)
         {.uri = "/api/wifi", .method = HTTP_GET, .handler = get_wifi},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = post_wifi},
         {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true},
-        {.uri = "/ws/scope", .method = HTTP_GET, .handler = ws_scope_handler, .is_websocket = true},
+        {.uri = "/ws/scope",
+         .method = HTTP_GET,
+         .handler = ws_handler,
+         .is_websocket = true,
+         .ws_post_handshake_cb = ws_scope_opened},
     };
 
     if (!config || !config->ctl || !config->sample) return ESP_ERR_INVALID_ARG;

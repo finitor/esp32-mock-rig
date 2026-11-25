@@ -48,6 +48,9 @@ CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
 # set them in menuconfig (they stay in sdkconfig, which is not committed) or
 # from the console's own Wi-Fi form.
 CONFIG_HTTPD_WS_SUPPORT=y
+# The waterfall's socket is marked when its handshake is done, which only this
+# callback hears of: the server does not pass the handshake to the handler.
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
 
 # Board health: let FreeRTOS keep each task's run time and list the tasks, for
 # the health readings in the log and the web console. It costs a clock
