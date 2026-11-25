@@ -25,18 +25,20 @@ Rig control on the Mac went through a rigctld built into a custom Data2G branch 
 
 
 ```mermaid
-flowchart LR
-  subgraph Mac
-    RT1[Ragtime] --> D1[data2g-gui]
-    D1 -->|Hamlib NET rigctl| F[data2g-rigctld]
+flowchart TB
+  subgraph mac["Station one: a Mac"]
+    RT1[Ragtime] --> D1[data2g-gui] -->|Hamlib NET rigctl| F[data2g-rigctld]
   end
-  F -->|CAT over USB| B1[ESP32-S3 board one]
+  B1[ESP32-S3 board one<br/>mock IC-705]
+  B2[ESP32-S3 board two<br/>mock IC-705]
+  subgraph phone["Station two: an Android phone"]
+    direction LR
+    D2[Data2G TNC] --- RT2[Ragtime]
+  end
+  F -->|CAT over USB| B1
   D1 <-->|USB sound card| B1
-  B1 <-->|ESP-NOW link| B2[ESP32-S3 board two]
-  subgraph Android phone
-    D2[Data2G TNC] --> RT2[Ragtime]
-  end
-  B2 <-->|USB sound card and CAT| D2
+  B1 <-->|ESP-NOW link<br/>noise and fading| B2
+  B2 <-->|"USB sound card and CAT<br/>(into Data2G TNC)"| phone
 ```
 
 In this test, broadcasts went both ways between Ragtime on a Mac and Ragtime on an Android phone, and a ragchew (a connected Data2G session) carried chat and a file, which arrived byte for byte.
