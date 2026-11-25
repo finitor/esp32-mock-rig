@@ -29,6 +29,19 @@ CONFIG_UAC_SAMPLE_RATE=48000
 CONFIG_UAC_BIT_RESOLUTION_16=y
 # Rate-feedback format that macOS accepts on full-speed devices.
 CONFIG_UAC_SUPPORT_MACOS=y
+# The component hands each 1 ms playback packet from the USB interrupt to its
+# speaker task through a single buffer, so a packet is lost whenever that task
+# waits more than 1 ms for a processor. At its default (priority 5, either
+# core) Wi-Fi and lwIP on the same core cost one packet every 20 to 30 s on the
+# first board. Keep the USB tasks on core 1, above lwIP, and lwIP on core 0
+# with Wi-Fi.
+CONFIG_UAC_TINYUSB_TASK_PRIORITY=12
+CONFIG_UAC_TINYUSB_TASK_CORE=1
+CONFIG_UAC_SPK_TASK_PRIORITY=14
+CONFIG_UAC_SPK_TASK_CORE=1
+CONFIG_UAC_MIC_TASK_PRIORITY=13
+CONFIG_UAC_MIC_TASK_CORE=1
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
 
 # Web console: the HTTP server needs WebSocket support for the live
 # telemetry. Wi-Fi network names and passwords do not belong in this file:
