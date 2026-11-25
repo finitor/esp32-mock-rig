@@ -1,6 +1,6 @@
 # esp32-mock-rig
 
-A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an Android phone over USB and shows up as a transceiver with a built-in sound card and CAT port, an Icom IC-705 or a Xiegu G90, so modem software (Data2G, WSJT-X, fldigi, VARA) drives it through Hamlib exactly as it would a real rig. There is no RF. What the mock adds is a controllable channel: loopback, a parrot that plays your transmission back, noise at a set SNR, HF fading, and a link between two boards, so that two stations on one bench can hold a real ARQ session over a fake radio path.
+A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an Android phone over USB and shows up as a transceiver with a built-in sound card and CAT port, an Icom IC-705 or a Xiegu G90, so any software that drives a radio through Hamlib, or speaks CI-V itself, and takes audio from a sound card (WSJT-X, fldigi, VARA, Data2G and the like) drives it exactly as it would a real rig. Nothing in the firmware is specific to one modem. There is no RF. What the mock adds is a controllable channel: loopback, a parrot that plays your transmission back, noise at a set SNR, HF fading, and a link between two boards, so that two stations on one bench can hold a real ARQ session over a fake radio path.
 
 ![Two boards linked: the web console of the receiving board, with the other station's burst arriving over the noise floor](docs/images/console-waterfall.png)
 
@@ -8,16 +8,19 @@ A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an A
 
 ## What works
 
-Tested on ESP32-S3 boards with Hamlib 4.7.1, Data2G and Ragtime, on macOS 15 and an Android phone (Android 16):
+Tested on ESP32-S3 boards on macOS 15 and an Android phone (Android 16). The software used for these tests was Hamlib 4.7.1's `rigctl` and, for the end-to-end test below, Data2G and Ragtime; other Hamlib or CI-V software should work the same way but has not been tried yet.
 
 - **One USB device, two functions.** A 48 kHz mono sound card and a CDC serial port. macOS and Android both enumerate it and stream audio both ways; the loopback is bit-exact.
-- **CAT as an IC-705 or a G90.** On the boards, `rigctl -m 3085` and `-m 3088` read and set frequency, mode and PTT with no Hamlib errors, and Data2G and Ragtime drive the radio through Hamlib and Data2G's rigctld facade. On the desktop, the same parser passes a wider `rigctl` sweep (levels, VFOs, split). The radio imitated is chosen at run time and kept in flash.
+- **CAT as an IC-705 or a G90.** On the boards, `rigctl -m 3085` and `-m 3088` read and set frequency, mode and PTT with no Hamlib errors, and in the end-to-end test Data2G drove the radio through Hamlib. On the desktop, the same parser passes a wider `rigctl` sweep (levels, VFOs, split). The radio imitated is chosen at run time and kept in flash.
 - **PTT** from CAT, a serial control line (RTS or DTR) or VOX, plus a key on the web console's front panel that a controller can see but not release.
-- **A receive channel**: monitor (loopback), radio (muted while keyed), parrot (record each transmission, play it back after), and link (hear another board). Noise is on at power-up, at 10 dB SNR in 2500 Hz, and Data2G measured 9.8 to 11.4 dB against it. HF fading uses the condition names and numbers of Data2G's own simulator (tested on the desktop, not yet on the boards).
+- **A receive channel**: monitor (loopback), radio (muted while keyed), parrot (record each transmission, play it back after), and link (hear another board). Noise is on at power-up, at 10 dB SNR in 2500 Hz; in the end-to-end test Data2G measured 9.8 to 11.4 dB against it. HF fading uses the condition names and numbers of Data2G's own simulator (tested on the desktop, not yet on the boards).
 - **Two boards linked over ESP-NOW** (or, not yet tried, three wires between their UARTs): 12 kHz audio in 10 ms packets with a jitter buffer and clock-drift correction. In testing no packet was lost. Two linked boards share one channel, so the path fades alike both ways.
 - **A web console over Wi-Fi**: every setting, live telemetry, the board's own health, a front panel of the radio it imitates, and a waterfall of the audio each way.
 
-### Two stations on a bench
+### An end-to-end test: two stations on a bench
+
+This is the setup used to test the boards end to end, not a requirement of the mock. Data2G and Ragtime happened to be the software at hand: Data2G as the modem (with its rigctld facade sharing the Mac's rig), Ragtime as the chat client on each end. Any other modem and client that work with a real IC-705 or G90 would sit in the same places.
+
 
 ```mermaid
 flowchart LR
@@ -34,7 +37,7 @@ flowchart LR
   B2 <-->|USB sound card and CAT| D2
 ```
 
-With this setup, broadcasts went both ways between Ragtime on a Mac and Ragtime on an Android phone, and a ragchew (a connected Data2G session) carried chat and a file, which arrived byte for byte.
+In this test, broadcasts went both ways between Ragtime on a Mac and Ragtime on an Android phone, and a ragchew (a connected Data2G session) carried chat and a file, which arrived byte for byte.
 
 <p>
 <img src="docs/images/android-ragtime-ragchew.png" width="32%" alt="Ragtime on the Android phone: a ragchew with the Mac station, with chat both ways and a file saved">

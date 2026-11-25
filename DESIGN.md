@@ -764,7 +764,7 @@ To check on a phone:
 - Android grants serial access on a device that also has audio capture. Android is believed to require microphone permission first; Data2G requests it, so grant that before the USB prompt.
 - Opening the serial port succeeds on a composite audio+serial device. Data2G's own comments note it can fail if another driver holds the device.
 
-**Half an end-to-end path on a Mac, Nov 25, 2026.** One station, through the first board: Ragtime (baitisj/ragtime main at `ddd9d60`) → `data2g-gui` → Data2G's rigctld facade → the board, with the board's sound card as Data2G's audio both ways and the board in the parrot route, so the station hears its own transmission. Data2G was built from a local branch, upstream `master` (`ba2b8b0b`) with only the facade's three commits added. The pieces:
+**Half an end-to-end path on a Mac, Nov 25, 2026.** (Data2G and Ragtime here, and in the two-station tests below, are the software that was at hand for testing end to end; the mock is not tied to them, and any modem and client that work with the real radio sit in the same places.) One station, through the first board: Ragtime (baitisj/ragtime main at `ddd9d60`) → `data2g-gui` → Data2G's rigctld facade → the board, with the board's sound card as Data2G's audio both ways and the board in the parrot route, so the station hears its own transmission. Data2G was built from a local branch, upstream `master` (`ba2b8b0b`) with only the facade's three commits added. The pieces:
 
 - `data2g-rigctld --rig-model 3085 --rig-device <the board's CAT port> --port 4532` owns the CAT port.
 - `data2g-gui` (or `data2g-host`) with `--rig-model 2 --rig-device 127.0.0.1:4532 --ptt-method cat --rig-mode pkt_usb`, and the board's sound card for input and output.
