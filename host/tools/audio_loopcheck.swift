@@ -1,7 +1,8 @@
 // audio_loopcheck: play a sample-counting ramp into a CoreAudio device and
 // record it back, both through AudioQueue, then write the recording as a
 // 16-bit mono WAV for ramp_check.py. macOS only. With the mock in the monitor
-// route, every lost, repeated or reordered sample shows exactly.
+// route and its noise off (mockctl.py route=monitor noise=off; noise is on at
+// power-up), every lost, repeated or reordered sample shows exactly.
 //
 //   swiftc -O -o host/build/audio_loopcheck host/tools/audio_loopcheck.swift
 //   host/build/audio_loopcheck "Mock Radio" 120 loop.wav

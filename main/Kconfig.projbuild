@@ -45,7 +45,13 @@ menu "Mock radio: receive route and channel at power-up"
 
     config MOCK_NOISE_ON
         bool "Add noise and hold the signal at a set SNR"
-        default n
+        default y
+        help
+            On, receive audio has a noise floor and the signal is held at the
+            SNR below it, as from a radio. Off, it is exact: silence between
+            signals, and the monitor route a bit-exact loopback (what
+            host/tools/audio_loopcheck.swift needs). Modems such as Data2G
+            show a black waterfall and warn of clipping with it off.
 
     config MOCK_SNR_DB
         int "SNR in dB"
