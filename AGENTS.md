@@ -1,4 +1,4 @@
-# usb-mock-radio
+# esp32-mock-rig
 
 ESP32-S3 firmware that enumerates over USB as a ham radio with a built-in sound card and CAT port, so modem software (Data2G, WSJT-X, VARA, fldigi) can drive it through Hamlib like a real rig. It imitates an Icom IC-705 or a Xiegu G90, chosen at run time. No real RF, no analog audio.
 

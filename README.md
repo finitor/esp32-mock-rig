@@ -1,44 +1,62 @@
-# usb-mock-radio
+# esp32-mock-rig
 
-ESP32-S3 firmware that plugs into a computer or Android phone over USB and looks like a ham radio with a built-in sound card and CAT port. Modem software such as Data2G, WSJT-X, VARA and fldigi can drive it through Hamlib as if it were a real rig, with no RF involved.
+A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an Android phone over USB and shows up as a transceiver with a built-in sound card and CAT port, an Icom IC-705 or a Xiegu G90, so modem software (Data2G, WSJT-X, fldigi, VARA) drives it through Hamlib exactly as it would a real rig. There is no RF. What the mock adds is a controllable channel: loopback, a parrot that plays your transmission back, noise at a set SNR, HF fading, and a link between two boards, so that two stations on one bench can hold a real ARQ session over a fake radio path.
 
-**Status:** early. The CAT protocol core, the IC-705 and G90 personalities, the audio DSP, parrot mode, the channel simulation, PTT from CAT, a control line or VOX, their run-time controls, the web console's settings, telemetry and front panel and the two-board link are written and tested on a desktop, and the CAT side passes real Hamlib as both radios. The G90 personality is built from Xiegu's CAT manual and Hamlib's source, and has not been compared with a real G90. The firmware, including the USB sound card, the serial port, the web console over Wi-Fi and the link over ESP-NOW or a UART, builds but has not yet been run on a board.
+![Two boards linked: the web console of the receiving board, with the other station's burst arriving over the noise floor](docs/images/console-waterfall.png)
 
-## What it will do
+*The receiving board's web console during a two-station test: a burst from the other station arrives over the link at 10 dB SNR (left), then this station answers (right), with receive muted while it transmits.*
 
-- Appear as one USB device: a 48 kHz mono sound card plus a serial port.
-- Emulate the CAT (CI-V protocol) of an Icom IC-705 (Hamlib rig model 3085) or a Xiegu G90 (Hamlib 3088) on the serial port, switchable while it runs.
-- Key from CAT, a serial control line, or VOX.
-- Parrot mode: record transmit audio and play it back as receive audio; keep recordings in flash as clips.
-- Simulate a channel: noise at a set SNR, attenuation, turnaround delay, and HF fading by the same named conditions as Data2G's simulator.
-- Link two boards (ESP-NOW or wired UART) so two modems can hold an ARQ session over a fake radio path.
-- Offer a web console over Wi-Fi to change settings and watch telemetry while it runs, with a front panel for the radio it imitates (see what the rig-control software set, and change things at the radio to see whether it notices) and a waterfall of the audio each way.
+## What works
+
+Tested on ESP32-S3 boards with Hamlib 4.7.1, Data2G and Ragtime, on macOS 15 and an Android phone (Android 16):
+
+- **One USB device, two functions.** A 48 kHz mono sound card and a CDC serial port. macOS and Android both enumerate it and stream audio both ways; the loopback is bit-exact.
+- **CAT as an IC-705 or a G90.** On the boards, `rigctl -m 3085` and `-m 3088` read and set frequency, mode and PTT with no Hamlib errors, and Data2G and Ragtime drive the radio through Hamlib and Data2G's rigctld facade. On the desktop, the same parser passes a wider `rigctl` sweep (levels, VFOs, split). The radio imitated is chosen at run time and kept in flash.
+- **PTT** from CAT, a serial control line (RTS or DTR) or VOX, plus a key on the web console's front panel that a controller can see but not release.
+- **A receive channel**: monitor (loopback), radio (muted while keyed), parrot (record each transmission, play it back after), and link (hear another board). Noise is on at power-up, at 10 dB SNR in 2500 Hz, and Data2G measured 9.8 to 11.4 dB against it. HF fading uses the condition names and numbers of Data2G's own simulator (tested on the desktop, not yet on the boards).
+- **Two boards linked over ESP-NOW** (or, not yet tried, three wires between their UARTs): 12 kHz audio in 10 ms packets with a jitter buffer and clock-drift correction. In testing no packet was lost. Two linked boards share one channel, so the path fades alike both ways.
+- **A web console over Wi-Fi**: every setting, live telemetry, the board's own health, a front panel of the radio it imitates, and a waterfall of the audio each way.
+
+### Two stations on a bench
+
+```mermaid
+flowchart LR
+  subgraph Mac
+    RT1[Ragtime] --> D1[data2g-gui]
+    D1 -->|Hamlib NET rigctl| F[data2g-rigctld]
+  end
+  F -->|CAT over USB| B1[ESP32-S3 board one]
+  D1 <-->|USB sound card| B1
+  B1 <-->|ESP-NOW link| B2[ESP32-S3 board two]
+  subgraph Android phone
+    D2[Data2G TNC] --> RT2[Ragtime]
+  end
+  B2 <-->|USB sound card and CAT| D2
+```
+
+With this setup, broadcasts went both ways between Ragtime on a Mac and Ragtime on an Android phone, and a ragchew (a connected Data2G session) carried chat and a file, which arrived byte for byte.
+
+<p>
+<img src="docs/images/android-ragtime-ragchew.png" width="32%" alt="Ragtime on the Android phone: a ragchew with the Mac station, with chat both ways and a file saved">
+<img src="docs/images/android-data2g-decode.png" width="32%" alt="Data2G on the Android phone: its waterfall and log as it decodes the Mac station's burst at 11.4 dB SNR">
+</p>
+
+*Left: Ragtime on the phone, in a ragchew with the Mac station. Right: Data2G on the phone decoding the Mac's burst, which went out through board one and arrived through board two.*
+
+![The web console's front panel: the imitated IC-705's VFOs, mode, switches, levels and meters](docs/images/console-panel.png)
+
+*The web console's status and front panel. The panel is built from the radio's own tables. Anything changed there goes through the same CAT parser a controller uses, so a controller sees the change on its next poll.*
 
 ## Hardware
 
-An ESP32-S3-DevKitC-1 style board with the ESP32-S3-WROOM-1 N16R8 module (16 MB flash, 8 MB octal PSRAM) and two USB jacks. The host connects to the jack labeled "USB"; the "COM"/"UART" jack is for flashing and logs. No other parts are needed.
+An ESP32-S3-DevKitC-1 style board with the ESP32-S3-WROOM-1 N16R8 module (16 MB flash, 8 MB octal PSRAM). It has two USB jacks:
 
-## Documents
+- **USB** (the S3's own): the mock radio. Plug this into the computer or phone.
+- **COM / UART** (a USB-serial chip): flashing and the log. Optional once flashed.
 
-| File | Purpose |
-| --- | --- |
-| [DESIGN.md](DESIGN.md) | The living design: architecture, USB and CAT details, build plan, decision log, open questions |
-| [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repository |
-| [HANDOFF.md](HANDOFF.md) | The original project handoff, kept as a snapshot |
+No other parts are needed. For two stations, use two boards. A phone needs a cable or adapter that makes it the USB host; not every USB-C cable does this with these boards.
 
-## Building
-
-The protocol code builds and tests on a desktop with only a C compiler:
-
-```bash
-make -C host test
-```
-
-With Hamlib installed, this runs real `rigctl` against the parser as each radio, through a pseudo-terminal, with no radio or board attached:
-
-```bash
-make -C host rigctl
-```
+## Build and flash
 
 The firmware builds with ESP-IDF v5.5.6. With ESP-IDF activated in the shell:
 
@@ -46,78 +64,65 @@ The firmware builds with ESP-IDF v5.5.6. With ESP-IDF activated in the shell:
 idf.py build
 ```
 
-The firmware presents the sound card and CAT serial port, with audio looped back. Noise at a set SNR, attenuation and radio-style receive muting are off at power-up unless switched on at build time with `idf.py menuconfig`, and can be changed while it runs over the CAT serial port:
-
 ```bash
-python3 host/tools/mockctl.py -p <CAT port> noise=on snr=-12.5
+idf.py -p <COM port> flash monitor
 ```
 
-The board starts as an IC-705. To make it a G90, and keep it one through restarts (set the programs that use it to the same radio):
+The protocol, DSP, link and console code is portable C and builds and tests on a desktop with only a C compiler:
 
 ```bash
-python3 host/tools/mockctl.py -p <CAT port> rig=g90
+make -C host test
 ```
 
-Fading makes the receive audio behave as on an HF path: two paths that fade independently. The conditions are named as in the Data2G project's simulator (`mpg` good, `mpp` poor, `mpd` disturbed, `mps` slow and selective, and four severe ITU-R F.1487 ones), and the SNR is then the average. A poor path at 5 dB:
+With Hamlib installed, this runs real `rigctl` against the CAT parser as each radio, with no board attached:
 
 ```bash
-python3 host/tools/mockctl.py -p <CAT port> fade=mpp noise=on snr=5
+make -C host rigctl
 ```
 
-Parrot mode records each transmission and plays it back as receive audio; with a period it comes back in a later time slot, here one FT8 slot (15 s) on:
+## Using it
+
+Point the modem program at the board's serial port and sound card as you would for the real radio: Hamlib model 3085 for the IC-705, or 3088 for the G90. The serial speed doesn't matter.
 
 ```bash
-python3 host/tools/mockctl.py -p <CAT port> route=parrot period=15
+rigctl -m 3085 -r /dev/ttyACM0
 ```
 
-A recording can be kept in flash as one of five clips and played back later, after a power cycle too. Keeping one takes seconds and disturbs audio while it lasts:
+The mock's own settings (route, noise, fading, parrot, link, PTT sources) are CI-V commands to address `F0` on the same serial port, sent with `mockctl.py`, or changed in the web console while a modem program holds the port:
 
 ```bash
-python3 host/tools/mockctl.py -p <CAT port> clip-save=1
+python3 host/tools/mockctl.py -p <CAT port> route=parrot noise=on snr=5 fade=mpp
 ```
 
-```bash
-python3 host/tools/mockctl.py -p <CAT port> route=parrot clip-play=1
-```
+Some useful settings:
 
-Settings return to their built-in values at power-up unless they are kept. This makes the board start with the VOX on from now on, which Data2G's default PTT mode needs:
+| Setting | Effect |
+| --- | --- |
+| `route=monitor` | Loopback: what the host plays comes straight back. Add `noise=off` for a bit-exact loop. |
+| `route=parrot period=15` | Record each transmission and play it back one FT8 slot later. |
+| `route=link` | Hear the other board, when both radios are on the same frequency. |
+| `rig=g90` | Become a Xiegu G90, kept through restarts. |
+| `vox=on keep` | Key on transmit audio, and keep the settings for power-up. |
 
-```bash
-python3 host/tools/mockctl.py -p <CAT port> vox=on keep
-```
+**Web console.** The board joins the Wi-Fi network given in its own console or in `idf.py menuconfig`. With none, it hosts `mockradio-xxxx` (password `mockradio`), with the console at `http://192.168.4.1/`. Once joined, the console is at `http://mockradio-xxxx.local/`. It has no login, so keep it on a network you trust. Two boards link over ESP-NOW when they are on the same Wi-Fi channel: join both to the same network.
 
-While a modem application holds the CAT port, the same settings are in the web console, which also shows PTT, levels and the audio buffer live. Its "Board health" section shows what the board itself is doing: free memory, how busy each processor core is, how long the audio work takes, and each task's stack headroom when asked. The same goes to the log on the COM jack every 30 seconds. The board joins the Wi-Fi network set in `idf.py menuconfig` or in the console's own Wi-Fi form; with none, it hosts a network named `mockradio-xxxx` (password `mockradio`) and the console is at `http://192.168.4.1/`. On a shared network it is at `http://mockradio-xxxx.local/`. The console has no login, so use it on a network you trust.
-
-Two boards hear each other in the link route: what one host transmits, the other receives, when both radios are on the same frequency. The audio travels over ESP-NOW, with both boards on the same Wi-Fi channel (joined to the same network, or one joined to the network the other hosts), or over three wires between their UARTs if the firmware is built for that. Two linked boards share one channel: noise, SNR and fading set on either apply to both, and the path fades alike both ways. Set the route on each board, here or in its web console:
-
-```bash
-python3 host/tools/mockctl.py -p <CAT port> route=link
-```
-
-To see the console without a board, with two simulated radios joined by the link, at `http://localhost:8080` and `http://localhost:8081`:
-
-```bash
-make -C host console-sim
-```
-
-The console's front panel shows the radio imitated: both VFOs, mode, split, every level, switch and meter, and a PTT key. To use it with Hamlib and no board, start the simulator without its pretend transmissions and point any CAT program at a simulated board's serial port:
+**No board yet?** The host simulator serves the console for two simulated, linked boards at `http://localhost:8080` and `:8081`, each with a CAT serial port that Hamlib can drive:
 
 ```bash
 make -C host radio-sim
 ```
 
-```bash
-rigctl -m 3085 -r host/build/cat-a
-```
+## Limits
 
-What `rigctl` sets shows on the panel at `http://localhost:8080`, and what is changed on the panel it reads back. A rigctld server in front of the radio, such as Data2G's `data2g-rigctld --rig-model 3085 --rig-device host/build/cat-a`, can be tested the same way.
+- No RF and no analog audio: it is for testing software, not for operating.
+- It is functionally equivalent to each radio's USB port, not a copy of it: one sound card and one serial port, with its own USB IDs (pid.codes test VID `1209`). Software that picks devices by name or ID will see different ones.
+- The G90 personality is built from Xiegu's CAT manual and Hamlib's source, never compared with a real G90.
+- Tested so far on macOS 15 and Android 16; Linux and Windows are not yet tried.
 
-The console's "Audio waterfall" section shows the spectrum of the audio the host records and of the audio it plays, up to 3 kHz, scrolling: what the modem sends, and what the channel's noise, fading and mute do to it. The board works it out only while the section is open.
+## Documents
 
-None of the firmware has been tested on hardware yet.
-
-To check the USB descriptors in a build against the ESP32-S3's limits:
-
-```bash
-python3 host/tools/check_usb_descriptors.py
-```
+| File | Purpose |
+| --- | --- |
+| [DESIGN.md](DESIGN.md) | The living design: architecture, USB and CAT details, the bring-up on hardware, decision log, open questions |
+| [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repository |
+| [HANDOFF.md](HANDOFF.md) | The original project handoff, kept as a snapshot |
