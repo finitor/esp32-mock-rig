@@ -2,9 +2,9 @@
 
 A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an Android phone over USB and shows up as a transceiver with a built-in sound card and CAT port, an Icom IC-705 or a Xiegu G90, so any software that drives a radio through Hamlib, or speaks CI-V itself, and takes audio from a sound card (WSJT-X, fldigi, VARA, Data2G and the like) drives it exactly as it would a real rig. Nothing in the firmware is specific to one modem. There is no RF. What the mock adds is a controllable channel: loopback, a parrot that plays your transmission back, noise at a set SNR, HF fading, and a link between two boards, so that two stations on one bench can hold a real ARQ session over a fake radio path.
 
-![Two boards linked: the web console of the receiving board, with the other station's burst arriving over the noise floor](docs/images/console-waterfall.png)
+![The web console's front panel: the imitated IC-705's VFOs, mode and filter, switches, levels and meters](docs/images/console-panel.png)
 
-*The receiving board's web console during a two-station test: a burst from the other station arrives over the link at 10 dB SNR (left), then this station answers (right), with receive muted while it transmits.*
+*The board's web console shows a front panel for the radio it imitates. It's built from that radio's own CAT tables. What a program sets over CAT shows up here, and a change made here goes through the same CAT parser, so the program sees it on its next poll.*
 
 ## What works
 
@@ -48,9 +48,9 @@ In this test, broadcasts went both ways between Ragtime on a Mac and Ragtime on 
 
 *Left: Ragtime on the phone, in a ragchew with the Mac station. Right: Data2G on the phone decoding the Mac's burst, which went out through board one and arrived through board two.*
 
-![The web console's front panel: the imitated IC-705's VFOs, mode, switches, levels and meters](docs/images/console-panel.png)
+![The receiving board's web console during the test: levels over the last minute and the audio waterfall each way](docs/images/console-waterfall.png)
 
-*The web console's status and front panel. The panel is built from the radio's own tables. Anything changed there goes through the same CAT parser a controller uses, so a controller sees the change on its next poll.*
+*The receiving board's web console during the test: a burst from the other station arrives over the link at 10 dB SNR (left), then this station answers (right), with receive muted while it transmits.*
 
 ## Hardware
 
