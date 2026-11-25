@@ -21,6 +21,8 @@ Tested on ESP32-S3 boards on macOS 15 and an Android phone (Android 16). The sof
 
 This is the setup used to test the boards end to end, not a requirement of the mock. Data2G and Ragtime happened to be the software at hand: Data2G as the modem (with its rigctld facade sharing the Mac's rig), Ragtime as the chat client on each end. Any other modem and client that work with a real IC-705 or G90 would sit in the same places.
 
+Rig control on the Mac went through a rigctld built into a custom Data2G branch (`data2g-rigctld`), so that Data2G and Ragtime could share the radio. Hamlib's own `rigctld` would have done the same job; the built-in one was chosen to simplify setup, especially on the phone, where Data2G already owns the USB serial port and there is no separate rigctld to run.
+
 
 ```mermaid
 flowchart LR
