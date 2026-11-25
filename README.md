@@ -131,3 +131,7 @@ make -C host radio-sim
 | [DESIGN.md](DESIGN.md) | The living design: architecture, USB and CAT details, the bring-up on hardware, decision log, open questions |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents working in this repository |
 | [HANDOFF.md](HANDOFF.md) | The original project handoff, kept as a snapshot |
+
+## License
+
+MIT; see [LICENSE](LICENSE). The firmware builds on ESP-IDF, TinyUSB and Espressif's `usb_device_uac` and `mdns` components, which keep their own licenses.
