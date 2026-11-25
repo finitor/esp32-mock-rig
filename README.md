@@ -2,7 +2,7 @@
 
 A ham radio that isn't one. ESP32-S3 firmware that plugs into a computer or an Android phone over USB and shows up as a transceiver with a built-in sound card and CAT port, an Icom IC-705 or a Xiegu G90, so any software that drives a radio through Hamlib, or speaks CI-V itself, and takes audio from a sound card (WSJT-X, fldigi, VARA, Data2G and the like) drives it exactly as it would a real rig. Nothing in the firmware is specific to one modem. There is no RF. What the mock adds is a controllable channel: loopback, a parrot that plays your transmission back, noise at a set SNR, HF fading, and a link between two boards, so that two stations on one bench can hold a real ARQ session over a fake radio path.
 
-![The web console: the radio imitated, chosen in the header (here an Icom IC-705), and its front panel with VFOs, mode and filter, switches, levels and meters](docs/images/console-panel.png)
+![The web console: the radio imitated, chosen in the header (here an Icom IC-705), and its front panel with VFOs, mode and filter, switches, levels and meters](docs/images/console-radio-panel.png)
 
 *The board's web console. The header chooses the radio to imitate, an IC-705 or a G90, and the front panel below is that radio's. It's built from that radio's own CAT tables. What a program sets over CAT shows up here, and a change made here goes through the same CAT parser, so the program sees it on its next poll.*
 
