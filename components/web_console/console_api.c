@@ -168,10 +168,14 @@ static const cset_t csets[] = {
      0},
     {"linkbuffer", MOCK_CTL_LINK_BUFFER, 1, "Buffer", G_LINK, "ms",
      "Audio held before it is played: more rides out uneven arrival, less answers sooner.", NULL, 0},
-    {"match", MOCK_CTL_LINK_MATCH, 0, "Frequency match", G_LINK, NULL,
-     "On: the other board is heard only when it transmits on this radio's receive frequency.", w_onoff, 2},
+    {"match", MOCK_CTL_LINK_MATCH, 0, "Strict frequencies", G_LINK, NULL,
+     "On: the other board is heard only while it transmits on this radio's receive frequency, as with real radios. "
+     "Off: it is heard whatever the dials say.",
+     w_onoff, 2},
     {"share", MOCK_CTL_LINK_COORD, 0, "Shared channel", G_LINK, NULL,
-     "On: the two boards keep one set of noise and fading settings, changed from either, and fade alike.", w_onoff,
+     "On: the two boards keep one set of noise, fading and strict-frequency settings, changed from either, and fade "
+     "alike.",
+     w_onoff,
      2},
     {"line", MOCK_CTL_PTT_LINE, 0, "Control-line PTT", G_PTT, NULL, "CAT keying always works; these add to it.",
      w_line, 3},

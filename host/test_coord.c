@@ -230,6 +230,15 @@ static void test_settings(void)
     CHECK(fabsf(c1.fade_doppler_hz - 0.15f) < 0.0001f && fabsf(c1.fade_delay_ms - 7.5f) < 0.001f);
     CHECK(c1.noise_on && c1.fade == AE_FADE_MPP); /* what was not changed stays */
 
+    /* Strict frequencies too: the last board to change it sets it for both. */
+    CHECK(config(0).link_match && config(1).link_match);
+    set(1, MOCK_CTL_LINK_MATCH, 0);
+    run(500);
+    CHECK(!config(0).link_match && !config(1).link_match);
+    set(0, MOCK_CTL_LINK_MATCH, 1);
+    run(500);
+    CHECK(config(0).link_match && config(1).link_match);
+
     /* Settled, nothing more changes hands: the versions stand still. */
     uint32_t version = status(0).version;
     uint32_t gen0 = ae_config_gen(&g_b[0].engine), gen1 = ae_config_gen(&g_b[1].engine);

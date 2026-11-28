@@ -52,11 +52,12 @@ Settings:
     period=S              parrot: start the replay a whole number of these
                           after key-on (15 for FT8, 7.5 for FT4); 0 = off
     linkbuffer=MS         link: audio held before it is played, 10 to 200
-    match=on|off          link: hear the other board only when it transmits
-                          on this radio's receive frequency
+    match=on|off          link: strict frequencies, hear the other board only
+                          when it transmits on this radio's receive frequency
+                          (shared by linked boards, as below)
     share=on|off          link: two linked boards keep one set of channel
                           settings (noise, snr, bw, floor, atten, fade,
-                          doppler, fadedelay) and fade alike
+                          doppler, fadedelay, match) and fade alike
     line=off|rts|dtr      the serial control line that keys the radio, if any
     vox=on|off            transmit audio keys the radio
     voxlevel=DBFS         a sample this large opens the VOX, -80 to -6
@@ -322,7 +323,7 @@ def show(port):
         state = "no buffer"
     print("  parrot      delay %.1f s, period %s; %s" % (values["delay"], period, state))
 
-    print("  link        buffer %d ms, frequency match %s, shared channel %s" % (
+    print("  link        buffer %d ms, strict frequencies %s, shared channel %s" % (
         values["linkbuffer"], values["match"], values["share"]))
 
     clips = ask(port, CMD_CLIP_STATUS)

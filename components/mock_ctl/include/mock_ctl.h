@@ -67,11 +67,11 @@
  *                 its length, 2 bytes, tenths of a second, 0 for none
  *                   flags: 01 an operation is under way, 02 the last failed
  *   40 <2>        link: audio held before it is played, ms, 10 .. 200
- *   41 <00|01>    link: frequency match off / on. On, the other board is
+ *   41 <00|01>    link: strict frequencies off / on. On, the other board is
  *                 heard only when it transmits on this radio's receive
- *                 frequency
+ *                 frequency. Shared with a linked board, as 42 says
  *   42 <00|01>    link: shared channel off / on. On, two linked boards keep
- *                 one set of channel settings (11 to 15 and 17 to 19) and
+ *                 one set of channel settings (11 to 15, 17 to 19 and 41) and
  *                 fade alike: a change on either goes to both
  *   50 <00..02>   control-line PTT: 00 off, 01 RTS keys, 02 DTR keys
  *   51 <00|01>    VOX off / on

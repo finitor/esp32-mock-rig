@@ -9,6 +9,7 @@
 static const uint8_t shared[] = {
     MOCK_CTL_NOISE, MOCK_CTL_SNR,     MOCK_CTL_REF_BW,     MOCK_CTL_FLOOR,
     MOCK_CTL_ATTEN, MOCK_CTL_FADE,    MOCK_CTL_DOPPLER,    MOCK_CTL_FADE_DELAY,
+    MOCK_CTL_LINK_MATCH, /* strict frequencies: the two ends of one path follow one rule */
 };
 
 _Static_assert(sizeof shared <= LINK_STATE_ITEMS, "the shared settings must fit a state packet");

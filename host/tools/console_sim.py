@@ -561,6 +561,8 @@ def check(port, port_b, sim, cat):
     soon("not heard on another frequency", off_frequency)
     status, body = call("POST", "/api/settings", '{"match":"off"}', board_base=base_b)
     soon("heard again with matching off", lambda: status == 200 and telemetry_b()["link"]["state"] == "receiving")
+    soon("strict frequencies are the pair's: board A follows board B",
+         lambda: json.loads(call("GET", "/api/settings")[1])["match"] == "off")
     sim.ask("loss 20")
     soon("lost packets are counted", lambda: telemetry_b()["link"]["lost"] > 5)
     sim.ask("loss 0")

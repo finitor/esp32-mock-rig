@@ -7,7 +7,9 @@
  * path is. With the "shared channel" setting on, in the link route, they do:
  *
  *   settings   Noise on or off, SNR, its bandwidth, the noise floor, the
- *              attenuation and the fading are the pair's, not a board's. A
+ *              attenuation, the fading and strict frequencies (whether the
+ *              other board is heard off this radio's frequency) are the
+ *              pair's, not a board's. A
  *              change on either board reaches the other within half a
  *              second. Each board's set carries a version that goes up with
  *              every change made on it; the higher version wins, and when
