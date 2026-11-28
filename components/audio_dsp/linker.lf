@@ -1,0 +1,7 @@
+# The receive path's loops run from IRAM and read their tables from DRAM.
+# From flash they shared core 0's Wi-Fi traffic through a 16 KB cache, and
+# missed in it.
+[mapping:audio_dsp]
+archive: libaudio_dsp.a
+entries:
+    * (noflash)

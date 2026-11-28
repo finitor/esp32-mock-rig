@@ -73,7 +73,8 @@ void link_init(link_t *l, const char *name, link_send_fn send, void *ctx)
     memset(l, 0, sizeof *l);
     l->send = send;
     l->ctx = ctx;
-    if (name) strncpy(l->name, name, LINK_NAME_MAX); /* zero padded; no terminator if it fills the field */
+    /* zero padded by the memset; no terminator if it fills the field */
+    for (size_t i = 0; name && i < LINK_NAME_MAX && name[i]; i++) l->name[i] = name[i];
     dsp_fifo_init(&l->fifo, l->fifo_store, LINK_FIFO_SAMPLES);
     dsp_interp4_init(&l->up);
     dsp_decim4_init(&l->down);

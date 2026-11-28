@@ -49,11 +49,33 @@ static esp_err_t audio_from_host_cb(uint8_t *buf, size_t len, void *ctx)
     return ESP_OK;
 }
 
+/* The audio component's microphone task asks for a block every
+ * CONFIG_UAC_MIC_INTERVAL_MS with vTaskDelayUntil, which does not wait at all
+ * once the task is behind: it asks again at once until it has made up every
+ * block it missed. If a block costs more than its interval, it never catches
+ * up and holds core 1 for good. The host only ever gets the newest block, so
+ * a block asked for ahead of time is silence, and one asked for more than an
+ * interval late is dropped and the schedule starts again from now: an
+ * overloaded board loses audio but keeps running. */
+static bool mic_block_due(size_t samples)
+{
+    static int64_t due;
+    const int64_t interval = (int64_t)samples * 1000000 / CONFIG_UAC_SAMPLE_RATE;
+    int64_t now = esp_timer_get_time();
+    if (now + interval / 2 < due) return false; /* making up for lost time */
+    if (now > due + interval) {
+        due = now + interval;
+        return false;
+    }
+    due += interval;
+    return true;
+}
+
 static esp_err_t audio_to_host_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *ctx)
 {
     (void)ctx;
     size_t total = len / sizeof(int16_t);
-    if (!s_cfg.audio_to_host) {
+    if (!s_cfg.audio_to_host || !mic_block_due(total)) {
         memset(buf, 0, total * sizeof(int16_t));
     } else {
         int16_t samples[CHUNK_SAMPLES];

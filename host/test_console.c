@@ -1139,7 +1139,7 @@ static void test_front_panel(void)
     mock_ctl_set_rigs(&g_ctl, &g_civ, rigs, 2, NULL, NULL);
 
     /* The radio at power-up, whole. */
-    char want[512];
+    char want[640];
     snprintf(want, sizeof want,
              "{\"rig\":\"Icom IC-705\",\"hamlib\":3085,\"gen\":%lu,\"vfo\":\"A\",\"split\":false,"
              "\"a\":{\"freq\":14074000,\"mode\":\"USB\",\"data\":true,\"filter\":1},"
