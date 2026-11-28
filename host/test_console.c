@@ -846,7 +846,7 @@ static void test_telemetry(void)
              "{\"t\":1234,\"gen\":%lu,\"rgen\":0,\"hamlib\":0,\"kept\":false,\"host\":false,"
              "\"ptt\":{\"on\":false,\"cat\":false,\"line\":false,\"vox\":false,\"panel\":false},"
              "\"cat\":{\"freq\":7074000,\"txfreq\":7074000,\"mode\":\"USB-D\",\"split\":false,\"ok\":0,\"ng\":0,"
-             "\"dropped\":0,\"stale\":0,\"full\":0,\"discarded\":0,\"recovered\":0,\"rx_lost\":0},"
+             "\"dropped\":0,\"stale\":0,\"full\":0,\"discarded\":0,\"recovered\":0,\"rx_lost\":0,\"rearmed\":0,\"in\":null},"
              "\"audio\":{\"tx\":null,\"rx\":null,"
              "\"fifo\":{\"level\":0,\"target\":960,\"over\":0,\"under\":0,\"dropped\":0,\"repeated\":0}},"
              "\"channel\":{\"muted\":false,\"level\":null,\"gain\":0.0,\"limited\":false},"
@@ -875,6 +875,12 @@ static void test_telemetry(void)
     s.replies_discarded = 9;
     s.port_recovered = 10;
     s.rx_lost = 11;
+    s.port_rearmed = 12;
+    s.has_port_in = true;
+    s.in_busy = true;
+    s.in_armed = true;
+    s.in_unsent = 11;
+    s.in_fifo_irq = false;
     s.tx = (console_level_t){.active = true, .rms_cdb = -1206, .peak_cdb = -904};
     s.rx = (console_level_t){.active = true, .rms_cdb = -12000, .peak_cdb = -12000};
     s.fifo_level = 1010;
@@ -889,7 +895,8 @@ static void test_telemetry(void)
     CHECK_HAS(g_buf, "\"hamlib\":0,\"kept\":false,\"host\":true,\"ptt\":{\"on\":true,\"cat\":true,\"line\":false,\"vox\":false,\"panel\":false},");
     CHECK_HAS(g_buf, "\"cat\":{\"freq\":14074000,\"txfreq\":14075000,\"mode\":\"USB\",\"split\":true,"
                      "\"ok\":4000000000,\"ng\":2,\"dropped\":1,\"stale\":7,\"full\":8,\"discarded\":9,"
-                     "\"recovered\":10,\"rx_lost\":11},");
+                     "\"recovered\":10,\"rx_lost\":11,\"rearmed\":12,\"in\":{\"busy\":true,\"armed\":true,"
+                     "\"unsent\":11,\"irq\":false}},");
     CHECK_HAS(g_buf, "\"audio\":{\"tx\":{\"rms\":-12.1,\"peak\":-9.0},\"rx\":{\"rms\":-120.0,\"peak\":-120.0},");
     CHECK_HAS(g_buf, "\"fifo\":{\"level\":1010,\"target\":960,\"over\":3,\"under\":4,\"dropped\":5,\"repeated\":6}},");
     CHECK_HAS(g_buf, "\"channel\":{\"muted\":true,");

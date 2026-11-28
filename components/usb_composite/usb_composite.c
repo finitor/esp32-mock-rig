@@ -1,6 +1,7 @@
 /* usb_composite: see usb_composite.h. */
 #include "usb_composite.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "cat_port.h"
@@ -10,6 +11,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
 #include "soc/usb_dwc_struct.h"
 #include "tusb.h"
 #include "usb_device_uac.h"
@@ -80,6 +83,17 @@ static portMUX_TYPE s_port_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_send;
 static volatile bool s_send_again;
 static cat_port_watch_t s_watch;
+static _Atomic bool s_send_deferred;
+
+/* The core TinyUSB's interrupt runs on, and every task that arms a
+ * transfer: see usb_composite_init(). */
+#if CONFIG_UAC_TINYUSB_TASK_CORE >= 0
+#define USB_CORE CONFIG_UAC_TINYUSB_TASK_CORE
+#else
+#define USB_CORE 1
+#endif
+#define CAT_IN_BIT (1u << (EPNUM_CDC_IN & 0x0F))
+static portMUX_TYPE s_reg_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void port_lock(void *ctx)
 {
@@ -98,16 +112,22 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/* Whether the hardware still has a transfer armed on the CAT IN endpoint.
- * The core clears this bit itself when the transfer completes. */
-static bool cat_in_armed(void)
+/* The CAT IN endpoint as TinyUSB and the hardware see it. The hardware
+ * clears EPENA when a transfer completes, and XferSize counts down as the
+ * interrupt writes its bytes into the FIFO. Plain register reads. */
+static void cat_in_state(cat_port_in_t *in)
 {
-    return USB_DWC.in_eps[(EPNUM_CDC_IN & 0x0F) - 1].diepctl_reg.epena;
+    const int n = (EPNUM_CDC_IN & 0x0F) - 1;
+    in->busy = usbd_edpt_busy(0, EPNUM_CDC_IN);
+    in->armed = USB_DWC.in_eps[n].diepctl_reg.epena;
+    in->unsent = USB_DWC.in_eps[n].dieptsiz_reg.xfersize;
+    in->fifo_irq = (USB_DWC.diepempmsk_reg.val & CAT_IN_BIT) != 0;
 }
 
 /* Send what waits, a packet's worth, if the endpoint is free; else only drop
- * what has gone stale. From any task. */
-static void send_waiting(void)
+ * what has gone stale. On USB_CORE only: arming a transfer from the other
+ * core races the interrupt (see usb_composite_init). */
+static void send_now(void)
 {
     if (!s_send || xSemaphoreTake(s_send, 0) != pdTRUE) {
         s_send_again = true; /* the other sender goes round once more */
@@ -127,6 +147,33 @@ static void send_waiting(void)
     } while (s_send_again && xSemaphoreTake(s_send, 0) == pdTRUE);
 }
 
+static void send_deferred(void *arg)
+{
+    (void)arg;
+    atomic_store(&s_send_deferred, false);
+    send_now();
+}
+
+/* From any task: at once on USB_CORE, else in the USB task. */
+static void send_waiting(void)
+{
+    if (xPortGetCoreID() == USB_CORE) {
+        send_now();
+    } else if (!atomic_exchange(&s_send_deferred, true)) {
+        usbd_defer_func(send_deferred, NULL, false);
+    }
+}
+
+/* In the USB task, on USB_CORE, with the interrupt held off: the
+ * read-modify-write cannot be undone by the interrupt's own. */
+static void unmask_cat_in(void *arg)
+{
+    (void)arg;
+    taskENTER_CRITICAL(&s_reg_mux);
+    USB_DWC.diepempmsk_reg.val |= CAT_IN_BIT;
+    taskEXIT_CRITICAL(&s_reg_mux);
+}
+
 void tud_cdc_rx_cb(uint8_t itf)
 {
     uint8_t buf[CFG_TUD_CDC_EP_BUFSIZE];
@@ -141,7 +188,7 @@ void tud_cdc_rx_cb(uint8_t itf)
 void tud_cdc_tx_complete_cb(uint8_t itf)
 {
     (void)itf;
-    send_waiting();
+    send_now();
 }
 
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
@@ -165,7 +212,10 @@ void usb_composite_serial_discard(void)
 void usb_composite_serial_poll(void)
 {
     if (!s_mounted) return;
-    if (cat_port_watch(&s_port, &s_watch, usbd_edpt_busy(0, EPNUM_CDC_IN), cat_in_armed(), now_ms())) {
+    cat_port_in_t in;
+    cat_in_state(&in);
+    switch (cat_port_watch(&s_port, &s_watch, &in, now_ms())) {
+    case CAT_PORT_IN_LOST:
         /* The stack still waits for a completion the hardware gave long
          * ago: it was lost on the way to the USB task. Hand it over, as the
          * interrupt would have; TinyUSB then frees the endpoint and sends
@@ -174,6 +224,17 @@ void usb_composite_serial_poll(void)
         ESP_LOGW(TAG, "CAT port: a lost IN completion, restored");
         dcd_event_xfer_complete(0, EPNUM_CDC_IN, 0, XFER_RESULT_SUCCESS, false);
         return;
+    case CAT_PORT_IN_STARVED:
+        /* Armed, but its bytes never went into the FIFO, and the interrupt
+         * that would write them is masked: the host gets NAK for ever.
+         * Unmask it, and the interrupt writes them and the transfer
+         * completes as usual. */
+        ESP_LOGW(TAG, "CAT port: an IN transfer starved of its FIFO interrupt (%u bytes unsent), unmasked",
+                 (unsigned)in.unsent);
+        usbd_defer_func(unmask_cat_in, NULL, false);
+        return;
+    case CAT_PORT_IN_OK:
+        break;
     }
     if (cat_port_waiting(&s_port)) send_waiting();
 }
@@ -186,6 +247,13 @@ void usb_composite_serial_status(usb_composite_serial_status_t *st)
     st->full = ps.full;
     st->discarded = ps.discarded;
     st->recovered = ps.recovered;
+    st->rearmed = ps.rearmed;
+    cat_port_in_t in;
+    cat_in_state(&in);
+    st->in_busy = in.busy;
+    st->in_armed = in.armed;
+    st->in_unsent = in.unsent;
+    st->in_fifo_irq = in.fifo_irq;
 }
 
 /* ---- device state ---------------------------------------------------------- */
@@ -218,6 +286,31 @@ bool usb_composite_mounted(void)
     return s_mounted;
 }
 
+/* TinyUSB's DWC2 driver arms an IN transfer by setting the endpoint's bit
+ * in DIEPEMPMSK, read-modify-write, in a critical section that holds off
+ * interrupts only on its own core; the interrupt clears bits there with a
+ * read-modify-write of its own and no lock. With the interrupt on one core
+ * and a task arming a transfer on the other, one write can undo the other,
+ * and a lost bit leaves that transfer armed with nothing ever written to
+ * its FIFO: the CAT port's IN endpoint answered NAK for good, on the bench
+ * on Nov 27, 2026, while audio kept the interrupt busy. esp_intr_alloc()
+ * puts the interrupt on the core that starts TinyUSB, so it is started from
+ * a task on USB_CORE, where the TinyUSB, audio and CAT tasks all run and
+ * their critical sections hold the interrupt off. */
+typedef struct {
+    uac_device_config_t *uac;
+    esp_err_t err;
+    SemaphoreHandle_t done;
+} start_t;
+
+static void start_task(void *arg)
+{
+    start_t *st = arg;
+    st->err = uac_device_init(st->uac);
+    xSemaphoreGive(st->done);
+    vTaskDelete(NULL);
+}
+
 esp_err_t usb_composite_init(const usb_composite_config_t *config)
 {
     if (config) s_cfg = *config;
@@ -233,5 +326,14 @@ esp_err_t usb_composite_init(const usb_composite_config_t *config)
         .spk_itf_num = ITF_NUM_AUDIO_SPK,
         .mic_itf_num = ITF_NUM_AUDIO_MIC,
     };
-    return uac_device_init(&uac);
+    start_t st = {.uac = &uac, .err = ESP_FAIL, .done = xSemaphoreCreateBinary()};
+    if (!st.done) return ESP_ERR_NO_MEM;
+    if (xTaskCreatePinnedToCore(start_task, "usb_start", 4096, &st, 5, NULL, USB_CORE) != pdPASS) {
+        vSemaphoreDelete(st.done);
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(st.done, portMAX_DELAY);
+    vSemaphoreDelete(st.done);
+    if (st.err == ESP_OK) ESP_LOGI(TAG, "TinyUSB and its interrupt on core %d", USB_CORE);
+    return st.err;
 }

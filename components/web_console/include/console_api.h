@@ -257,6 +257,10 @@ typedef struct {
     uint32_t frames_ok, frames_ng, frames_dropped;
     /* the serial port's replies (cat_port) and what arrived with no room for it */
     uint32_t replies_stale, replies_full, replies_discarded, port_recovered, rx_lost;
+    uint32_t port_rearmed; /* IN transfers starved of their FIFO interrupt, unmasked */
+    bool has_port_in;      /* the IN endpoint's state below is known (the board) */
+    bool in_busy, in_armed, in_fifo_irq;
+    uint32_t in_unsent;
 
     console_level_t tx; /* audio the host plays */
     console_level_t rx; /* audio the host records */

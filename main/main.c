@@ -630,6 +630,12 @@ static void console_sample(void *ctx, console_sample_t *out)
     out->replies_full = port.full;
     out->replies_discarded = port.discarded;
     out->port_recovered = port.recovered;
+    out->port_rearmed = port.rearmed;
+    out->has_port_in = true;
+    out->in_busy = port.in_busy;
+    out->in_armed = port.in_armed;
+    out->in_unsent = port.in_unsent;
+    out->in_fifo_irq = port.in_fifo_irq;
     out->rx_lost = atomic_load(&s_cat_rx_lost);
 
     console_meter_read(&s_tx_meter, &tx_seen, &out->tx);

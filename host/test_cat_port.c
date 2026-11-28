@@ -136,39 +136,72 @@ static void test_stale_and_full(void)
     CHECK(cat_port_take(&p, out, sizeof out, 0xFFFFFF00u + CAT_PORT_STALE_MS) == 0);
 }
 
+static cat_port_fault_t watch(cat_port_t *p, cat_port_watch_t *w, bool busy, bool armed, uint32_t unsent,
+                              bool fifo_irq, uint32_t now)
+{
+    const cat_port_in_t in = {.busy = busy, .armed = armed, .unsent = unsent, .fifo_irq = fifo_irq};
+    return cat_port_watch(p, w, &in, now);
+}
+
 static void test_watch(void)
 {
     static cat_port_t p;
     cat_port_watch_t w = {0};
     cat_port_init(&p, NULL, NULL, NULL);
 
-    /* A host that is not reading leaves the transfer armed: never lost. */
-    for (uint32_t t = 0; t < 60000; t += 20) CHECK(!cat_port_watch(&p, &w, true, true, t));
+    /* A host that is not reading leaves the transfer armed with all of it
+     * in the FIFO: never a fault, however long. */
+    for (uint32_t t = 0; t < 60000; t += 20) CHECK(watch(&p, &w, true, true, 0, false, t) == CAT_PORT_IN_OK);
+    /* Data still going into the FIFO, its interrupt on: in progress. */
+    for (uint32_t t = 60000; t < 65000; t += 20) CHECK(watch(&p, &w, true, true, 11, true, t) == CAT_PORT_IN_OK);
     /* Idle: nothing to watch. */
-    for (uint32_t t = 60000; t < 70000; t += 20) CHECK(!cat_port_watch(&p, &w, false, false, t));
+    for (uint32_t t = 65000; t < 70000; t += 20) CHECK(watch(&p, &w, false, false, 0, false, t) == CAT_PORT_IN_OK);
 
     /* Busy with the hardware idle for a moment is a completion on its way. */
-    CHECK(!cat_port_watch(&p, &w, true, false, 70000));
-    CHECK(!cat_port_watch(&p, &w, true, false, 70040));
-    CHECK(!cat_port_watch(&p, &w, false, false, 70060));
+    CHECK(watch(&p, &w, true, false, 0, false, 70000) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, false, 0, false, 70040) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, false, false, 0, false, 70060) == CAT_PORT_IN_OK);
     /* For a second: lost. Once, then again a second later if still so. */
     int fired = 0;
     uint32_t first = 0;
     for (uint32_t t = 80000; t <= 82500; t += 20) {
-        if (cat_port_watch(&p, &w, true, false, t)) {
+        cat_port_fault_t f = watch(&p, &w, true, false, 0, false, t);
+        CHECK(f == CAT_PORT_IN_OK || f == CAT_PORT_IN_LOST);
+        if (f == CAT_PORT_IN_LOST) {
             if (!fired) first = t;
             fired++;
         }
     }
-    CHECK(fired == 2 && first == 80000 + CAT_PORT_LOST_MS);
-    CHECK(status(&p).recovered == 2);
-    /* The hardware arming again in between starts the wait over. */
-    w.armed = false;
-    CHECK(!cat_port_watch(&p, &w, true, false, 90000));
-    CHECK(!cat_port_watch(&p, &w, true, true, 90500));
-    CHECK(!cat_port_watch(&p, &w, true, false, 90600));
-    CHECK(!cat_port_watch(&p, &w, true, false, 91500));
-    CHECK(cat_port_watch(&p, &w, true, false, 91600));
+    CHECK(fired == 2 && first == 80000 + CAT_PORT_STUCK_MS);
+    CHECK(status(&p).recovered == 2 && status(&p).rearmed == 0);
+
+    /* Armed, with its data never written and the FIFO's interrupt masked:
+     * starved (the Mac board on the bench, Nov 27, 2026, 20:47). */
+    w = (cat_port_watch_t){0};
+    fired = 0;
+    for (uint32_t t = 90000; t <= 92500; t += 20) {
+        cat_port_fault_t f = watch(&p, &w, true, true, 11, false, t);
+        CHECK(f == CAT_PORT_IN_OK || f == CAT_PORT_IN_STARVED);
+        if (f == CAT_PORT_IN_STARVED) {
+            if (!fired) first = t;
+            fired++;
+        }
+    }
+    CHECK(fired == 2 && first == 90000 + CAT_PORT_STUCK_MS);
+    CHECK(status(&p).rearmed == 2 && status(&p).recovered == 2);
+    /* Unmasked, the interrupt writes it: the wait starts over. */
+    w = (cat_port_watch_t){0};
+    CHECK(watch(&p, &w, true, true, 11, false, 100000) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, true, 11, true, 100500) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, true, 11, false, 100600) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, true, 11, false, 101500) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, true, 11, false, 101600) == CAT_PORT_IN_STARVED);
+    /* One fault turning into the other starts the wait over too. */
+    w = (cat_port_watch_t){0};
+    CHECK(watch(&p, &w, true, true, 11, false, 110000) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, false, 0, false, 110900) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, false, 0, false, 111800) == CAT_PORT_IN_OK);
+    CHECK(watch(&p, &w, true, false, 0, false, 111900) == CAT_PORT_IN_LOST);
 }
 
 /* ---- CAT under load ------------------------------------------------------------- */

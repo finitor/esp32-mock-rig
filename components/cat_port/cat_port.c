@@ -82,22 +82,27 @@ uint32_t cat_port_waiting(cat_port_t *p)
     return n;
 }
 
-bool cat_port_watch(cat_port_t *p, cat_port_watch_t *w, bool busy, bool hw_armed, uint32_t now_ms)
+cat_port_fault_t cat_port_watch(cat_port_t *p, cat_port_watch_t *w, const cat_port_in_t *in, uint32_t now_ms)
 {
-    if (!busy || hw_armed) {
-        /* Idle, or a transfer the host has yet to read: nothing lost. */
-        w->armed = false;
-        return false;
+    cat_port_fault_t now = CAT_PORT_IN_OK;
+    if (in->busy && !in->armed) {
+        now = CAT_PORT_IN_LOST;
+    } else if (in->busy && in->armed && in->unsent > 0 && !in->fifo_irq) {
+        now = CAT_PORT_IN_STARVED;
     }
-    if (!w->armed) {
-        w->armed = true;
+    if (now == CAT_PORT_IN_OK) {
+        w->seen = CAT_PORT_IN_OK;
+        return CAT_PORT_IN_OK;
+    }
+    if (w->seen != now) {
+        w->seen = now;
         w->since_ms = now_ms;
-        return false;
+        return CAT_PORT_IN_OK;
     }
-    if (now_ms - w->since_ms < CAT_PORT_LOST_MS) return false;
-    w->armed = false; /* once; again after as long if it did not help */
-    atomic_fetch_add(&p->n_recovered, 1u);
-    return true;
+    if (now_ms - w->since_ms < CAT_PORT_STUCK_MS) return CAT_PORT_IN_OK;
+    w->seen = CAT_PORT_IN_OK; /* once; again after as long if it did not help */
+    atomic_fetch_add(now == CAT_PORT_IN_LOST ? &p->n_recovered : &p->n_rearmed, 1u);
+    return now;
 }
 
 void cat_port_get_status(cat_port_t *p, cat_port_status_t *st)
@@ -110,4 +115,5 @@ void cat_port_get_status(cat_port_t *p, cat_port_status_t *st)
     st->discarded = atomic_load(&p->n_discarded);
     st->too_long = atomic_load(&p->n_too_long);
     st->recovered = atomic_load(&p->n_recovered);
+    st->rearmed = atomic_load(&p->n_rearmed);
 }

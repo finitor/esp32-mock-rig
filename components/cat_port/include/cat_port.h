@@ -16,11 +16,21 @@
  *            up by a host that is not reading.
  *   open     When the host opens the port afresh, whatever waits is for the
  *            last program that had it, and is dropped (cat_port_discard).
- *   lost     cat_port_watch() notices an IN endpoint that the USB stack
- *            thinks busy while the hardware has finished with it: its
- *            completion was lost on the way to the USB task (an event queue
- *            that overflowed), which leaves the port deaf to the host for
- *            good. The caller then hands the stack the completion it missed.
+ *   stuck    cat_port_watch() notices an IN endpoint that will never send
+ *            again by itself, which leaves the port taking CAT and answering
+ *            nothing until a replug. Two ways are known:
+ *              lost     the USB stack thinks it busy while the hardware has
+ *                       finished with it: the completion was lost on the way
+ *                       to the USB task. The caller hands the stack the
+ *                       completion it missed.
+ *              starved  the transfer is armed in the hardware, but its data
+ *                       never went into the endpoint's FIFO and the FIFO's
+ *                       interrupt, which would put it there, is masked: the
+ *                       host is answered NAK for ever. (TinyUSB's DWC2 driver
+ *                       sets and clears that mask with unlocked
+ *                       read-modify-writes from tasks and the interrupt; on
+ *                       two cores one can undo the other.) The caller
+ *                       unmasks it.
  *
  * Threads. cat_port_put() belongs to the task that runs the parser,
  * cat_port_take() and cat_port_discard() to the USB task, cat_port_watch()
@@ -43,7 +53,7 @@ extern "C" {
 #define CAT_PORT_SLOTS 16       /* replies waiting at most */
 #define CAT_PORT_FRAME_MAX 64   /* the longest reply: CIV_MAX_FRAME, and one USB packet */
 #define CAT_PORT_STALE_MS 1000u /* a reply this old is dropped */
-#define CAT_PORT_LOST_MS 1000u  /* busy this long with the hardware idle: the completion was lost */
+#define CAT_PORT_STUCK_MS 1000u /* stuck this long, in the same way, before anything is done */
 
 typedef struct {
     void (*lock)(void *ctx);
@@ -64,11 +74,12 @@ typedef struct {
     _Atomic uint32_t n_discarded; /* dropped when the port was opened afresh */
     _Atomic uint32_t n_too_long;  /* refused: longer than CAT_PORT_FRAME_MAX */
     _Atomic uint32_t n_recovered; /* lost completions noticed */
+    _Atomic uint32_t n_rearmed;   /* starved transfers noticed */
 } cat_port_t;
 
 typedef struct {
     uint32_t waiting;
-    uint32_t queued, sent, stale, full, discarded, too_long, recovered;
+    uint32_t queued, sent, stale, full, discarded, too_long, recovered, rearmed;
 } cat_port_status_t;
 
 /* lock and unlock may be NULL where only one task uses the port. */
@@ -91,18 +102,31 @@ uint32_t cat_port_waiting(cat_port_t *p);
 
 /* ---- the IN endpoint -------------------------------------------------------- */
 
+/* The endpoint as the USB stack and the hardware see it. */
 typedef struct {
-    bool armed;
+    bool busy;      /* the stack waits for a transfer to complete */
+    bool armed;     /* the hardware has a transfer enabled (DIEPCTL.EPENA) */
+    uint32_t unsent; /* bytes of it not yet written into the FIFO (DIEPTSIZ.XferSize) */
+    bool fifo_irq;  /* the FIFO-empty interrupt that writes them is unmasked (DIEPEMPMSK) */
+} cat_port_in_t;
+
+typedef enum {
+    CAT_PORT_IN_OK = 0,   /* idle, sending, or waiting for a host that is not reading */
+    CAT_PORT_IN_LOST,     /* hand the stack the completion it missed */
+    CAT_PORT_IN_STARVED,  /* unmask the FIFO-empty interrupt */
+} cat_port_fault_t;
+
+typedef struct {
+    cat_port_fault_t seen;
     uint32_t since_ms;
 } cat_port_watch_t;
 
-/* Call now and then (every 20 ms, say) with whether the USB stack thinks the
- * IN endpoint busy and whether the hardware still has a transfer armed on
- * it. True, once, when the stack has thought it busy for CAT_PORT_LOST_MS
- * with the hardware idle all along: its completion was lost. A host that is
- * not reading leaves the transfer armed in the hardware and is not taken
- * for that. */
-bool cat_port_watch(cat_port_t *p, cat_port_watch_t *w, bool busy, bool hw_armed, uint32_t now_ms);
+/* Call now and then (every 20 ms, say) with the endpoint's state. Returns a
+ * fault, once, when it has been there CAT_PORT_STUCK_MS on end, and again
+ * after as long if the remedy did not help. A host that is not reading
+ * leaves its transfer armed with everything written (unsent 0), and is
+ * never taken for a fault. */
+cat_port_fault_t cat_port_watch(cat_port_t *p, cat_port_watch_t *w, const cat_port_in_t *in, uint32_t now_ms);
 
 void cat_port_get_status(cat_port_t *p, cat_port_status_t *st);
 

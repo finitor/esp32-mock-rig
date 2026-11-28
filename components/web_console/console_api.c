@@ -1309,6 +1309,18 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_f(&o, ",\"stale\":%lu,\"full\":%lu,\"discarded\":%lu,\"recovered\":%lu,\"rx_lost\":%lu",
           (unsigned long)s->replies_stale, (unsigned long)s->replies_full, (unsigned long)s->replies_discarded,
           (unsigned long)s->port_recovered, (unsigned long)s->rx_lost);
+    out_f(&o, ",\"rearmed\":%lu,\"in\":", (unsigned long)s->port_rearmed);
+    if (s->has_port_in) {
+        out_f(&o, "{\"busy\":");
+        out_bool(&o, s->in_busy);
+        out_f(&o, ",\"armed\":");
+        out_bool(&o, s->in_armed);
+        out_f(&o, ",\"unsent\":%lu,\"irq\":", (unsigned long)s->in_unsent);
+        out_bool(&o, s->in_fifo_irq);
+        out_f(&o, "}");
+    } else {
+        out_f(&o, "null");
+    }
 
     out_f(&o, "},\"audio\":{\"tx\":");
     out_level(&o, &s->tx);

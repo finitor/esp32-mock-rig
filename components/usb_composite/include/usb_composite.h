@@ -51,15 +51,21 @@ size_t usb_composite_serial_write(const uint8_t *bytes, size_t len);
 /* Drop the replies waiting: the host has opened the port afresh. */
 void usb_composite_serial_discard(void);
 
-/* Call every 20 ms or so from a task of its own: sends what waits if the
- * endpoint has come free, and notices a completion that was lost on the
- * way to the USB task, which would otherwise leave the port receiving CAT
- * and never answering, and restores it. */
+/* Call every 20 ms or so from a task of its own, on either core: sends what
+ * waits if the endpoint has come free, and notices an IN endpoint that would
+ * otherwise leave the port receiving CAT and never answering (a completion
+ * lost on the way to the USB task, or a transfer whose FIFO interrupt was
+ * masked) and puts it right. */
 void usb_composite_serial_poll(void);
 
 typedef struct {
     uint32_t stale, full, discarded; /* replies dropped: too old, no room, port opened afresh */
     uint32_t recovered;              /* lost IN completions restored */
+    uint32_t rearmed;                /* IN transfers starved of their FIFO interrupt, unmasked */
+    /* the IN endpoint now: TinyUSB busy, hardware armed, bytes not yet in
+     * the FIFO, FIFO-empty interrupt unmasked */
+    bool in_busy, in_armed, in_fifo_irq;
+    uint32_t in_unsent;
 } usb_composite_serial_status_t;
 
 void usb_composite_serial_status(usb_composite_serial_status_t *st);
