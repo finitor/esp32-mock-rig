@@ -1376,11 +1376,12 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
         }
         out_f(&o,
               ",\"buffer\":%lu,\"target\":%lu,\"sent\":%lu,\"send_failed\":%lu,\"received\":%lu,\"lost\":%lu,"
-              "\"late\":%lu,\"off_frequency\":%lu,\"underruns\":%lu,\"overruns\":%lu,\"dropped\":%lu,\"repeated\":%lu",
+              "\"late\":%lu,\"off_frequency\":%lu,\"underruns\":%lu,\"overruns\":%lu,\"dropped\":%lu,\"repeated\":%lu,"
+              "\"skipped\":%lu",
               (unsigned long)k->buffer_ms, (unsigned long)k->target_ms, (unsigned long)k->sent,
               (unsigned long)k->send_failed, (unsigned long)k->received, (unsigned long)k->lost, (unsigned long)k->late,
               (unsigned long)k->off_frequency, (unsigned long)k->underruns, (unsigned long)k->overruns,
-              (unsigned long)k->dropped, (unsigned long)k->repeated);
+              (unsigned long)k->dropped, (unsigned long)k->repeated, (unsigned long)k->skipped);
         out_f(&o, ",\"shared\":");
         out_bool(&o, s->link_shared);
         out_f(&o, ",\"leads\":");

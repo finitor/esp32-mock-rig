@@ -65,6 +65,8 @@ typedef struct {
     int drop_from, drop_n; /* lose drop_n audio packets starting with the drop_from'th sent by node 0 */
     int swap_at;         /* deliver node 0's swap_at'th audio packet after the one behind it; 0 = off */
     int loss_percent;    /* lose this share of node 0's audio packets, at random */
+    int hold_every_ms, hold_ms; /* every hold_every_ms the path holds what it carries for hold_ms, then
+                                 * delivers it all at once: bunched arrival, as ESP-NOW does sharing the radio */
 } path_t;
 
 static node_t g_node[NODES];
@@ -115,6 +117,9 @@ static bool node_send(void *ctx, const uint8_t *dst, const uint8_t *data, size_t
         if (dst && memcmp(dst, g_node[i].addr, LINK_ADDR_LEN) != 0) continue;
         int at = g_ms + g_path.delay_ms;
         if (g_path.jitter_ms) at += (int)(rnd() % (uint32_t)(g_path.jitter_ms + 1));
+        if (g_path.hold_ms && at % g_path.hold_every_ms < g_path.hold_ms) {
+            at += g_path.hold_ms - at % g_path.hold_every_ms;
+        }
         if (at < g_last_at[i]) at = g_last_at[i]; /* jitter delays; it does not reorder */
         if (audio && me->index == 0 && g_path.swap_at && g_audio_sent == g_path.swap_at) at += 15;
         else g_last_at[i] = at;
@@ -682,6 +687,61 @@ static void test_jitter(void)
     CHECK(status(1).target_ms == LINK_BUFFER_MAX_MS);
 }
 
+/* Packets held up and then delivered together, as on the bench on Nov 27,
+ * 2026: no packet lost or late, but the buffer runs dry during each hold
+ * and then gets everything at once. */
+static void bunched_case(uint32_t buffer_ms, int hold_ms, bool expect_dry)
+{
+    sim_reset();
+    g_path.hold_every_ms = 1000;
+    g_path.hold_ms = hold_ms;
+    enable(0, buffer_ms, true);
+    enable(1, buffer_ms, true);
+    run(500);
+    const node_t *b = &g_node[1];
+    size_t start = b->out_n;
+    transmit(25000);
+    long first = first_loud(b, start), last = last_loud(b);
+    link_status_t st = status(1);
+
+    CHECK(st.lost == 0 && st.late == 0 && st.overruns == 0);
+    CHECK(st.received == 2506);
+    if (expect_dry) {
+        CHECK(st.underruns >= 20 && st.skipped > 0);
+    } else {
+        CHECK(st.underruns == 0 && st.skipped == 0);
+        CHECK(quietest(b, first + 480, last - 480) > 0.97 * TONE_RMS);
+    }
+    /* The audio stays in time: what came late after the buffer ran dry is
+     * not played late, so the clocks are not judged to differ and no single
+     * sample is dropped or repeated to pull the buffer back. */
+    CHECK(st.dropped == 0 && st.repeated == 0);
+    CHECK(fabs(MS(last - first) - 25000.0) <= 25.0);
+    /* Each hold costs at most its own length of audio, not more. */
+    if (expect_dry) CHECK(MS(longest_gap(b, first, last)) <= (double)hold_ms + 5.0);
+    CHECK(st.buffer_ms == 0 && st.state == LINK_IDLE);
+}
+
+static void test_bunched(void)
+{
+    /* The default buffer on a path with no delay: heard after its 80 ms. */
+    sim_reset();
+    enable(0, LINK_BUFFER_DEFAULT_MS, true);
+    enable(1, LINK_BUFFER_DEFAULT_MS, true);
+    run(500);
+    size_t start = g_node[1].out_n;
+    transmit(1000);
+    double latency = MS(first_loud(&g_node[1], start) - (long)start);
+    CHECK(latency >= 75.0 && latency <= 95.0);
+
+    /* Holds of 50 ms: longer than the old 30 ms buffer, inside 80 ms. */
+    bunched_case(30, 50, true);
+    bunched_case(LINK_BUFFER_DEFAULT_MS, 50, false);
+    bunched_case(80, 50, false);
+    /* Longer than any buffer one would choose. */
+    bunched_case(80, 150, true);
+}
+
 static void drift_case(double ppm, int seconds, bool expect_steering)
 {
     sim_reset();
@@ -929,6 +989,7 @@ int main(void)
     test_loss();
     test_poor_path();
     test_jitter();
+    test_bunched();
     test_drift();
     test_frequency();
     test_malformed();

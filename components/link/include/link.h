@@ -13,14 +13,16 @@
  *              each packet with a sequence number and the transmit frequency.
  *              The last packet of a transmission says so.
  *   receiving  Packets go into a jitter buffer. Playing starts when it holds
- *              the configured time (30 ms by default) and stops when the
+ *              the configured time (80 ms by default) and stops when the
  *              transmission ends. A lost packet is replaced by silence of
  *              the same length, so what follows is not shifted in time; if
  *              the buffer runs empty first, the silence played meanwhile
- *              counts towards it. The two
+ *              counts towards it, and audio that arrives after its time was
+ *              played as silence is skipped by as much. The two
  *              boards' sample clocks differ by a few parts per million; the
  *              buffer absorbs that over a transmission, and if its fill ever
- *              drifts far from the target one sample is dropped or repeated.
+ *              drifts far from the target one sample is dropped or repeated,
+ *              at most one every LINK_STEER_MS.
  *   frequency  A packet is only heard if it was sent on the frequency this
  *              radio is listening on, unless matching is switched off.
  *   state      With each announcement a board may send its peer a small
@@ -63,7 +65,14 @@ extern "C" {
 
 #define LINK_BUFFER_MIN_MS 10u
 #define LINK_BUFFER_MAX_MS 200u
-#define LINK_BUFFER_DEFAULT_MS 30u
+/* Longer than the gaps ESP-NOW leaves when it shares the radio with Wi-Fi:
+ * on the bench (Nov 27, 2026) 30 ms ran dry every few seconds and 80 ms
+ * never did. The clock steering's tolerance is half of it. */
+#define LINK_BUFFER_DEFAULT_MS 80u
+
+/* Single samples dropped or repeated to follow the peer's clock: at most one
+ * in this long. 40 ppm needs one every 2 s; this allows 1,600 ppm. */
+#define LINK_STEER_MS 50u
 
 /* Transmit audio still on its way through the host and the USB buffers when
  * PTT drops is sent for this long after. */
@@ -130,6 +139,7 @@ typedef struct {
     uint32_t late;               /* arrived after their turn, or twice: dropped */
     uint32_t off_frequency;      /* dropped for the frequency */
     uint32_t underruns;          /* times the buffer ran empty mid-transmission */
+    uint32_t skipped;            /* samples that arrived after their time and were not played */
     uint32_t overruns;           /* samples that did not fit in the buffer */
     uint32_t dropped, repeated;  /* single samples, to follow the peer's clock */
 } link_status_t;
@@ -177,6 +187,7 @@ typedef struct {
     bool dry; /* empty in mid-transmission */
     uint32_t dry_n;
     uint32_t stall_level, stall_n;
+    uint32_t steer_wait; /* 48 kHz samples until the clock steering may act again */
     uint32_t flush_left;
     dsp_interp4_t up;
     int16_t frac[DSP_RS_FACTOR];
@@ -210,7 +221,7 @@ typedef struct {
     void *clock_ctx;
 
     /* counters: each written by one task */
-    _Atomic uint32_t n_sent, n_send_failed, n_received, n_lost, n_late, n_off_frequency, n_underruns;
+    _Atomic uint32_t n_sent, n_send_failed, n_received, n_lost, n_late, n_off_frequency, n_underruns, n_skipped;
 } link_t;
 
 /* name is the board's own, shown on the other board; send must not be NULL.

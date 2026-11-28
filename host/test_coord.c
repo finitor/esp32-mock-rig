@@ -241,11 +241,11 @@ static void test_settings(void)
     set(0, MOCK_CTL_TURNAROUND, 250);
     set(0, MOCK_CTL_FREQ_OFFSET, -125);
     set(0, MOCK_CTL_VOX, 1);
-    set(0, MOCK_CTL_LINK_BUFFER, 80);
+    set(0, MOCK_CTL_LINK_BUFFER, 120);
     set(0, MOCK_CTL_PARROT_DELAY, 25);
     run(1000);
     c1 = config(1);
-    CHECK(c1.turnaround_ms == 0 && c1.freq_offset_hz == 0.0f && !c1.vox_on && c1.link_buffer_ms == 30);
+    CHECK(c1.turnaround_ms == 0 && c1.freq_offset_hz == 0.0f && !c1.vox_on && c1.link_buffer_ms == 80);
     CHECK(c1.parrot_delay_ms == 1000 && status(1).version == version);
 
     /* Both changed between two ticks: one of the two wins, and both agree. */

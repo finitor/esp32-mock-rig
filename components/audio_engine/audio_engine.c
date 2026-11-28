@@ -63,7 +63,7 @@ void ae_config_defaults(ae_config_t *cfg)
     cfg->vox_on = false;
     cfg->vox_threshold_dbfs = -40.0f;
     cfg->vox_hang_ms = 100;
-    cfg->link_buffer_ms = 30;
+    cfg->link_buffer_ms = 80; /* LINK_BUFFER_DEFAULT_MS; the engine does not depend on the link */
     cfg->link_match = true;
     cfg->link_coord = true;
     cfg->fade = AE_FADE_OFF;

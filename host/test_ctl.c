@@ -573,7 +573,7 @@ static void test_link_settings(void)
     /* Without a link the route is refused, but its settings can be set. */
     fresh();
     EXPECT("fe fe f0 e0 10 03 fd", NG);
-    EXPECT("fe fe f0 e0 40 fd", "fe fe e0 f0 40 00 30 fd"); /* 30 ms */
+    EXPECT("fe fe f0 e0 40 fd", "fe fe e0 f0 40 00 80 fd"); /* 80 ms */
     EXPECT("fe fe f0 e0 41 fd", "fe fe e0 f0 41 01 fd");    /* matching on */
 
     ae_config_defaults(&cfg);
@@ -607,7 +607,7 @@ static void test_link_settings(void)
     ae_process(&g_engine, audio, audio, 480);
     g_link_ended = 0;
     EXPECT("fe fe f0 e0 01 fd", OK);
-    CHECK(config().route == AE_ROUTE_MONITOR && config().link_buffer_ms == 30 && config().link_match);
+    CHECK(config().route == AE_ROUTE_MONITOR && config().link_buffer_ms == 80 && config().link_match);
     ae_process(&g_engine, audio, audio, 480);
     CHECK(g_link_ended == 1);
 }

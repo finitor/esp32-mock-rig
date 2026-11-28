@@ -1373,7 +1373,7 @@ static void test_link_route(void)
     ae_set_link(&e, &link);
     CHECK(ae_has_link(&e));
     ae_config_defaults(&cfg);
-    CHECK(cfg.link_buffer_ms == 30 && cfg.link_match);
+    CHECK(cfg.link_buffer_ms == 80 && cfg.link_match);
     cfg.route = AE_ROUTE_LINK;
     cfg.turnaround_ms = 0;
     ae_configure(&e, &cfg);

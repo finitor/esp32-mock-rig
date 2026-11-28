@@ -30,6 +30,7 @@
 
 #define TAIL_SAMPLES (LINK_TAIL_MS * 48u)
 #define STALL_SAMPLES (LINK_STALL_MS * 48u)
+#define STEER_GAP_SAMPLES (LINK_STEER_MS * 48u)
 #define FLUSH_SAMPLES ((uint32_t)(DSP_RS_TAPS / DSP_RS_FACTOR)) /* zeros that push the last audio out of the interpolator */
 #define PIECE 64
 #define LATE_RESYNC 5
@@ -339,14 +340,19 @@ static void on_audio(link_t *l, const uint8_t *src, const uint8_t *data, size_t 
     l->late_run = 0;
 
     /* Silence the player has already put out because the buffer was empty.
-     * It stands for lost packets, if packets were lost. */
+     * It stands for lost packets, if packets were lost, and otherwise for
+     * the start of what arrives now, late. A new transmission owes none. */
+    bool continues = l->have_expected && !l->after_end && !(flags & FLAG_START);
     uint32_t debt = atomic_exchange(&l->rx_debt, 0u);
-    if (l->have_expected && !l->after_end && !(flags & FLAG_START) && gap > 0) {
+    if (!continues) debt = 0;
+    if (continues && gap > 0) {
         atomic_fetch_add(&l->n_lost, (uint32_t)gap);
         /* Silence in place of what was lost keeps the rest in time. */
         if (gap <= LINK_CONCEAL_MAX) {
             uint32_t fill = (uint32_t)gap * LINK_FRAME_SAMPLES;
-            fill -= debt < fill ? debt : fill;
+            uint32_t paid = debt < fill ? debt : fill;
+            fill -= paid;
+            debt -= paid;
             while (fill) {
                 uint32_t k = fill < LINK_FRAME_SAMPLES ? fill : LINK_FRAME_SAMPLES;
                 dsp_fifo_write(&l->fifo, silence, k);
@@ -356,8 +362,19 @@ static void on_audio(link_t *l, const uint8_t *src, const uint8_t *data, size_t 
     }
     atomic_store(&l->rx_ended, false);
 
+    /* Audio that arrives after its time was played as silence is skipped
+     * by as much, so that what follows is played in time, as after a lost
+     * packet. Played late instead, it would leave the buffer too full, and
+     * the clock steering would take that for a fast peer and drop samples
+     * until it was back: up to one every millisecond, which a modem hears
+     * as the timing and frequency jumping. */
+    uint32_t skip = debt < n ? debt : (uint32_t)n;
+    debt -= skip;
+    if (debt) atomic_fetch_add(&l->rx_debt, debt); /* the next packet pays the rest */
+    if (skip) atomic_fetch_add(&l->n_skipped, skip);
+
     for (size_t i = 0; i < n; i++) samples[i] = (int16_t)get_u16(&data[AUDIO_HDR + 2 * i]);
-    dsp_fifo_write(&l->fifo, samples, n);
+    dsp_fifo_write(&l->fifo, samples + skip, n - skip);
     atomic_fetch_add(&l->n_received, 1u);
     l->expected = (uint16_t)(seq + 1u);
     l->have_expected = true;
@@ -519,10 +536,17 @@ bool link_rx(link_t *l, int16_t *out, size_t n)
          * a lost or late packet moves the fill for a moment, and that is
          * not drift. */
         uint32_t target = atomic_load(&l->target);
-        l->level_avg_q8 += ((int32_t)(level << 8) - l->level_avg_q8) / 128;
+        /* An empty buffer in mid-transmission says nothing about the
+         * clocks either: what arrives late is skipped to match. */
+        if (!l->dry) l->level_avg_q8 += ((int32_t)(level << 8) - l->level_avg_q8) / 128;
         int32_t off = (l->level_avg_q8 >> 8) - (int32_t)target;
-        bool steer = !l->draining && (uint32_t)(off < 0 ? -off : off) > steer_tolerance(target);
+        /* Clocks a few parts per million apart need a sample now and then,
+         * so one at most every LINK_STEER_MS: a modem barely notices that. */
+        l->steer_wait = l->steer_wait > n ? l->steer_wait - (uint32_t)n : 0;
+        bool steer = !l->draining && !l->steer_wait && (uint32_t)(off < 0 ? -off : off) > steer_tolerance(target);
+        uint32_t steered = l->fifo.dropped + l->fifo.repeated;
         uint32_t missing = play(l, out, n, true, steer);
+        if (l->fifo.dropped + l->fifo.repeated != steered) l->steer_wait = STEER_GAP_SAMPLES;
         if (!missing) {
             l->dry = false;
             l->dry_n = 0;
@@ -574,6 +598,7 @@ void link_get_status(link_t *l, link_status_t *st)
     st->late = atomic_load(&l->n_late);
     st->off_frequency = atomic_load(&l->n_off_frequency);
     st->underruns = atomic_load(&l->n_underruns);
+    st->skipped = atomic_load(&l->n_skipped);
     /* Each of these belongs to one task; a plain read is whole on the CPUs
      * this runs on, and a count that is one behind does not matter here. */
     st->overruns = l->fifo.overruns;

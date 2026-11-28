@@ -126,11 +126,13 @@ menu "Mock radio: receive route and channel at power-up"
     config MOCK_LINK_BUFFER_MS
         int "Link: audio held before it is played, ms"
         range 10 200
-        default 30
+        default 80
         depends on !MOCK_LINK_NONE
         help
             More rides out uneven arrival from the other board; less makes
-            the path quicker, which ARQ turnarounds like.
+            the path quicker, which ARQ turnarounds like. ESP-NOW sharing
+            the radio with Wi-Fi delivers packets in bunches: on the bench
+            30 ms ran dry every few seconds and 80 ms never did.
 
     config MOCK_LINK_MATCH
         bool "Link: hear the other board only on the same frequency"

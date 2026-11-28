@@ -206,7 +206,7 @@ static void tone(int16_t *out, size_t n, float amplitude)
 #define DEFAULTS                                                                                                  \
     "{\"route\":\"monitor\",\"noise\":\"off\",\"snr\":10.0,\"bw\":2500,\"floor\":-40.0,\"atten\":0.0,"           \
     "\"turnaround\":30,\"fade\":\"off\",\"doppler\":1.00,\"fadedelay\":2.0,\"offset\":0.0,\"delay\":1.0,"      \
-    "\"period\":0.0,\"linkbuffer\":30,\"match\":\"on\",\"share\":\"on\",\"line\":\"off\",\"vox\":\"off\","   \
+    "\"period\":0.0,\"linkbuffer\":80,\"match\":\"on\",\"share\":\"on\",\"line\":\"off\",\"vox\":\"off\","   \
     "\"voxlevel\":-40.0,\"voxhang\":100}"
 
 /* ---- tests ------------------------------------------------------------------- */
@@ -903,7 +903,7 @@ static void test_telemetry(void)
         .state = LINK_RECEIVING, .peer = true, .peer_name = "mock\"radio-0002", .peer_rx_hz = 7074000,
         .peer_tx_hz = 7076000, .peer_keyed = true, .has_rssi = true, .rssi_dbm = -61, .buffer_ms = 35,
         .target_ms = 30, .sent = 1, .send_failed = 2, .received = 3, .lost = 4, .late = 5, .off_frequency = 6,
-        .underruns = 7, .overruns = 8, .dropped = 9, .repeated = 10,
+        .underruns = 7, .overruns = 8, .dropped = 9, .repeated = 10, .skipped = 11,
     };
     s.link_shared = true;
     size_t full = console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf);
@@ -911,7 +911,7 @@ static void test_telemetry(void)
     CHECK_HAS(g_buf, "\"link\":{\"state\":\"receiving\",\"peer\":\"mock\\\"radio-0002\",\"peer_rx\":7074000,"
                      "\"peer_tx\":7076000,\"peer_keyed\":true,\"rssi\":-61,\"buffer\":35,\"target\":30,\"sent\":1,"
                      "\"send_failed\":2,\"received\":3,\"lost\":4,\"late\":5,\"off_frequency\":6,\"underruns\":7,"
-                     "\"overruns\":8,\"dropped\":9,\"repeated\":10,\"shared\":true,\"leads\":false},\"rssi\":-57}");
+                     "\"overruns\":8,\"dropped\":9,\"repeated\":10,\"skipped\":11,\"shared\":true,\"leads\":false},\"rssi\":-57}");
     s.link.state = LINK_OFF_FREQUENCY;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
     CHECK_HAS(g_buf, "\"state\":\"off frequency\"");
