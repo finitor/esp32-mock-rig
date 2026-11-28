@@ -3,6 +3,7 @@
 idf_component_register(SRCS "usb_composite.c" "usb_descriptors.c"
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "tusb"
+                       PRIV_REQUIRES cat_port esp_timer
                        WHOLE_ARCHIVE)
 
 # TinyUSB is compiled against the application's tusb_config.h. Put ours, and

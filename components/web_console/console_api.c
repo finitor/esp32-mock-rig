@@ -1306,6 +1306,9 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_bool(&o, s->split);
     out_f(&o, ",\"ok\":%lu,\"ng\":%lu,\"dropped\":%lu", (unsigned long)s->frames_ok, (unsigned long)s->frames_ng,
           (unsigned long)s->frames_dropped);
+    out_f(&o, ",\"stale\":%lu,\"full\":%lu,\"discarded\":%lu,\"recovered\":%lu,\"rx_lost\":%lu",
+          (unsigned long)s->replies_stale, (unsigned long)s->replies_full, (unsigned long)s->replies_discarded,
+          (unsigned long)s->port_recovered, (unsigned long)s->rx_lost);
 
     out_f(&o, "},\"audio\":{\"tx\":");
     out_level(&o, &s->tx);

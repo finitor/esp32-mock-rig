@@ -20,6 +20,7 @@
  * the console.
  */
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -31,6 +32,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -107,9 +109,10 @@ static civ_t s_civ;
 static ae_t s_engine;
 static mock_ctl_t s_ctl;
 
-/* The CI-V parser's state and the settings have two users: the USB task,
- * which feeds the parser (and through it the mock's own controls), and the
- * web console's task. Each holds this while it works on them. */
+/* The CI-V parser's state and the settings have three users: the CAT task,
+ * which feeds the parser (and through it the mock's own controls), the web
+ * console's task and the status task. Each holds this while it works on
+ * them. The USB task never takes it: it only hands bytes to the CAT task. */
 static SemaphoreHandle_t s_cat_lock;
 
 static void cat_lock(void *ctx)
@@ -238,26 +241,70 @@ static void cat_ptt(void *ctx, bool on)
     ESP_LOGI(TAG, "PTT %s (CAT)", on ? "on" : "off");
 }
 
+/* CAT bytes go from the USB task to a task of their own, which parses them
+ * and answers. Parsing takes the CAT lock, which the web console and the
+ * status task also take, and a few commands write flash; in the USB task
+ * any wait for it held up every USB event, which is how a completion on the
+ * CAT port's IN endpoint was lost and the port wedged. The CAT task sits
+ * below the audio and USB tasks on their core and above everything else,
+ * so a PTT command is acted on within an audio block of arriving, however
+ * many reads came before it: each takes microseconds, and answering one
+ * never waits for the host to read (usb_composite_serial_write). */
+#define CAT_RX_BYTES 2048 /* some 250 commands */
+#define CAT_TASK_PRIORITY 12
+#define CAT_TASK_CORE 1
+
+static StreamBufferHandle_t s_cat_rx;
+static _Atomic uint32_t s_cat_rx_lost; /* bytes that found the buffer full */
+
+/* In the USB task: never waits. */
 static void serial_rx(void *ctx, const uint8_t *bytes, size_t len)
 {
     (void)ctx;
-    /* A read of 1C 00 in these bytes should say the radio is transmitting
-     * when the line or the VOX is keying it, not only CAT. */
-    ae_ptt_t ptt;
-    ae_get_ptt(&s_engine, &ptt);
-    cat_lock(NULL);
-    civ_set_ptt(&s_civ, ptt.line || ptt.vox || ptt.panel);
-    civ_feed(&s_civ, bytes, len);
-    link_follow_radio(); /* the frequency may have changed */
-    cat_unlock(NULL);
+    size_t put = s_cat_rx ? xStreamBufferSend(s_cat_rx, bytes, len, 0) : 0;
+    if (put < len) atomic_fetch_add(&s_cat_rx_lost, (uint32_t)(len - put));
+}
+
+static void cat_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint8_t bytes[64];
+        size_t len = xStreamBufferReceive(s_cat_rx, bytes, sizeof bytes, portMAX_DELAY);
+        if (!len) continue;
+        /* A read of 1C 00 in these bytes should say the radio is
+         * transmitting when the line or the VOX is keying it, not only CAT. */
+        ae_ptt_t ptt;
+        ae_get_ptt(&s_engine, &ptt);
+        cat_lock(NULL);
+        civ_set_ptt(&s_civ, ptt.line || ptt.vox || ptt.panel);
+        civ_feed(&s_civ, bytes, len);
+        link_follow_radio(); /* the frequency may have changed */
+        cat_unlock(NULL);
+    }
+}
+
+static bool cat_start(void)
+{
+    s_cat_rx = xStreamBufferCreate(CAT_RX_BYTES, 1);
+    if (!s_cat_rx) return false;
+    return xTaskCreatePinnedToCore(cat_task, "cat", 6144, NULL, CAT_TASK_PRIORITY, NULL, CAT_TASK_CORE) == pdPASS;
 }
 
 static void line_state(void *ctx, bool dtr, bool rts)
 {
+    static bool had_dtr;
     (void)ctx;
     /* Hosts raise both lines on open. They key the radio only if the PTT
      * line setting selects one. */
     ae_set_lines(&s_engine, dtr, rts);
+    /* DTR rising is the port opened afresh: replies still waiting were for
+     * the last program, so they go. Not when DTR is the PTT line, where it
+     * rises with every transmission. */
+    ae_config_t cfg;
+    ae_get_config(&s_engine, &cfg);
+    if (dtr && !had_dtr && cfg.ptt_line != AE_LINE_DTR) usb_composite_serial_discard();
+    had_dtr = dtr;
     ESP_LOGI(TAG, "serial lines: DTR=%d RTS=%d", dtr, rts);
 }
 
@@ -528,6 +575,8 @@ static void status_task(void *arg)
             status_led_set(c.r, c.g, c.b);
 #endif
         }
+        /* The CAT port's replies, and its IN endpoint's health. */
+        usb_composite_serial_poll();
         vTaskDelay(pdMS_TO_TICKS(STATUS_PERIOD_MS));
     }
 }
@@ -575,6 +624,13 @@ static void console_sample(void *ctx, console_sample_t *out)
     out->frames_ng = s_civ.frames_ng;
     out->frames_dropped = s_civ.frames_dropped;
     cat_unlock(NULL);
+    usb_composite_serial_status_t port;
+    usb_composite_serial_status(&port);
+    out->replies_stale = port.stale;
+    out->replies_full = port.full;
+    out->replies_discarded = port.discarded;
+    out->port_recovered = port.recovered;
+    out->rx_lost = atomic_load(&s_cat_rx_lost);
 
     console_meter_read(&s_tx_meter, &tx_seen, &out->tx);
     console_meter_read(&s_rx_meter, &rx_seen, &out->rx);
@@ -660,6 +716,8 @@ void app_main(void)
     link_follow_radio();
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
+
+    if (!cat_start()) ESP_LOGE(TAG, "CAT task failed to start: CAT will not be answered");
 
     const usb_composite_config_t usb = {
         .serial_rx = serial_rx,

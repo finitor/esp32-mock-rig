@@ -42,8 +42,27 @@ typedef struct {
 /* Start the USB device. Any callback may be NULL. */
 esp_err_t usb_composite_init(const usb_composite_config_t *config);
 
-/* Send serial bytes to the host (CAT replies). Returns how many were queued. */
+/* Send one CAT reply to the host, whole (at most 64 bytes). Never waits:
+ * replies queue until the port's IN endpoint is free, and one that has
+ * waited a second, or the oldest when 16 wait, is dropped (cat_port). Not
+ * from the USB task's callbacks. Returns len, or 0 if it was not queued. */
 size_t usb_composite_serial_write(const uint8_t *bytes, size_t len);
+
+/* Drop the replies waiting: the host has opened the port afresh. */
+void usb_composite_serial_discard(void);
+
+/* Call every 20 ms or so from a task of its own: sends what waits if the
+ * endpoint has come free, and notices a completion that was lost on the
+ * way to the USB task, which would otherwise leave the port receiving CAT
+ * and never answering, and restores it. */
+void usb_composite_serial_poll(void);
+
+typedef struct {
+    uint32_t stale, full, discarded; /* replies dropped: too old, no room, port opened afresh */
+    uint32_t recovered;              /* lost IN completions restored */
+} usb_composite_serial_status_t;
+
+void usb_composite_serial_status(usb_composite_serial_status_t *st);
 
 /* Whether a host has configured the device. */
 bool usb_composite_mounted(void);

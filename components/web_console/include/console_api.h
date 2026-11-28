@@ -255,6 +255,8 @@ typedef struct {
     bool split;
     uint32_t radio_gen;  /* civ_state_hash(): changes when the front panel should be read again */
     uint32_t frames_ok, frames_ng, frames_dropped;
+    /* the serial port's replies (cat_port) and what arrived with no room for it */
+    uint32_t replies_stale, replies_full, replies_discarded, port_recovered, rx_lost;
 
     console_level_t tx; /* audio the host plays */
     console_level_t rx; /* audio the host records */

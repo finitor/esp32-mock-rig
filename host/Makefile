@@ -15,7 +15,7 @@ CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
 CPPFLAGS = -I../components/cat_civ/include -I../components/rig_ic705/include -I../components/rig_g90/include -I../components/audio_dsp/include \
            -I../components/audio_engine/include -I../components/mock_ctl/include -I../components/ui/include \
            -I../components/web_console/include -I../components/link/include \
-           -I../components/clips/include -I../components/coord/include
+           -I../components/clips/include -I../components/coord/include -I../components/cat_port/include
 
 BUILD = build
 CORE  = ../components/cat_civ/cat_civ.c ../components/rig_ic705/rig_ic705.c ../components/rig_g90/rig_g90.c
@@ -37,12 +37,14 @@ CLIPS   = ../components/clips/clip_store.c
 CLIPS_H = ../components/clips/include/clip_store.h
 COORD   = ../components/coord/coord.c
 COORD_H = ../components/coord/include/coord.h
+PORT    = ../components/cat_port/cat_port.c
+PORT_H  = ../components/cat_port/include/cat_port.h
 # everything the mock's own controls are built from
 CTL_ALL   = $(CORE) $(CTL) $(ENG) $(DSP)
 CTL_ALL_H = $(HDRS) $(CTL_H) $(ENG_H) $(DSP_H)
 
 all: $(BUILD)/civ_pty $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
-     $(BUILD)/test_console $(BUILD)/test_link $(BUILD)/test_clips $(BUILD)/test_coord \
+     $(BUILD)/test_console $(BUILD)/test_link $(BUILD)/test_clips $(BUILD)/test_coord $(BUILD)/test_cat_port \
      $(BUILD)/console_sim
 
 $(BUILD)/civ_pty: civ_pty.c $(CTL_ALL) $(CTL_ALL_H) $(CLIPS) $(CLIPS_H) | $(BUILD)
@@ -75,6 +77,9 @@ $(BUILD)/test_clips: test_clips.c $(CLIPS) $(CLIPS_H) $(ENG) $(ENG_H) $(DSP) $(D
 $(BUILD)/test_coord: test_coord.c $(COORD) $(COORD_H) $(LINK) $(LINK_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_coord.c $(COORD) $(LINK) $(CTL_ALL) -lm
 
+$(BUILD)/test_cat_port: test_cat_port.c $(PORT) $(PORT_H) $(CORE) $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ test_cat_port.c $(PORT) $(CORE)
+
 $(BUILD)/console_sim: console_sim.c $(CON) $(CON_H) $(LINK) $(LINK_H) $(CLIPS) $(CLIPS_H) $(COORD) $(COORD_H) $(CTL_ALL) $(CTL_ALL_H) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ console_sim.c $(CON) $(LINK) $(CLIPS) $(COORD) $(CTL_ALL) -lm
 
@@ -82,7 +87,7 @@ $(BUILD):
 	mkdir -p $(BUILD)
 
 test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl $(BUILD)/test_ui \
-      $(BUILD)/test_console $(BUILD)/test_link $(BUILD)/test_clips $(BUILD)/test_coord
+      $(BUILD)/test_console $(BUILD)/test_link $(BUILD)/test_clips $(BUILD)/test_coord $(BUILD)/test_cat_port
 	./$(BUILD)/test_civ
 	./$(BUILD)/test_dsp
 	./$(BUILD)/test_engine
@@ -92,6 +97,7 @@ test: $(BUILD)/test_civ $(BUILD)/test_dsp $(BUILD)/test_engine $(BUILD)/test_ctl
 	./$(BUILD)/test_link
 	./$(BUILD)/test_clips
 	./$(BUILD)/test_coord
+	./$(BUILD)/test_cat_port
 
 rigctl: $(BUILD)/civ_pty
 	./rigctl_check.sh
