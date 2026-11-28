@@ -487,6 +487,41 @@ static void test_ptt_sources(void)
     EXPECT("fe fe f0 e0 54 fd", "fe fe e0 f0 54 00 fd");
 }
 
+static mock_ctl_board_status_t g_board;
+
+static void board_status(void *ctx, mock_ctl_board_status_t *st)
+{
+    (void)ctx;
+    *st = g_board;
+}
+
+static void test_board_status(void)
+{
+    fresh();
+    /* No board behind the mock (the host simulators): refused. */
+    EXPECT("fe fe f0 e0 70 fd", NG);
+
+    const mock_ctl_board_t board = {.status = board_status};
+    mock_ctl_set_board(&g_ctl, &board);
+    /* Joined, linked, nothing gone wrong, up 2 h 5 min. */
+    g_board = (mock_ctl_board_status_t){.flags = MOCK_CTL_BOARD_WIFI_JOINED | MOCK_CTL_BOARD_LINK_PEER,
+                                        .uptime_s = 7500};
+    EXPECT("fe fe f0 e0 70 fd", "fe fe e0 f0 70 05 00 00 00 00 00 00 00 00 00 00 01 25 fd");
+    /* Off the network for 3 min after a beacon timeout (reason 200), 41
+     * attempts failed, Wi-Fi restarted once, 2 drops in all. */
+    g_board = (mock_ctl_board_status_t){.wifi_reason = 200, .wifi_fails = 41, .wifi_restarts = 1, .wifi_drops = 2,
+                                        .wifi_down_s = 180, .uptime_s = 7500};
+    EXPECT("fe fe f0 e0 70 fd", "fe fe e0 f0 70 00 02 00 00 41 00 01 00 02 01 80 01 25 fd");
+    /* Hosting; large numbers stop at 9999. */
+    g_board = (mock_ctl_board_status_t){.flags = MOCK_CTL_BOARD_WIFI_HOSTING, .wifi_fails = 123456,
+                                        .uptime_s = 0xFFFFFFFFu};
+    EXPECT("fe fe f0 e0 70 fd", "fe fe e0 f0 70 02 00 00 99 99 00 00 00 00 00 00 99 99 fd");
+    /* Read only. */
+    EXPECT("fe fe f0 e0 70 01 fd", NG);
+    mock_ctl_set_board(&g_ctl, NULL);
+    EXPECT("fe fe f0 e0 70 fd", NG);
+}
+
 static void test_fading_settings(void)
 {
     fresh();
@@ -1010,6 +1045,7 @@ int main(void)
     test_status();
     test_parrot();
     test_ptt_sources();
+    test_board_status();
     test_fading_settings();
     test_link_settings();
     test_kept_settings();

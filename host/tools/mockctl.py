@@ -87,6 +87,13 @@ CLIP_COMMANDS = {"clip-play": 0x31, "clip-save": 0x35, "clip-erase": 0x36}
 CLIP_FLAG_BUSY, CLIP_FLAG_FAILED = 0x01, 0x02
 CMD_REPLAY, CMD_PARROT_STATUS, CMD_PTT_STATUS = 0x30, 0x34, 0x54
 CMD_RIG = 0x60
+CMD_BOARD_STATUS = 0x70
+BOARD_WIFI_JOINED, BOARD_WIFI_HOSTING, BOARD_LINK_PEER = 0x01, 0x02, 0x04
+# ESP-IDF's wifi_err_reason_t (components/esp_wifi/include/esp_wifi_types_generic.h, v5.5.6), the common ones
+WIFI_REASONS = {2: "authentication expired", 8: "left", 15: "4-way handshake timeout", 200: "beacon timeout",
+                201: "no network found", 202: "authentication failed", 203: "association failed",
+                204: "handshake timeout", 205: "connection failed", 210: "no network with a compatible security",
+                211: "no network in the auth mode threshold", 212: "no network in the RSSI threshold"}
 # name: (Hamlib model, what to call it)
 RIGS = {"ic705": (3085, "Icom IC-705"), "g90": (3088, "Xiegu G90")}
 PTT_SOURCES = ((0x01, "CAT"), (0x02, "control line"), (0x04, "VOX"), (0x08, "front panel"))
@@ -336,6 +343,30 @@ def show(port):
     if len(kept) != 1:
         raise ValueError("unexpected reply about kept settings")
     print("  power-up    %s" % ("the settings kept in flash" if kept[0] else "the build's settings"))
+
+    try:
+        board = ask(port, CMD_BOARD_STATUS)
+    except Refused:
+        board = None
+    if board is None:
+        print("  board       not reported by this mock")
+    elif len(board) != 13:
+        raise ValueError("unexpected board status reply")
+    else:
+        reason, fails, restarts, drops, down, uptime = (from_bcd(board[1 + 2 * i:3 + 2 * i]) for i in range(6))
+        flags = board[0]
+        if flags & BOARD_WIFI_HOSTING:
+            wifi = "Wi-Fi hosting its own network"
+        elif flags & BOARD_WIFI_JOINED:
+            wifi = "Wi-Fi joined"
+        else:
+            wifi = "Wi-Fi NOT joined for %d s, %d attempts failed" % (down, fails)
+        why = ""
+        if reason:
+            why = ", last reason %d (%s)" % (reason, WIFI_REASONS.get(reason, "see ESP-IDF's wifi_err_reason_t"))
+        print("  board       %s%s; %d drops, %d Wi-Fi restarts; link %s; up %d min" % (
+            wifi, why, drops, restarts, "hears the other board" if flags & BOARD_LINK_PEER else "hears no board",
+            uptime))
 
     ptt = ask(port, CMD_PTT_STATUS)
     if len(ptt) != 1:

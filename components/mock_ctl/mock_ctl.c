@@ -460,6 +460,35 @@ static void cmd_clip_status(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
     civ_reply(c, f, p, 3 + 2 * (size_t)st.slots);
 }
 
+void mock_ctl_set_board(mock_ctl_t *m, const mock_ctl_board_t *board)
+{
+    if (board && board->status) {
+        m->board = *board;
+    } else {
+        memset(&m->board, 0, sizeof m->board);
+    }
+}
+
+static int32_t capped(uint32_t v)
+{
+    return v > 9999u ? 9999 : (int32_t)v;
+}
+
+/* 70: flags; then the last Wi-Fi reason, failed attempts, restarts, drops,
+ * seconds without Wi-Fi and minutes up, each 2 BCD bytes, 9999 at most. */
+static void cmd_board_status(mock_ctl_t *m, civ_t *c, const civ_frame_t *f)
+{
+    mock_ctl_board_status_t st;
+    uint8_t p[2 + 2 * 6] = {MOCK_CTL_BOARD_STATUS};
+    memset(&st, 0, sizeof st);
+    m->board.status(m->board.ctx, &st);
+    p[1] = st.flags;
+    const uint32_t v[6] = {st.wifi_reason, st.wifi_fails, st.wifi_restarts, st.wifi_drops, st.wifi_down_s,
+                           st.uptime_s / 60u};
+    for (int i = 0; i < 6; i++) put_num(&p[2 + 2 * i], capped(v[i]), 2, false);
+    civ_reply(c, f, p, sizeof p);
+}
+
 void mock_ctl_init(mock_ctl_t *m, ae_t *engine, const ae_config_t *power_up)
 {
     m->engine = engine;
@@ -468,6 +497,7 @@ void mock_ctl_init(mock_ctl_t *m, ae_t *engine, const ae_config_t *power_up)
     m->kept = false;
     memset(&m->store, 0, sizeof m->store);
     memset(&m->clips, 0, sizeof m->clips);
+    memset(&m->board, 0, sizeof m->board);
     m->civ = NULL;
     m->rigs = NULL;
     m->n_rigs = 0;
@@ -614,6 +644,12 @@ void mock_ctl_command(civ_t *c, const civ_frame_t *f, void *ctx)
     case MOCK_CTL_STATUS:
         if (f->len == 0) {
             cmd_status(m, c, f);
+            return;
+        }
+        break;
+    case MOCK_CTL_BOARD_STATUS:
+        if (f->len == 0 && m->board.status) {
+            cmd_board_status(m, c, f);
             return;
         }
         break;

@@ -66,7 +66,12 @@ bool link_transport_send(void *ctx, const uint8_t *dst, const uint8_t *data, siz
 {
     (void)ctx;
     const uint8_t *to = dst ? dst : BROADCAST;
-    if (!s_up || !know_peer(to)) return false;
+    if (!s_up) return false;
+    /* A station looking for its network is off the network's channel, so
+     * nothing sent now reaches the peer, and a hundred audio packets a
+     * second would only crowd the frames the driver needs to rejoin. */
+    if (!wifi_net_hosting() && !wifi_net_joined()) return false;
+    if (!know_peer(to)) return false;
     return esp_now_send(to, data, len) == ESP_OK;
 }
 

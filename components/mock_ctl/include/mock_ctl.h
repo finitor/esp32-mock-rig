@@ -140,6 +140,7 @@ enum {
     MOCK_CTL_VOX_HANG = 0x53,
     MOCK_CTL_PTT_STATUS = 0x54,
     MOCK_CTL_RIG = 0x60,
+    MOCK_CTL_BOARD_STATUS = 0x70,
 };
 
 enum {
@@ -162,6 +163,29 @@ enum {
     MOCK_CTL_CLIP_FLAG_BUSY = 0x01,
     MOCK_CTL_CLIP_FLAG_FAILED = 0x02,
 };
+
+enum {
+    MOCK_CTL_BOARD_WIFI_JOINED = 0x01,  /* a station on a network, with an address */
+    MOCK_CTL_BOARD_WIFI_HOSTING = 0x02, /* hosting its own network */
+    MOCK_CTL_BOARD_LINK_PEER = 0x04,    /* the link hears another board */
+};
+
+/* The board itself, for command 70: what CAT can tell about it when Wi-Fi,
+ * and with it the web console, cannot. */
+typedef struct {
+    uint8_t flags;        /* MOCK_CTL_BOARD_... */
+    uint32_t wifi_reason; /* why Wi-Fi's last attempt or connection ended; 0 for none */
+    uint32_t wifi_fails;  /* attempts that failed since the last connection */
+    uint32_t wifi_restarts;
+    uint32_t wifi_drops;
+    uint32_t wifi_down_s; /* without a connection, as a station */
+    uint32_t uptime_s;
+} mock_ctl_board_status_t;
+
+typedef struct {
+    void (*status)(void *ctx, mock_ctl_board_status_t *st);
+    void *ctx;
+} mock_ctl_board_t;
 
 /* Somewhere to keep the power-up settings: flash on the board. Each returns
  * false on failure. */
@@ -216,6 +240,7 @@ typedef struct {
     bool kept;            /* power_up came from flash */
     mock_ctl_store_t store;
     mock_ctl_clips_t clips;
+    mock_ctl_board_t board;
 
     /* the personalities to choose from: mock_ctl_set_rigs() */
     civ_t *civ;
@@ -292,6 +317,9 @@ size_t mock_ctl_settings_pack(const ae_config_t *cfg, uint8_t *out, size_t cap);
 /* ---- clips ----------------------------------------------------------------------- */
 
 void mock_ctl_set_clips(mock_ctl_t *m, const mock_ctl_clips_t *clips);
+
+/* Where command 70 gets the board's status. Without one it is refused. */
+void mock_ctl_set_board(mock_ctl_t *m, const mock_ctl_board_t *board);
 
 /* False, and st all zero, if the mock has no clips. */
 bool mock_ctl_clips_status(mock_ctl_t *m, mock_ctl_clips_status_t *st);

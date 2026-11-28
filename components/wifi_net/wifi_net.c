@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -42,6 +43,25 @@ static EventGroupHandle_t s_events;
 static volatile bool s_hosting;
 static volatile bool s_connected;
 static volatile uint32_t s_drops; /* written by the event task only */
+
+/* The station's health, for the supervisor and the board's status. Written
+ * by the event task and the supervisor; whole 32-bit values, read anywhere. */
+static volatile uint32_t s_last_reason;  /* why the last attempt or connection ended (wifi_err_reason_t) */
+static volatile uint32_t s_fails;        /* disconnects without a connection since the last one, or start */
+static volatile uint32_t s_event_ms;     /* when the event task last heard from the driver */
+static volatile uint32_t s_down_ms;      /* when the station last went without a connection */
+static volatile uint32_t s_restarts;     /* times the supervisor restarted Wi-Fi */
+
+/* While not joined: an attempt the driver has said nothing about for this
+ * long is made again, and after this long without a connection Wi-Fi is
+ * stopped and started afresh. */
+#define KICK_MS 15000u
+#define RESTART_MS 120000u
+
+static uint32_t ms_now(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 static void (*volatile s_on_restart)(void);
 
 bool wifi_net_hosting(void)
@@ -102,12 +122,25 @@ esp_err_t wifi_net_save(const char *ssid, const char *password)
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
+    s_event_ms = ms_now();
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *d = data;
+        s_last_reason = d ? d->reason : 0;
         if (s_connected) {
             s_drops = s_drops + 1;
-            ESP_LOGW(TAG, "lost \"%s\", joining again", s_join);
+            s_fails = 0;
+            s_down_ms = ms_now();
+            ESP_LOGW(TAG, "lost \"%s\" (reason %u, rssi %d), joining again", s_join, (unsigned)s_last_reason,
+                     d ? d->rssi : 0);
+        } else {
+            s_fails = s_fails + 1;
+            /* The first few, then now and then: a board that cannot rejoin says why. */
+            if (s_fails <= 3 || s_fails % 20 == 0) {
+                ESP_LOGW(TAG, "\"%s\" not joined: reason %u, attempt %u", s_join, (unsigned)s_last_reason,
+                         (unsigned)s_fails);
+            }
         }
         s_connected = false;
         if (!s_hosting) esp_wifi_connect();
@@ -115,6 +148,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         const ip_event_got_ip_t *got = data;
         esp_ip4addr_ntoa(&got->ip_info.ip, s_ip, sizeof s_ip);
         s_connected = true;
+        s_fails = 0;
         ESP_LOGI(TAG, "joined \"%s\": the console is at http://%s/ and http://%s.local/", s_join, s_ip, s_name);
         xEventGroupSetBits(s_events, GOT_IP);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
@@ -168,6 +202,41 @@ static void fallback_task(void *arg)
         if (err == ESP_OK && fn) fn();
     }
     vTaskDelete(NULL);
+}
+
+/* A station that lost its network rejoins by itself: each disconnect starts
+ * another attempt. Two things can still leave it off the network for good,
+ * and here they are undone. An attempt the driver never reports on (no
+ * event for KICK_MS) is made again. A station that has had no connection for
+ * RESTART_MS has Wi-Fi stopped and started again, which brings the driver
+ * back to its state at power-up; ESP-NOW is then set up afresh
+ * (wifi_net_on_restart). Nothing here runs while the board hosts its own
+ * network, or is joined. */
+static void supervisor_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (s_hosting || s_connected) continue;
+        uint32_t now = ms_now();
+        if (now - s_down_ms >= RESTART_MS) {
+            s_restarts = s_restarts + 1;
+            ESP_LOGW(TAG, "\"%s\" not joined for %u s (last reason %u): restarting Wi-Fi", s_join,
+                     (unsigned)((now - s_down_ms) / 1000), (unsigned)s_last_reason);
+            s_down_ms = now; /* another RESTART_MS before the next */
+            esp_wifi_disconnect();
+            esp_wifi_stop();
+            esp_err_t err = esp_wifi_start(); /* STA_START joins again */
+            if (err != ESP_OK) ESP_LOGE(TAG, "Wi-Fi did not start again: %s", esp_err_to_name(err));
+            esp_wifi_set_ps(WIFI_PS_NONE);
+            void (*fn)(void) = s_on_restart;
+            if (err == ESP_OK && fn) fn();
+        } else if (now - s_event_ms >= KICK_MS) {
+            s_event_ms = now;
+            ESP_LOGW(TAG, "\"%s\": no word from the driver for %u s, trying again", s_join, (unsigned)(KICK_MS / 1000));
+            esp_wifi_connect();
+        }
+    }
 }
 
 static void start_mdns(void)
@@ -232,6 +301,10 @@ static esp_err_t start(void)
         if (err == ESP_OK) err = esp_wifi_start();
         if (err != ESP_OK) return err;
         ESP_LOGI(TAG, "%s: joining \"%s\"", s_name, s_join);
+        s_down_ms = s_event_ms = ms_now();
+        if (xTaskCreate(supervisor_task, "wifi_watch", 3072, NULL, 2, NULL) != pdPASS) {
+            ESP_LOGW(TAG, "no Wi-Fi supervisor: a board that cannot rejoin \"%s\" stays off it", s_join);
+        }
         if (xTaskCreate(fallback_task, "wifi_fallback", 4096, NULL, 2, NULL) != pdPASS) {
             ESP_LOGW(TAG, "no fallback task: the board will not host a network if \"%s\" is missing", s_join);
         }
@@ -255,4 +328,14 @@ void wifi_net_status(wifi_net_status_t *st)
     strlcpy(st->ssid, s_hosting ? s_name : s_join, sizeof st->ssid);
     if (s_hosting || s_connected) strlcpy(st->ip, s_ip, sizeof st->ip);
     if (s_connected && !s_hosting) st->has_rssi = esp_wifi_sta_get_rssi(&st->rssi_dbm) == ESP_OK;
+    st->last_reason = s_last_reason;
+    st->fails = s_fails;
+    st->restarts = s_restarts;
+    st->drops = s_drops;
+    st->down_s = (s_hosting || s_connected) ? 0 : (ms_now() - s_down_ms) / 1000;
+}
+
+bool wifi_net_joined(void)
+{
+    return s_connected && !s_hosting;
 }

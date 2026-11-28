@@ -66,6 +66,7 @@ check 1 "doppler=31: refused by the mock (out of range?)" doppler=31
 check 1 "linkbuffer=5: refused by the mock (out of range?)" linkbuffer=5
 check 1 "route=link: refused by the mock (this mock was built without the link)" route=link
 check 0 "ptt         line off, vox off at -40.0 dBFS with 100 ms hang; receiving"
+check 0 "board       Wi-Fi NOT joined for 180 s, 41 attempts failed, last reason 201 (no network found); 2 drops, 1 Wi-Fi restarts; link hears no board; up 125 min"
 check 0 "ptt         line rts, vox on at -35.5 dBFS with 250 ms hang; receiving" line=rts vox=on voxlevel=-35.5 voxhang=250
 check 1 "line is off, rts or dtr"                    line=cts
 check 1 "voxlevel=-3: refused by the mock (out of range?)" voxlevel=-3

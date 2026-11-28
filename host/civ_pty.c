@@ -140,6 +140,15 @@ static void clips_status(void *ctx, mock_ctl_clips_status_t *st)
     for (unsigned i = 0; i < st->slots; i++) st->length_ms[i] = clip_store_length(&g_clips, i + 1) / (CLIP_FS_HZ / 1000u);
 }
 
+/* Made up: the host has no board. A board off its network, so that
+ * mockctl.py's reading of command 70 is exercised in full. */
+static void board_status(void *ctx, mock_ctl_board_status_t *st)
+{
+    (void)ctx;
+    *st = (mock_ctl_board_status_t){.wifi_reason = 201, .wifi_fails = 41, .wifi_restarts = 1, .wifi_drops = 2,
+                                    .wifi_down_s = 180, .uptime_s = 7500};
+}
+
 static void cleanup(int sig)
 {
     (void)sig;
@@ -210,6 +219,8 @@ int main(int argc, char **argv)
     g_clip_engine = &engine;
     mock_ctl_set_store(&ctl, &store);
     mock_ctl_set_clips(&ctl, &clips);
+    static const mock_ctl_board_t board = {.status = board_status};
+    mock_ctl_set_board(&ctl, &board);
 
     civ_t civ;
     static const civ_rig_t *const rigs[] = {&rig_ic705, &rig_g90};

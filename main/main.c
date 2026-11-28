@@ -51,6 +51,9 @@
 #include "console_api.h"
 #include "web_console.h"
 #endif
+#ifdef CONFIG_MOCK_WIFI
+#include "wifi_net.h"
+#endif
 #ifndef CONFIG_MOCK_LINK_NONE
 #include "coord.h"
 #include "link.h"
@@ -289,6 +292,31 @@ static bool cat_start(void)
     s_cat_rx = xStreamBufferCreate(CAT_RX_BYTES, 1);
     if (!s_cat_rx) return false;
     return xTaskCreatePinnedToCore(cat_task, "cat", 6144, NULL, CAT_TASK_PRIORITY, NULL, CAT_TASK_CORE) == pdPASS;
+}
+
+/* For the mock's command 70: what CAT can tell about the board when Wi-Fi,
+ * and with it the web console, cannot. In the CAT task. */
+static void board_status(void *ctx, mock_ctl_board_status_t *st)
+{
+    (void)ctx;
+    memset(st, 0, sizeof *st);
+    st->uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+#ifdef CONFIG_MOCK_WIFI
+    wifi_net_status_t w;
+    wifi_net_status(&w);
+    if (w.connected && !w.hosting) st->flags |= MOCK_CTL_BOARD_WIFI_JOINED;
+    if (w.hosting) st->flags |= MOCK_CTL_BOARD_WIFI_HOSTING;
+    st->wifi_reason = w.last_reason;
+    st->wifi_fails = w.fails;
+    st->wifi_restarts = w.restarts;
+    st->wifi_drops = w.drops;
+    st->wifi_down_s = w.down_s;
+#endif
+#ifdef HAVE_LINK
+    link_status_t l;
+    link_get_status(&s_link, &l);
+    if (l.peer) st->flags |= MOCK_CTL_BOARD_LINK_PEER;
+#endif
 }
 
 static void line_state(void *ctx, bool dtr, bool rts)
@@ -719,6 +747,8 @@ void app_main(void)
     civ_init(&s_civ, rig, cat_tx, cat_ptt, NULL);
     civ_set_private(&s_civ, MOCK_CTL_ADDR, mock_ctl_command, &s_ctl);
     mock_ctl_set_rigs(&s_ctl, &s_civ, s_rigs, N_RIGS, rig_changed, NULL);
+    static const mock_ctl_board_t board = {.status = board_status};
+    mock_ctl_set_board(&s_ctl, &board);
     link_follow_radio();
     ESP_LOGI(TAG, "mock controls answer at CI-V address %02X (host/tools/mockctl.py)", MOCK_CTL_ADDR);
     dsp_fifo_init(&s_loop, s_loop_store, LOOP_CAPACITY);
