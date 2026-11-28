@@ -1333,6 +1333,12 @@ size_t console_telemetry_json(mock_ctl_t *m, const console_sample_t *s, char *bu
     out_f(&o, ",\"fifo\":{\"level\":%lu,\"target\":%lu,\"over\":%lu,\"under\":%lu,\"dropped\":%lu,\"repeated\":%lu}",
           (unsigned long)s->fifo_level, (unsigned long)s->fifo_target, (unsigned long)s->fifo_overruns,
           (unsigned long)s->fifo_underruns, (unsigned long)s->fifo_dropped, (unsigned long)s->fifo_repeated);
+    if (s->has_skipped) {
+        out_f(&o, ",\"skipped\":{\"late\":%lu,\"early\":%lu}", (unsigned long)s->skipped_late,
+              (unsigned long)s->skipped_early);
+    } else {
+        out_f(&o, ",\"skipped\":null");
+    }
 
     /* The receive channel: the level it measured on its source and the gain
      * it applies to reach the SNR. */

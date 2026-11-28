@@ -848,7 +848,8 @@ static void test_telemetry(void)
              "\"cat\":{\"freq\":7074000,\"txfreq\":7074000,\"mode\":\"USB-D\",\"split\":false,\"ok\":0,\"ng\":0,"
              "\"dropped\":0,\"stale\":0,\"full\":0,\"discarded\":0,\"recovered\":0,\"rx_lost\":0,\"rearmed\":0,\"in\":null},"
              "\"audio\":{\"tx\":null,\"rx\":null,"
-             "\"fifo\":{\"level\":0,\"target\":960,\"over\":0,\"under\":0,\"dropped\":0,\"repeated\":0}},"
+             "\"fifo\":{\"level\":0,\"target\":960,\"over\":0,\"under\":0,\"dropped\":0,\"repeated\":0},"
+             "\"skipped\":null},"
              "\"channel\":{\"muted\":false,\"level\":null,\"gain\":0.0,\"limited\":false},"
              "\"parrot\":{\"state\":\"idle\",\"recorded\":0.0,\"capacity\":2.0,\"truncated\":false},"
              "\"clips\":null,\"link\":null,\"rssi\":null}",
@@ -888,6 +889,9 @@ static void test_telemetry(void)
     s.fifo_underruns = 4;
     s.fifo_dropped = 5;
     s.fifo_repeated = 6;
+    s.has_skipped = true;
+    s.skipped_late = 13;
+    s.skipped_early = 14;
     s.has_rssi = true;
     s.rssi_dbm = -57;
     CHECK(console_telemetry_json(&g_ctl, &s, g_buf, sizeof g_buf) > 0);
@@ -898,7 +902,8 @@ static void test_telemetry(void)
                      "\"recovered\":10,\"rx_lost\":11,\"rearmed\":12,\"in\":{\"busy\":true,\"armed\":true,"
                      "\"unsent\":11,\"irq\":false}},");
     CHECK_HAS(g_buf, "\"audio\":{\"tx\":{\"rms\":-12.1,\"peak\":-9.0},\"rx\":{\"rms\":-120.0,\"peak\":-120.0},");
-    CHECK_HAS(g_buf, "\"fifo\":{\"level\":1010,\"target\":960,\"over\":3,\"under\":4,\"dropped\":5,\"repeated\":6}},");
+    CHECK_HAS(g_buf, "\"fifo\":{\"level\":1010,\"target\":960,\"over\":3,\"under\":4,\"dropped\":5,\"repeated\":6},"
+                     "\"skipped\":{\"late\":13,\"early\":14}},");
     CHECK_HAS(g_buf, "\"channel\":{\"muted\":true,");
     CHECK_HAS(g_buf, "\"parrot\":{\"state\":\"recording\",\"recorded\":0.5,\"capacity\":2.0,\"truncated\":false},");
     CHECK_HAS(g_buf, "\"clips\":null,\"link\":null,\"rssi\":-57}");

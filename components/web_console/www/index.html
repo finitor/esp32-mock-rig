@@ -62,6 +62,7 @@ section { background: var(--surface); border: 1px solid var(--line); border-radi
 .kv { display: flex; justify-content: space-between; gap: 10px; }
 .kv span:first-child { color: var(--ink2); }
 .kv span:last-child { text-align: right; }
+.kv[hidden] { display: none; }
 .card.wide { grid-column: span 2; }
 @media (max-width: 520px) { .card.wide { grid-column: auto; } }
 .warn { color: var(--red); font-weight: 600; }
@@ -203,6 +204,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
         <div class="kv"><span>Fill / target</span><span class="num" id="fifo"></span></div>
         <div class="kv"><span>Underruns / overruns</span><span class="num" id="fifoerr"></span></div>
         <div class="kv"><span>Dropped / repeated</span><span class="num" id="fifosteer"></span></div>
+        <div class="kv" id="skiprow"><span>Blocks skipped: late / early</span><span class="num" id="skipped"></span></div>
       </div>
       <div class="card"><h3>CAT and board</h3>
         <div class="kv"><span>CAT frames</span><span class="num" id="frames"></span></div>
@@ -569,6 +571,12 @@ function update(t) {
   $("fifo").textContent = ms(q.level) + " / " + ms(q.target) + " ms";
   $("fifoerr").textContent = q.under + " / " + q.over;
   $("fifosteer").textContent = q.dropped + " / " + q.repeated;
+  const sk = t.audio.skipped;
+  $("skiprow").hidden = !sk;
+  if (sk) {
+    $("skipped").textContent = sk.late + " / " + sk.early;
+    $("skipped").className = "num" + (sk.late || sk.early ? " warn" : "");
+  }
   $("frames").textContent = t.cat.ok + " OK, " + t.cat.ng + " refused, " + t.cat.dropped + " bad";
   $("rssi").textContent = t.rssi == null ? "own network" : t.rssi + " dBm";
   $("up").textContent = fmtUp(t.t);

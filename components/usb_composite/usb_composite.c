@@ -56,19 +56,42 @@ static esp_err_t audio_from_host_cb(uint8_t *buf, size_t len, void *ctx)
  * up and holds core 1 for good. The host only ever gets the newest block, so
  * a block asked for ahead of time is silence, and one asked for more than an
  * interval late is dropped and the schedule starts again from now: an
- * overloaded board loses audio but keeps running. */
+ * overloaded board loses audio but keeps running.
+ *
+ * Each block the host got as silence for either reason is counted, so that a
+ * hole in its audio can be laid to this or cleared of it. A stream starting
+ * looks the same as a block that is very late, and is not counted: ten
+ * intervals late and more is the host having stopped recording, and so are
+ * the blocks asked for early until the first one of that stream is made. */
+#define MIC_RESTART_INTERVALS 10
+
+static _Atomic uint32_t s_mic_late, s_mic_early;
+
 static bool mic_block_due(size_t samples)
 {
     static int64_t due;
+    static bool starting = true; /* no block made yet since the stream started */
     const int64_t interval = (int64_t)samples * 1000000 / CONFIG_UAC_SAMPLE_RATE;
     int64_t now = esp_timer_get_time();
-    if (now + interval / 2 < due) return false; /* making up for lost time */
+    if (now + interval / 2 < due) { /* making up for lost time */
+        if (!starting) atomic_fetch_add(&s_mic_early, 1u);
+        return false;
+    }
     if (now > due + interval) {
+        starting = now > due + MIC_RESTART_INTERVALS * interval;
+        if (!starting) atomic_fetch_add(&s_mic_late, 1u);
         due = now + interval;
         return false;
     }
     due += interval;
+    starting = false;
     return true;
+}
+
+void usb_composite_audio_status(usb_composite_audio_status_t *st)
+{
+    st->late = atomic_load(&s_mic_late);
+    st->early = atomic_load(&s_mic_early);
 }
 
 static esp_err_t audio_to_host_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *ctx)

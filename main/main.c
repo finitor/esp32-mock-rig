@@ -674,6 +674,11 @@ static void console_sample(void *ctx, console_sample_t *out)
     out->fifo_underruns = s_loop.underruns;
     out->fifo_dropped = s_loop.dropped;
     out->fifo_repeated = s_loop.repeated;
+    usb_composite_audio_status_t skipped;
+    usb_composite_audio_status(&skipped);
+    out->has_skipped = true;
+    out->skipped_late = skipped.late;
+    out->skipped_early = skipped.early;
 #ifdef HAVE_LINK
     out->has_link = true;
     link_get_status(&s_link, &out->link);

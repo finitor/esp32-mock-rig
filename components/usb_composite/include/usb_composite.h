@@ -70,6 +70,17 @@ typedef struct {
 
 void usb_composite_serial_status(usb_composite_serial_status_t *st);
 
+/* Blocks of receive audio the host was sent as silence because the task that
+ * makes them had fallen behind: late counts those asked for more than a
+ * block's time late and dropped, early those asked for ahead of time while it
+ * made up for that. A stream starting is not counted. Both stay 0 on a board
+ * that keeps up. */
+typedef struct {
+    uint32_t late, early;
+} usb_composite_audio_status_t;
+
+void usb_composite_audio_status(usb_composite_audio_status_t *st);
+
 /* Whether a host has configured the device. */
 bool usb_composite_mounted(void);
 

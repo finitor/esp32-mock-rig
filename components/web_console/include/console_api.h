@@ -266,6 +266,11 @@ typedef struct {
     console_level_t rx; /* audio the host records */
     uint32_t fifo_level, fifo_target;
     uint32_t fifo_overruns, fifo_underruns, fifo_dropped, fifo_repeated;
+    /* blocks of receive audio sent to the host as silence because the task
+     * that makes them was behind: asked for late and dropped, and asked for
+     * early while it made up (the board; a simulator has no such task) */
+    bool has_skipped;
+    uint32_t skipped_late, skipped_early;
 
     bool has_link; /* the board was built with the two-board link */
     link_status_t link;
