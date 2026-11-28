@@ -113,6 +113,23 @@ Some useful settings:
 
 **Web console.** The board joins the Wi-Fi network given in its own console or in `idf.py menuconfig`. With none, it hosts `mockradio-xxxx` (password `mockradio`), with the console at `http://192.168.4.1/`. Once joined, the console is at `http://mockradio-xxxx.local/`. It has no login, so keep it on a network you trust. Two boards link over ESP-NOW when they are on the same Wi-Fi channel: join both to the same network.
 
+**The link's radio.** Cheap, off-brand boards can have very feeble radios. With the DevKitC-1 clones used here, the author had to get the two boards within about 15 cm of each other to see a signal stronger than −50 dBm. A few centimetres of movement, or a cable routed differently, moved it by 20 to 30 dB. Below about −60 dBm the link starts losing audio, and at −80 dBm a fifth of the packets failed and no session connected. If sessions fail, decodes come out weak, or the other station seems to miss transmissions, look at the link before blaming the modem. Its numbers are in the console's "Link to the other board" card, and in `link` in `/api/telemetry`:
+
+| Field | What it says |
+| --- | --- |
+| `rssi` | The other board's signal as this board hears it, in dBm. Aim for −50 or better. |
+| `send_failed` | Audio packets the radio could not deliver to the other board. It should stay still. |
+| `lost` | Gaps in what arrived from the other board. It should stay at 0. |
+| `late`, `underruns`, `skipped` | Packets that arrived late or in bunches. The buffer rides out a few; a steady climb means the link is marginal. |
+
+To watch them while a session runs, poll each board every few seconds and keep the output, so that a failure can be lined up with the state of the link at that moment. If the `.local` name is slow to resolve, use the board's IP address, which its log prints when it joins the network:
+
+```bash
+while sleep 2; do curl -s http://mockradio-xxxx.local/api/telemetry | python3 -c 'import json,sys,time; l=json.load(sys.stdin)["link"]; print(time.strftime("%H:%M:%S"), "rssi", l["rssi"], "sent", l["sent"], "failed", l["send_failed"], "received", l["received"], "lost", l["lost"], "late", l["late"], "underruns", l["underruns"])'; done
+```
+
+Move or turn the boards while it runs to find a good spot: one that holds −50 dBm or better, with `send_failed` and `lost` standing still.
+
 **No board yet?** The host simulator serves the console for two simulated, linked boards at `http://localhost:8080` and `:8081`, each with a CAT serial port that Hamlib can drive:
 
 ```bash
